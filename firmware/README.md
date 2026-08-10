@@ -88,25 +88,11 @@ Zigbee Mode: Disabled
 
 ## IR_Test
 
-`IR_Test` 為 IR 感測器功能測試程式，用於硬體開發、GPIO 訊號確認與感測器除錯。
+`IR_Test` 為 IR 感測器功能測試程式，用於機構開發、GPIO 訊號確認與感測器除錯。
+當任意IR觸發會控制載板LED Toggle
 
 主程式：
 
 ```text
 firmware/IR_Test/IR_Test.ino
 ```
-
-此程式主要供開發與硬體驗證使用，不代表正式產品韌體。
-
-## 版本管理建議
-
-正式韌體以版本資料夾區分，例如：
-
-```text
-BLE_RPM/
-├── BLE_RPM_V1.0/
-├── BLE_RPM_V1.1/
-└── BLE_RPM_V1.2/
-```
-
-每個版本資料夾應保留可獨立編譯所需的完整程式碼，避免不同版本之間共用會被修改的原始檔案。
