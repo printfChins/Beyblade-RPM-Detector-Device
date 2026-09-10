@@ -1,0 +1,30 @@
+BRD_OLED_V0.10
+版本: V0.10
+來源: BLE_RPM_V1.9(2).zip
+
+新增: 電量 < 5% 停用一般功能並顯示沒電警示；鎖定後 >= 10% 重新開機。
+修改: ADC 每 1 秒單次讀取；低電停用優先於 RPM、LOAD 及 MAX 自鎖。
+保留: 無 BLE、OLED 轉速、鋰電池電量曲線與正常模式充電圖示。
+GPIO10 充電 DET 使用 INPUT_PULLUP，下拉關閉；其餘專案輸入腳無上下拉。
+所有檔案直接放在 BRD_OLED_V0.10 資料夾。
+使用 Arduino IDE 開啟 BRD_OLED_V0.10/BRD_OLED_V0.10.ino。
+各原始碼均為完整檔案；README 列出主程式新增內容及行號。
+
+SHA-256  檔案位置  位元組數  行數
+1eee02e7aaf0e6da3a303b5509daaf76f34fe3d812e697e4ae2961e397cf9bbd  BRD_OLED_V0.10/BRD_OLED_V0.10.ino  2315  63
+441466196da518b9ffc19f61f3711c4a437a60dfec671ca8728f8c3f5a351da9  BRD_OLED_V0.10/CHANGELOG.md  4463  53
+13af1287979c5309ef3ab8c04a819c14cf8f01dd797827b42a9fca6bd3dcd58b  BRD_OLED_V0.10/README.md  13392  174
+c0bbd4d5201f43b985e506c038a88a9688b698a0ad960403a8e5184641a6322c  BRD_OLED_V0.10/VALIDATION.md  5308  55
+b2843b15791327656f550cba79c6dbf5e62ca55e8dd94e53acbbce4fc9b8b3ce  BRD_OLED_V0.10/brd_battery.cpp  4488  133
+79b3ad00869feb566e9ba7aa8138e0c9caafe2270908e385e7ad8581c6449591  BRD_OLED_V0.10/brd_battery.h  597  19
+c047ea4e46145176832bfcd2e20f28717fe5b1fec3774757eec2d09112bdf6ac  BRD_OLED_V0.10/brd_config.h  6720  136
+444005b9f057638143073f74204fea9337a4582d4ded753ed9745c9b89d602fd  BRD_OLED_V0.10/brd_io.cpp  1661  42
+7fe3de8dfd81fa2052d1ce2173d9140aed227604d931a3ee3faf363ddeaba2d4  BRD_OLED_V0.10/brd_io.h  280  10
+e59b8fabf4ab347a89bb1b9eb0beae66309a08863e6bf0a99c43b27dad454440  BRD_OLED_V0.10/brd_measurement.cpp  13045  415
+eec0c7b082c545059b0e1b58d0535775fa03b19e91147ee68dc440a1e981f93d  BRD_OLED_V0.10/brd_measurement.h  787  31
+21d86d9c8381ace56c771d24d919475f6995f6272f71e8d79728d30dc82fcb52  BRD_OLED_V0.10/brd_oled.cpp  18230  534
+0501d95e0411139a01ed9855c02d71ab1f39aa1caf896a89ba03bd082664548a  BRD_OLED_V0.10/brd_oled.h  248  9
+
+FILE_MANIFEST.txt 本身不列入雜湊，避免自我參照。
+本次 31 項主機模擬及 5 個編譯單位的語法檢查全部通過；已檢視沒電警示 framebuffer。
+未完成 ESP32-C3 實際編譯、重啟及硬體驗證；不含 BIN。
