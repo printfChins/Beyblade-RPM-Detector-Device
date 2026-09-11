@@ -1,9 +1,10 @@
 /*
-    檔案位置: BRD_OLED_V0.10/brd_measurement.cpp
+    檔案位置: BRD_OLED/brd_measurement.cpp
     [V0.10 修改] 保留 RPM / LOAD ISR、即時 RPM、發射後 50% MAX 結束判斷。
     [V0.10 刪減] BLE、ACK、Session、CRC、曲線陣列與 LAUNCH RPM 歷史陣列。
     [V0.10 新增] MAX 自鎖、LOAD 完整去抖、溢位後重新建立 RPM 週期。
     [V0.10 新增] 低電時停用 RPM / LOAD 中斷，清除事件並停止所有量測處理。
+    [V0.10 新增] 將實際 MAX 自鎖狀態提供給 OLED 顯示 HOLD。
     狀態機與 OLED 均由主 loop 執行；ISR 只記錄事件，不操作顯示器。
 */
 #include <soc/gpio_struct.h>
@@ -393,6 +394,8 @@ brd_display_t brd_measurement_get_display(void) {
     display.show_max = g_show_max;
     display.value = g_show_max ? g_display_max : g_current_rpm;
     display.generation = g_display_generation;
+    /* [V0.10 新增] HOLD 依既有自鎖旗標更新，不以 MAX 是否仍顯示來判定。 */
+    display.hold_active = g_show_max && g_max_lock;
     return display;
 }
 
@@ -403,7 +406,7 @@ void brd_measurement_max_frame_presented(uint32_t generation) {
     }
 
     /*
-        [V0.10 新增] 以整幅 MAX 畫面成功送出時間開始算兩秒。
+        [V0.10 修改] 以整幅 MAX 畫面成功送出時間開始計算 OLED_MAX_HOLD_MS。
         每筆結果只確認一次，週期性重繪不會反覆延長自鎖。
     */
     g_max_frame_seen = true;

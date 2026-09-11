@@ -7,6 +7,7 @@
     [V0.10 新增] I2C 明確不開內部上拉；初始化或傳送失敗每隔一秒重試。
     [V0.10 新增] 一般畫面分段寫入，每次 loop 最多一個 I2C 傳送。
     [V0.10 修改] 低電優先顯示圓角電池、左側短條與中央閃電圖示。
+    [V0.10 新增] MAX 自鎖期間第一行顯示 HOLD，自鎖結束恢復裝載狀態。
     狀態與畫面皆在主 loop 存取，不再有跨 Task 同時讀寫量測資料的問題。
 */
 #include <driver/gpio.h>
@@ -155,6 +156,8 @@ static const uint8_t *oled_get_glyph(char c) {
     static const uint8_t glyph_B[5] = {0x7F, 0x49, 0x49, 0x49, 0x36};
     static const uint8_t glyph_D[5] = {0x7F, 0x41, 0x41, 0x22, 0x1C};
     static const uint8_t glyph_E[5] = {0x7F, 0x49, 0x49, 0x49, 0x41};
+    /* [V0.10 新增] HOLD 所需 H 字元，其餘 O、L、D 沿用既有字庫。 */
+    static const uint8_t glyph_H[5] = {0x7F, 0x08, 0x08, 0x08, 0x7F};
     static const uint8_t glyph_I[5] = {0x00, 0x41, 0x7F, 0x41, 0x00};
     static const uint8_t glyph_L[5] = {0x7F, 0x40, 0x40, 0x40, 0x40};
     static const uint8_t glyph_M[5] = {0x7F, 0x02, 0x0C, 0x02, 0x7F};
@@ -186,6 +189,7 @@ static const uint8_t *oled_get_glyph(char c) {
         case 'B': return glyph_B;
         case 'D': return glyph_D;
         case 'E': return glyph_E;
+        case 'H': return glyph_H;
         case 'I': return glyph_I;
         case 'L': return glyph_L;
         case 'M': return glyph_M;
@@ -413,7 +417,11 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     g_frame_is_low_battery = false;
     g_low_battery_frame_drawn = false;
     oled_clear_buffer();
-    oled_draw_text(0U, 0U, display.loaded ? "LOADED READY" : "WAIT LOAD", 1U);
+    /* [V0.10 刪減] 自鎖期間仍只顯示 WAIT LOAD 的判斷方式。
+       [V0.10 新增] HOLD 優先顯示；第二行仍保留本次 MAX 轉速。 */
+    const char *status_line = display.hold_active ? "HOLD" :
+        (display.loaded ? "LOADED READY" : "WAIT LOAD");
+    oled_draw_text(0U, 0U, status_line, 1U);
     snprintf(value_line, sizeof(value_line), "%s %u",
              display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
     oled_draw_text(0U, 16U, value_line, 2U);
@@ -552,6 +560,8 @@ void brd_oled_update(void) {
         bool charging = brd_io_is_charging();
         bool changed_state = display.generation != g_frame_display.generation ||
             display.loaded != g_frame_display.loaded || display.show_max != g_frame_display.show_max ||
+            /* [V0.10 新增] 自鎖結束即要求重畫，即使 MAX 數值及電量都未改變。 */
+            display.hold_active != g_frame_display.hold_active ||
             battery_percent != g_frame_battery_percent || charging != g_frame_charging;
         if (!changed_state &&
             (uint32_t)(millis() - g_last_frame_start_ms) < OLED_UPDATE_INTERVAL_MS) {

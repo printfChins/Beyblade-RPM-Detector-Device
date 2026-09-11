@@ -1,20 +1,44 @@
-# BRD_OLED_V0.10
+# BRD_OLED — V0.10
 
-本專案由使用者提供的 `BLE_RPM_V1.9(2).zip` 製作為 **V0.10 無藍牙版本**，保留 LOAD、RPM 量測、OLED 顯示，以及電量與充電圖示。本次新增電量低於 5% 時的停用鎖定與沒電圖示，鎖定後恢復至 10% 或以上會重新開機。版本字串維持 `V0.10`。
+本專案由使用者提供的 `BLE_RPM_V1.9(2).zip` 製作為 **V0.10 無藍牙版本**，保留 LOAD、RPM 量測、OLED 顯示，以及電量與充電圖示。本次以最新附件 `BRD_OLED(1).zip` 為基礎，新增發射後 MAX 自鎖期間的 `HOLD` 顯示。電量低於 5% 時停用鎖定，鎖定後恢復至 10% 或以上會重新開機。版本字串維持 `V0.10`。
 
 ## 使用位置
 
-解壓縮後，使用 Arduino IDE 開啟 `BRD_OLED_V0.10/BRD_OLED_V0.10.ino`。主檔名稱必須與資料夾名稱一致。
+解壓縮後，使用 Arduino IDE 開啟 `BRD_OLED/BRD_OLED.ino`。主檔名稱必須與資料夾名稱一致。
 
 這是一個完整、獨立的新版本資料夾。各檔案均從第 1 行使用完整內容，不需要將片段貼入 V1.9。不要將 V1.9 的 `brd_ble.cpp` 或其他舊模組混放進此資料夾，因為 Arduino 會一起編譯同資料夾內的原始碼。
 
-若放在 Windows 的 `C:\UserCode\BRD`，主程式完整位置即為：
+若放在 Windows 的 `C:\UserCode\BRD-Firmware\firmware`，主程式完整位置即為：
 
-`C:\UserCode\BRD\BRD_OLED_V0.10\BRD_OLED_V0.10.ino`
+`C:\UserCode\BRD-Firmware\firmware\BRD_OLED\BRD_OLED.ino`
 
-## 本次主程式新增位置
+## 本次 HOLD 顯示修改位置
 
-檔案：`BRD_OLED_V0.10/BRD_OLED_V0.10.ino`。以下行號以 ZIP 內更新後的完整主程式為準。
+完整專案的資料夾為 `BRD_OLED/`，版本字串維持 `V0.10`。若更新既有專案，以下三個完整檔案必須一起替換，均從第 1 行使用交付內容；主程式 `BRD_OLED.ino` 不需修改。
+
+| 檔案位置 | 本次變更 |
+| --- | --- |
+| `BRD_OLED/brd_measurement.h` | [新增] `brd_display_t.hold_active`，提供實際自鎖狀態 |
+| `BRD_OLED/brd_measurement.cpp` | [新增] 在畫面資料中填入 HOLD 狀態 |
+| `BRD_OLED/brd_oled.cpp` | [新增] H 字型、HOLD 文字與自鎖狀態變更後的畫面更新；[刪減] 自鎖期間只按 LOAD 顯示文字的舊判斷 |
+
+| 狀態 | 第一行 | 第二行 |
+| --- | --- | --- |
+| 發射後仍在量測 | `WAIT LOAD` | `RPM xxxx` |
+| 量測完成且正在自鎖 | `HOLD` | `MAX xxxx` |
+| 自鎖結束、尚未重新裝載 | `WAIT LOAD` | `MAX xxxx` |
+| 重新裝載且去抖完成 | `LOADED READY` | `RPM 0`，開始轉動後更新即時轉速 |
+
+- HOLD 對應既有 MAX 自鎖旗標，並非 MAX 仍可見的整段期間。
+- 自鎖時間沿用本次附件的 `OLED_MAX_HOLD_MS = 2500`，即 2.5 秒；仍從首幅完整 MAX 畫面送出時計時。OLED 失效時沿用原有備援計時。
+- 自鎖中忽略 LOAD，電量與充電圖示依原有機制更新；圖示重繪不延長自鎖。
+- 自鎖狀態改變後要求下一幅畫面更新，一般畫面仍分段傳送；螢幕文字實際切換會經過傳送時間。
+- 低電警示優先於 HOLD，沿用圓角電池、左側亮條與中央閃電圖示。
+- [刪減] 交付 ZIP 排除附件內修改前的 `build/`、BIN、ELF、MAP 等建置產物。請在 Arduino IDE 重新編譯及燒錄，以產生包含 HOLD 的韌體。
+
+## 先前低電功能的主程式新增位置
+
+檔案：`BRD_OLED/BRD_OLED.ino`。以下行號以 ZIP 內更新後的完整主程式為準。
 
 | 行號 | 新增內容 | 放置位置 |
 | ---: | --- | --- |
@@ -30,24 +54,24 @@
 
 ## 完整資料夾與檔案
 
-所有檔案均直接放在 `BRD_OLED_V0.10/`，沒有額外的原始碼子資料夾。
+所有檔案均直接放在 `BRD_OLED/`，沒有額外的原始碼子資料夾。
 
 | 相對檔案位置 | 用途與變更 |
 | --- | --- |
-| `BRD_OLED_V0.10/BRD_OLED_V0.10.ino` | [修改] 完整主程式；初始化與量測、電池、OLED 呼叫順序 |
-| `BRD_OLED_V0.10/brd_config.h` | [修改] 版本、GPIO、RPM、電池 ADC、低電與恢復門檻、LOAD 去抖、MAX 自鎖與 OLED 重試參數 |
-| `BRD_OLED_V0.10/brd_battery.cpp` | [修改] GPIO0 每秒單次 ADC、原版 SOC 表、低電鎖定與恢復判斷 |
-| `BRD_OLED_V0.10/brd_battery.h` | [新增] 低電鎖定及重啟條件介面；保留電量讀取介面 |
-| `BRD_OLED_V0.10/brd_io.cpp` | [修改] 充電 DET 使用上拉，其餘輸入腳無上下拉；GPIO8 關燈 |
-| `BRD_OLED_V0.10/brd_io.h` | [修改] GPIO 初始化與充電 DET 讀取介面 |
-| `BRD_OLED_V0.10/brd_measurement.cpp` | [新增] 低電停用中斷與清除量測；保留單機量測、去抖、MAX 保持 |
-| `BRD_OLED_V0.10/brd_measurement.h` | [新增] 停止量測介面；保留 OLED 畫面資料介面 |
-| `BRD_OLED_V0.10/brd_oled.cpp` | [新增] 大型空電池警示與低電開機處理；保留一般畫面、電量與充電圖示及 I2C 重試 |
-| `BRD_OLED_V0.10/brd_oled.h` | [修改] OLED 初始化與更新介面 |
-| `BRD_OLED_V0.10/README.md` | [新增] 使用位置、功能與設定說明 |
-| `BRD_OLED_V0.10/CHANGELOG.md` | [新增] 相對附件 V1.9 的修改、刪減清單 |
-| `BRD_OLED_V0.10/VALIDATION.md` | [新增] 已執行的主機模擬檢查與驗證限制 |
-| `BRD_OLED_V0.10/FILE_MANIFEST.txt` | [新增] 交付檔案清單與 SHA-256 |
+| `BRD_OLED/BRD_OLED.ino` | [修改] 完整主程式；初始化與量測、電池、OLED 呼叫順序 |
+| `BRD_OLED/brd_config.h` | [修改] 版本、GPIO、RPM、電池 ADC、低電與恢復門檻、LOAD 去抖、MAX 自鎖與 OLED 重試參數 |
+| `BRD_OLED/brd_battery.cpp` | [修改] GPIO0 每秒單次 ADC、原版 SOC 表、低電鎖定與恢復判斷 |
+| `BRD_OLED/brd_battery.h` | [新增] 低電鎖定及重啟條件介面；保留電量讀取介面 |
+| `BRD_OLED/brd_io.cpp` | [修改] 充電 DET 使用上拉，其餘輸入腳無上下拉；GPIO8 關燈 |
+| `BRD_OLED/brd_io.h` | [修改] GPIO 初始化與充電 DET 讀取介面 |
+| `BRD_OLED/brd_measurement.cpp` | [新增] 提供 HOLD 顯示旗標；保留低電停用、單機量測、去抖、MAX 保持 |
+| `BRD_OLED/brd_measurement.h` | [新增] 畫面資料中的 hold_active；保留量測介面 |
+| `BRD_OLED/brd_oled.cpp` | [新增] HOLD 狀態顯示與 H 字型；保留圓角電池低電警示、電量、充電圖示與 I2C 重試 |
+| `BRD_OLED/brd_oled.h` | [修改] OLED 初始化與更新介面 |
+| `BRD_OLED/README.md` | [新增] 使用位置、功能與設定說明 |
+| `BRD_OLED/CHANGELOG.md` | [新增] 相對附件 V1.9 的修改、刪減清單 |
+| `BRD_OLED/VALIDATION.md` | [新增] 已執行的主機模擬檢查與驗證限制 |
+| `BRD_OLED/FILE_MANIFEST.txt` | [新增] 交付檔案清單與 SHA-256 |
 
 ## GPIO
 
@@ -76,7 +100,7 @@ SDA/SCL 仍需要電路或 OLED 模組上的外部上拉電阻；本版關閉的
 5. 裝載期間顯示即時 RPM。LOAD 穩定變 LOW 後進入發射後量測，顯示 `WAIT LOAD` 與即時 RPM。
 6. 發射後 RPM 降至本輪 MAX 的 50% 或以下即結束；如果脈衝停止，300 ms timeout 後結束。至少一筆有效 RPM 即可保留 MAX；空發射不建立假數值。
 7. 完成後第二行顯示 `MAX xxxx`。本版沿用 V1.9 的 `MAX` 標籤與字體大小，數值單位為 RPM，最高顯示範圍為 60000。
-8. MAX 完整畫面送出後至少維持兩秒，自鎖期間不處理 LOAD。解鎖後重新讀取實際 LOAD 並重新計算去抖。若仍未裝載，MAX 持續保持；若已裝載，去抖通過後清零。
+8. 自鎖期間第一行顯示 `HOLD`，第二行保留 `MAX xxxx`；MAX 完整畫面送出後依目前設定保持 2.5 秒，期間不處理 LOAD。解鎖後重新讀取實際 LOAD 並重新計算去抖。若仍未裝載，MAX 持續保持；若已裝載，去抖通過後清零。
 
 上述流程為正常模式；低電鎖定可以立即中止任一量測步驟或 MAX 自鎖。裝載中停止轉動時，300 ms 後即時 RPM 歸零；未發射且停止滿三秒後，回到等待本次旋轉。CPU 固定 80 MHz，沒有自動關閉 OLED 或 Deep-sleep。
 
@@ -90,7 +114,7 @@ SDA/SCL 仍需要電路或 OLED 模組上的外部上拉電阻；本版關閉的
 | 已低電鎖定 | 10% 或以上 | 呼叫 `esp_restart()` 重新啟動設備，再依開機電量檢查啟動量測 |
 
 - 每 1 秒單次取樣；一旦該次取樣換算出低於 5%，當輪 loop 先停用量測，再更新警示。判斷間隔由 `BATTERY_SAMPLE_INTERVAL_MS` 控制。
-- OLED 清除原畫面，中央只顯示大型空電池與驚嘆號。警示優先於未送完的一般畫面及 MAX 的兩秒保持時間。
+- OLED 清除原畫面，中央只顯示圓角電池、左側短條與閃電；單色 OLED 將參考圖紅條呈現為亮色像素。警示優先於未送完的一般畫面及 HOLD 自鎖期間。
 - 鎖定期間不執行 RPM、LOAD、MAX 或一般電量／充電圖示更新；只保留恢復判斷所需的 ADC、OLED 警示及必要的系統排程。這是韌體停用，沒有控制外部電源切斷。
 - 上電就低於 5% 時不播放版本畫面、不掛載量測中斷。正常開機畫面等待結束後也重新檢查電量，避免其間電量下降仍啟動量測。
 - OLED 故障不影響低電停用或達到 10% 後的重啟。顯示器復原後依目前鎖定狀態重畫警示。
@@ -106,7 +130,7 @@ SDA/SCL 仍需要電路或 OLED 模組上的外部上拉電阻；本版關閉的
 - 上電先取得第一筆 ADC；正常與低電模式均每 1 秒只呼叫一次 `analogReadMilliVolts(GPIO0)`，使用 470k/470k 分壓換算電池電壓，再依 V1.9 的 SOC 表插值。
 - 保留原版不使用 dummy conversion、取樣平均或 IIR 濾波的設定。校正倍率預設 `1000 / 1000`，可於 `brd_config.h` 調整。
 - 正常模式的電量更新與充電狀態切換會要求下一幅畫面更新；已開始的畫面仍完整送完，避免混合兩個狀態。低電警示例外，會優先取代一般畫面。
-- MAX 自鎖期間仍更新電量與充電圖示；這些重繪不會清除 MAX 或重新計算兩秒自鎖起點。
+- MAX 自鎖期間仍更新電量與充電圖示；這些重繪不會清除 MAX 或重新計算自鎖起點。
 
 ### 沿用的鋰電池電量曲線
 
@@ -131,12 +155,12 @@ SDA/SCL 仍需要電路或 OLED 模組上的外部上拉電阻；本版關閉的
 
 ## 可調參數
 
-所有參數位於 `BRD_OLED_V0.10/brd_config.h`，LOAD 去抖與 MAX 自鎖放在同一區塊。
+所有參數位於 `BRD_OLED/brd_config.h`，LOAD 去抖與 MAX 自鎖放在同一區塊。
 
 | 參數 | 預設值 | 單位與用途 |
 | --- | ---: | --- |
 | `LOAD_IR_DEBOUNCE_US` | 1000 | us；最新 LOAD 邊沿後連續穩定時間 |
-| `OLED_MAX_HOLD_MS` | 2000 | ms；MAX 完整畫面送出後最短自鎖時間，設定需至少 2000 |
+| `OLED_MAX_HOLD_MS` | 2500 | ms；MAX 完整畫面送出後最短自鎖時間，設定需至少 2000 |
 | `OLED_RETRY_INTERVAL_MS` | 1000 | ms；OLED 初始化或 I2C 傳送失敗後的重試間隔 |
 | `OLED_I2C_TIMEOUT_MS` | 10 | ms；單次 I2C 傳送等待上限參數 |
 | `OLED_UPDATE_INTERVAL_MS` | 100 | ms；一般畫面更新間隔 |
@@ -154,7 +178,7 @@ OLED 一般畫面分成數個 I2C 傳送，每個 loop 最多送一個一般畫�
 
 低電警示在量測中斷已停用後一次送完整幅畫面，之後每秒重繪。每個 I2C 封包仍有等待上限，任一包失敗即返回，交由原有重試流程恢復。
 
-OLED 失敗時每秒嘗試 I2C 復原及 SSD1306 重新初始化；沒有控制 OLED 電源或 RESET 的額外 GPIO，因此此機制不是硬體斷電重啟。正常模式下 OLED 持續失敗時，量測繼續執行；MAX 自鎖以量測完成時間作為解鎖備援。若 OLED 稍後恢復且結果仍存在，首幅完整 MAX 畫面送出後重新確保兩秒可見時間。低電模式下量測持續停用，不因顯示器故障而恢復。
+OLED 失敗時每秒嘗試 I2C 復原及 SSD1306 重新初始化；沒有控制 OLED 電源或 RESET 的額外 GPIO，因此此機制不是硬體斷電重啟。正常模式下 OLED 持續失敗時，量測繼續執行；MAX 自鎖以量測完成時間作為解鎖備援。若 OLED 稍後恢復且結果仍存在，首幅完整 MAX 畫面送出後依 `OLED_MAX_HOLD_MS` 重新計時。低電模式下量測持續停用，不因顯示器故障而恢復。
 
 ## Arduino 設定
 

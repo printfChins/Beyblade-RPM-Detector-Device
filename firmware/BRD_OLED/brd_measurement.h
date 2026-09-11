@@ -1,6 +1,7 @@
 /*
-    檔案位置: BRD_OLED_V0.10/brd_measurement.h
+    檔案位置: BRD_OLED/brd_measurement.h
     [V0.10 修改] 僅公開單機量測與 OLED 畫面資料，不包含 BLE 狀態。
+    [V0.10 新增] 畫面資料提供實際 HOLD 自鎖狀態。
 */
 #ifndef BRD_MEASUREMENT_H
 #define BRD_MEASUREMENT_H
@@ -19,6 +20,8 @@ struct brd_display_t {
     bool show_max;
     uint16_t value;
     uint32_t generation;
+    /* [V0.10 新增] 僅 MAX 自鎖期間為 true；自鎖結束後保留 MAX 時為 false。 */
+    bool hold_active;
 };
 
 void brd_measurement_begin(void);

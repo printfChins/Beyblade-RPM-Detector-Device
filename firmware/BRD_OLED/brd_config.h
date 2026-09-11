@@ -20,7 +20,7 @@
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector"
 #define PROJECT_SHORT_NAME                "BRD"
-#define PROJECT_VERSION                   "V0.10"
+#define PROJECT_VERSION                   "V0.11"
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
