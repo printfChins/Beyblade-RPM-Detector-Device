@@ -1,12 +1,12 @@
 /*
-    檔案位置: BRD_OLED_V0.10/brd_oled.cpp
+    檔案位置: BRD_OLED/brd_oled.cpp
     [V0.10 修改] 顯示 LOAD 狀態、RPM / MAX 與開機版本。
     [V0.10 恢復] 右上角電池圖示與左側充電閃電圖示，沿用 V1.9 尺寸與位置。
     [V0.10 刪減] OLED 休眠與獨立 FreeRTOS Task。
     [V0.10 修改] 不使用 Wire.begin，避免框架初始化自動開啟內部上拉。
     [V0.10 新增] I2C 明確不開內部上拉；初始化或傳送失敗每隔一秒重試。
     [V0.10 新增] 一般畫面分段寫入，每次 loop 最多一個 I2C 傳送。
-    [V0.10 新增] 低電優先顯示大型沒電圖示，覆蓋 RPM / MAX / 充電畫面。
+    [V0.10 修改] 低電優先顯示圓角電池、左側短條與中央閃電圖示。
     狀態與畫面皆在主 loop 存取，不再有跨 Task 同時讀寫量測資料的問題。
 */
 #include <driver/gpio.h>
@@ -333,28 +333,66 @@ static void oled_draw_charging_icon(uint8_t x, uint8_t y) {
 
 static void oled_begin_low_battery_frame(void) {
     /*
-        [V0.10 新增] 60x24 空電池外框與驚嘆號，中央顯示沒電警示。
-        清除整幅 buffer，避免殘留 LOAD、RPM、MAX 或一般電量圖示。
+        [V0.10 刪減] 原本的方角空電池與中央驚嘆號。
+        [V0.10 新增] 依參考圖繪製 60x28 圓角電池、左側低電量短條與中央閃電。
+        本體加右側端子共 64x28，置中於 128x32 OLED。
+        OLED 為單色，參考圖的紅色短條改用亮色像素表示。
+        中央閃電屬於低電警示圖樣，不以 CHRG_DET 作為顯示條件。
     */
+    static const uint8_t outer_corner_inset[4] = {4U, 2U, 1U, 0U};
+    static const uint8_t inner_corner_inset[2] = {2U, 1U};
+    static const uint16_t lightning_rows[18] = {
+        0x004U, 0x00CU, 0x00CU, 0x018U, 0x038U, 0x038U,
+        0x07FU, 0x07EU, 0x0FCU, 0x1FCU, 0x038U, 0x030U,
+        0x030U, 0x060U, 0x060U, 0x040U, 0x040U, 0x040U
+    };
+    const uint8_t body_x = 32U;
+    const uint8_t body_y = 2U;
+    const uint8_t body_width = 60U;
+    const uint8_t body_height = 28U;
+
     oled_clear_buffer();
-    for (uint8_t x = 31U; x < 91U; x++) {
-        for (uint8_t y = 4U; y < 28U; y++) {
-            if (x < 33U || x >= 89U || y < 6U || y >= 26U) {
-                oled_set_pixel(x, y, true);
+
+    /* [新增] 兩像素圓角外框；逐列保留內部黑色區域。 */
+    for (uint8_t row = 0U; row < body_height; row++) {
+        uint8_t edge = row < body_height / 2U ? row : (uint8_t)(body_height - 1U - row);
+        uint8_t outer_inset = edge < 4U ? outer_corner_inset[edge] : 0U;
+        uint8_t inner_inset = body_width / 2U;
+
+        if (edge >= 2U) {
+            uint8_t inner_edge = (uint8_t)(edge - 2U);
+            inner_inset = (uint8_t)(2U + (inner_edge < 2U ? inner_corner_inset[inner_edge] : 0U));
+        }
+
+        for (uint8_t column = outer_inset; column < body_width - outer_inset; column++) {
+            if (column < inner_inset || column >= body_width - inner_inset) {
+                oled_set_pixel((uint8_t)(body_x + column), (uint8_t)(body_y + row), true);
             }
         }
     }
-    for (uint8_t x = 91U; x < 97U; x++) {
-        for (uint8_t y = 10U; y < 22U; y++) {
+
+    /* [新增] 右側 4x10 電池端子，外側兩角各留一個黑色像素。 */
+    for (uint8_t row = 0U; row < 10U; row++) {
+        for (uint8_t column = 0U; column < 4U; column++) {
+            if (column != 3U || (row != 0U && row != 9U)) {
+                oled_set_pixel((uint8_t)(body_x + body_width + column), (uint8_t)(11U + row), true);
+            }
+        }
+    }
+
+    /* [新增] 左側 5x20 短條，對應參考圖的紅色低電量區域。 */
+    for (uint8_t x = 37U; x < 42U; x++) {
+        for (uint8_t y = 6U; y < 26U; y++) {
             oled_set_pixel(x, y, true);
         }
     }
-    for (uint8_t x = 59U; x < 64U; x++) {
-        for (uint8_t y = 9U; y < 19U; y++) {
-            oled_set_pixel(x, y, true);
-        }
-        for (uint8_t y = 22U; y < 25U; y++) {
-            oled_set_pixel(x, y, true);
+
+    /* [新增] 中央 9x18 閃電，以固定點陣維持單色小尺寸下的可辨識度。 */
+    for (uint8_t row = 0U; row < 18U; row++) {
+        for (uint8_t column = 0U; column < 9U; column++) {
+            if ((lightning_rows[row] & (1U << (8U - column))) != 0U) {
+                oled_set_pixel((uint8_t)(58U + column), (uint8_t)(7U + row), true);
+            }
         }
     }
 

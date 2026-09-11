@@ -75,7 +75,7 @@
     解鎖後重新讀取 LOAD 並重新去抖，忽略自鎖期間的歷史邊沿。
 */
 #define LOAD_IR_DEBOUNCE_US               1000UL
-#define OLED_MAX_HOLD_MS                  3000UL
+#define OLED_MAX_HOLD_MS                  2500UL
 
 /* [保留] 一個 FALLING edge 等於一圈，從第二個有效 edge 計算 RPM。 */
 #define PULSES_PER_REV                    1UL
