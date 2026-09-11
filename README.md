@@ -1,7 +1,7 @@
-<img width="1849" height="723" alt="Beyblade RPM Detector" src="https://github.com/user-attachments/assets/cdb0cbb6-7182-4177-a16d-638426546b69" />
+<img width="1920" height="867" alt="(BETA)BRD_0 91OLED_402030_V3 v9" src="https://github.com/user-attachments/assets/655eba31-ed9b-49fe-b402-1c46c1ff5b95" />
 # Beyblade RPM Detector Device
 
-Open-source firmware and mechanical design for a Beyblade RPM Detector.
+Open-source firmware.
 
 ## Web Interface
 
