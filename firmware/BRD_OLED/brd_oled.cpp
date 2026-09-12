@@ -8,6 +8,7 @@
     [V0.10 新增] 一般畫面分段寫入，每次 loop 最多一個 I2C 傳送。
     [V0.10 修改] 低電優先顯示圓角電池、左側短條與中央閃電圖示。
     [V0.10 新增] MAX 自鎖期間第一行顯示 HOLD，自鎖結束恢復裝載狀態。
+    [V0.12 新增] ADC ERR 專用畫面與 C 字型，故障恢復時重畫一般狀態。
     狀態與畫面皆在主 loop 存取，不再有跨 Task 同時讀寫量測資料的問題。
 */
 #include <driver/gpio.h>
@@ -36,13 +37,15 @@ static brd_display_t g_frame_display = {};
 static uint8_t g_frame_battery_percent = 0U;
 static bool g_frame_charging = false;
 static bool g_frame_is_low_battery = false;
-static bool g_low_battery_frame_drawn = false;
-static uint32_t g_last_low_battery_frame_ms = 0UL;
+/* [V0.12 新增] ADC 故障有獨立畫面，不冒充 0% 低電。 */
+static bool g_frame_is_adc_fault = false;
+static bool g_warning_frame_drawn = false;
+static uint32_t g_last_warning_frame_ms = 0UL;
 
 static void oled_mark_failed(void) {
     g_oled_available = false;
     g_frame_active = false;
-    g_low_battery_frame_drawn = false;
+    g_warning_frame_drawn = false;
     g_last_retry_ms = millis();
 }
 
@@ -154,6 +157,8 @@ static const uint8_t *oled_get_glyph(char c) {
     static const uint8_t glyph_A[5] = {0x7E, 0x11, 0x11, 0x11, 0x7E};
     /* [保留] 開機 BRD 標題所需 B 字元。 */
     static const uint8_t glyph_B[5] = {0x7F, 0x49, 0x49, 0x49, 0x36};
+    /* [V0.12 新增] ADC ERR 所需的 C 字型。 */
+    static const uint8_t glyph_C[5] = {0x3E, 0x41, 0x41, 0x41, 0x22};
     static const uint8_t glyph_D[5] = {0x7F, 0x41, 0x41, 0x22, 0x1C};
     static const uint8_t glyph_E[5] = {0x7F, 0x49, 0x49, 0x49, 0x41};
     /* [V0.10 新增] HOLD 所需 H 字元，其餘 O、L、D 沿用既有字庫。 */
@@ -187,6 +192,7 @@ static const uint8_t *oled_get_glyph(char c) {
         case '9': return glyph_9;
         case 'A': return glyph_A;
         case 'B': return glyph_B;
+        case 'C': return glyph_C;
         case 'D': return glyph_D;
         case 'E': return glyph_E;
         case 'H': return glyph_H;
@@ -402,6 +408,20 @@ static void oled_begin_low_battery_frame(void) {
 
     g_frame_display = {};
     g_frame_is_low_battery = true;
+    g_frame_is_adc_fault = false;
+    g_page = 0U;
+    g_column = 0U;
+    g_page_address_pending = true;
+    g_frame_active = true;
+}
+
+/* [V0.12 新增] ADC 從未有效或資料逾時，顯示專用診斷狀態。 */
+static void oled_begin_adc_fault_frame(void) {
+    oled_clear_buffer();
+    oled_draw_centered_text(9U, "ADC ERR", 2U);
+    g_frame_display = {};
+    g_frame_is_low_battery = false;
+    g_frame_is_adc_fault = true;
     g_page = 0U;
     g_column = 0U;
     g_page_address_pending = true;
@@ -415,7 +435,8 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     g_frame_battery_percent = battery_percent;
     g_frame_charging = charging;
     g_frame_is_low_battery = false;
-    g_low_battery_frame_drawn = false;
+    g_frame_is_adc_fault = false;
+    g_warning_frame_drawn = false;
     oled_clear_buffer();
     /* [V0.10 刪減] 自鎖期間仍只顯示 WAIT LOAD 的判斷方式。
        [V0.10 新增] HOLD 優先顯示；第二行仍保留本次 MAX 轉速。 */
@@ -482,6 +503,9 @@ void brd_oled_begin(void) {
     if (brd_battery_is_low_locked()) {
         /* [新增] 上電即低電時不播放開機畫面，直接顯示沒電圖示。 */
         oled_begin_low_battery_frame();
+    } else if (brd_battery_is_adc_fault()) {
+        /* [V0.12 新增] ADC 初始化失敗時略過開機等待，立即顯示 ADC ERR。 */
+        oled_begin_adc_fault_frame();
     } else {
         /* [保留] 開機時中斷尚未啟動，可以完整送出版本畫面。 */
         oled_clear_buffer();
@@ -492,6 +516,7 @@ void brd_oled_begin(void) {
         g_page_address_pending = true;
         g_frame_active = true;
         g_frame_is_low_battery = false;
+        g_frame_is_adc_fault = false;
     }
 
     while (g_frame_active) {
@@ -500,9 +525,9 @@ void brd_oled_begin(void) {
             return;
         }
     }
-    if (g_frame_is_low_battery) {
-        g_low_battery_frame_drawn = true;
-        g_last_low_battery_frame_ms = millis();
+    if (g_frame_is_low_battery || g_frame_is_adc_fault) {
+        g_warning_frame_drawn = true;
+        g_last_warning_frame_ms = millis();
         return;
     }
     delay(OLED_BOOT_VERSION_DISPLAY_MS);
@@ -511,10 +536,12 @@ void brd_oled_begin(void) {
 
 void brd_oled_update(void) {
     bool low_locked = brd_battery_is_low_locked();
-    if (low_locked && !g_frame_is_low_battery) {
-        /* [新增] 立即放棄尚未送完的一般畫面，下一幅只顯示沒電警示。 */
+    bool adc_fault = !low_locked && brd_battery_is_adc_fault();
+    /* [V0.12 修改] 切換警示模式或從 ADC 故障恢復時，放棄舊畫面。 */
+    if (low_locked != g_frame_is_low_battery || adc_fault != g_frame_is_adc_fault) {
+        /* [新增] 放棄舊模式的未完成畫面，下一幅依低電、ADC 故障或正常模式重畫。 */
         g_frame_active = false;
-        g_low_battery_frame_drawn = false;
+        g_warning_frame_drawn = false;
     }
 
     if (!g_oled_available) {
@@ -532,9 +559,9 @@ void brd_oled_update(void) {
         return;
     }
 
-    if (low_locked) {
-        if (g_low_battery_frame_drawn &&
-            (uint32_t)(millis() - g_last_low_battery_frame_ms) < BATTERY_LOW_OLED_REFRESH_MS) {
+    if (low_locked || adc_fault) {
+        if (g_warning_frame_drawn &&
+            (uint32_t)(millis() - g_last_warning_frame_ms) < BATTERY_LOW_OLED_REFRESH_MS) {
             return;
         }
 
@@ -542,15 +569,19 @@ void brd_oled_update(void) {
             [新增] 量測中斷已停用，直接送完警示，避免一般畫面分段等待延後顯示。
             每個 I2C 封包仍有 timeout；任一包失敗即退出，沿用 OLED 重試機制。
         */
-        oled_begin_low_battery_frame();
+        if (low_locked) {
+            oled_begin_low_battery_frame();
+        } else {
+            oled_begin_adc_fault_frame();
+        }
         while (g_frame_active) {
             if (!oled_send_frame_step()) {
                 oled_mark_failed();
                 return;
             }
         }
-        g_low_battery_frame_drawn = true;
-        g_last_low_battery_frame_ms = millis();
+        g_warning_frame_drawn = true;
+        g_last_warning_frame_ms = millis();
         return;
     }
 

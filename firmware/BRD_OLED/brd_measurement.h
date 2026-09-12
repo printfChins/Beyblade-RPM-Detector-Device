@@ -24,11 +24,21 @@ struct brd_display_t {
     bool hold_active;
 };
 
+/* [V0.12 新增] 診斷計數由主 loop 更新，達 UINT32_MAX 後飽和。 */
+struct brd_measurement_diagnostics_t {
+    uint32_t load_queue_overflows;
+    uint32_t rpm_queue_overflows;
+    uint32_t load_stable_transitions;
+    uint32_t launch_events;
+};
+
+/* [V0.12 修改] 已啟用時呼叫不重置量測；供 ADC 故障恢復使用。 */
 void brd_measurement_begin(void);
 /* [V0.10 新增] 停用 RPM / LOAD 中斷並清除量測資料，供低電鎖定使用。 */
 void brd_measurement_stop(void);
 void brd_measurement_update(void);
 brd_display_t brd_measurement_get_display(void);
+brd_measurement_diagnostics_t brd_measurement_get_diagnostics(void);
 void brd_measurement_max_frame_presented(uint32_t generation);
 
 #endif

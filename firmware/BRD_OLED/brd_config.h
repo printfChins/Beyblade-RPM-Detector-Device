@@ -1,5 +1,5 @@
 /*
-    檔案位置: BRD_OLED_V0.10/brd_config.h
+    檔案位置: BRD_OLED/brd_config.h
     [V0.10 修改] 單機 OLED 轉速版本。硬體腳位沿用附件 V1.9。
     [V0.10 刪減] BLE、休眠與曲線封包參數。
     [V0.10 恢復] 電池 ADC 取樣與 OLED 電量、充電圖示。
@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <esp_idf_version.h>
+#include <hal/adc_types.h>
 
 #if !defined(CONFIG_IDF_TARGET_ESP32C3)
 #error "Select ESP32C3 Dev Module for this project."
@@ -20,7 +21,7 @@
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector"
 #define PROJECT_SHORT_NAME                "BRD"
-#define PROJECT_VERSION                   "V0.11"
+#define PROJECT_VERSION                   "V0.12"
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
@@ -47,7 +48,8 @@
     不加入平均或 IIR 濾波。
 */
 #define BATTERY_ADC_RESOLUTION_BITS       12U
-#define BATTERY_ADC_ATTENUATION           ADC_11db
+/* [V0.12 修改] 原 ADC_11db 對應相同硬體衰減檔位，改用原生 IDF 名稱。 */
+#define BATTERY_ADC_ATTENUATION           ADC_ATTEN_DB_12
 #define BATTERY_DIVIDER_R_TOP_OHM         470000UL
 #define BATTERY_DIVIDER_R_BOTTOM_OHM      470000UL
 #define BATTERY_MIN_MV                   3300U
@@ -59,9 +61,18 @@
 /*
     [V0.10 新增] 低電鎖定門檻使用目前顯示的整數電量百分比。
     正常運作時: 電量 < 5% 立即鎖定，5% 不觸發。
-    鎖定後: 電量 >= 10% 才要求 MCU 軟體重啟；5% 到 9% 仍保持鎖定。
+    鎖定後: 電量 >= 10% 且通過恢復穩定時間才要求 MCU 軟體重啟。
     鎖定期間只保留 ADC、OLED 警示與必要的系統排程。
 */
+/*
+    [V0.12 新增] 原生 ADC 單次讀取，錯誤不寫入電壓與 SOC。
+    從未取得有效值或有效資料已達 3 秒未更新: 暫停量測並顯示 ADC ERR。
+    低電恢復: 每筆有效 SOC >= 10%，持續至少 3 秒才要求重啟。
+    任一失敗、低於 10% 或取樣間隔超過 1.5 倍排程間隔，恢復計時歸零。
+*/
+#define BATTERY_ADC_STALE_TIMEOUT_MS      3000UL
+#define BATTERY_RECOVER_STABLE_MS         3000UL
+#define BATTERY_RECOVER_MAX_GAP_MS        (BATTERY_SAMPLE_INTERVAL_MS * 3UL / 2UL)
 #define BATTERY_LOW_STOP_PERCENT          5U
 #define BATTERY_RECOVER_PERCENT           10U
 #define BATTERY_LOW_LOOP_DELAY_MS         20UL
@@ -74,6 +85,8 @@
     OLED 故障時仍以量測完成時間作為解鎖備援，避免永久卡住。
     解鎖後重新讀取 LOAD 並重新去抖，忽略自鎖期間的歷史邊沿。
 */
+/* [V0.12 新增] 環形佇列保留一格，32 格可保存 31 個 LOAD 邊沿。 */
+#define LOAD_ISR_QUEUE_SIZE              32U
 #define LOAD_IR_DEBOUNCE_US               1000UL
 #define OLED_MAX_HOLD_MS                  2500UL
 
@@ -86,7 +99,8 @@
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
 #define POST_LAUNCH_NO_RPM_TIMEOUT_MS      1200UL
-#define POST_LAUNCH_FINISH_PERCENT        50U
+/* [V0.12 修改] MAX 的 50% 改為 20%，仍以單筆有效 RPM 判斷。 */
+#define POST_LAUNCH_FINISH_PERCENT        20U
 
 /*
     [V0.10 修改] 直接使用 ESP-IDF I2C master，初始化禁止內部上拉。
@@ -105,6 +119,23 @@
 #define OLED_BOOT_VERSION_DISPLAY_MS     1500UL
 #define OLED_RETRY_INTERVAL_MS           1000UL
 
+/* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
+static_assert(BATTERY_ADC_RESOLUTION_BITS == 12U, "ESP32-C3 ADC requires 12-bit configuration.");
+static_assert(BATTERY_ADC_STALE_TIMEOUT_MS > BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_ADC_STALE_TIMEOUT_MS < 0x80000000UL, "Invalid ADC stale timeout.");
+static_assert(BATTERY_RECOVER_STABLE_MS > 0UL && BATTERY_RECOVER_STABLE_MS < 0x80000000UL,
+              "Invalid battery recovery duration.");
+static_assert(BATTERY_SAMPLE_INTERVAL_MS < 0x80000000UL / 3UL &&
+              BATTERY_RECOVER_MAX_GAP_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_RECOVER_MAX_GAP_MS < BATTERY_ADC_STALE_TIMEOUT_MS, "Invalid recovery sample gap.");
+static_assert(LOAD_ISR_QUEUE_SIZE >= 2U && LOAD_ISR_QUEUE_SIZE <= 256U,
+              "LOAD queue size must be between 2 and 256.");
+static_assert(RPM_ZERO_TIMEOUT_MS > 0UL && RPM_ZERO_TIMEOUT_MS < 0x80000000UL / 1000UL,
+              "Invalid RPM zero timeout.");
+static_assert(PRELAUNCH_IDLE_RESET_MS >= RPM_ZERO_TIMEOUT_MS &&
+              PRELAUNCH_IDLE_RESET_MS < 0x80000000UL / 1000UL, "Invalid prelaunch idle timeout.");
+static_assert(POST_LAUNCH_NO_RPM_TIMEOUT_MS > 0UL &&
+              POST_LAUNCH_NO_RPM_TIMEOUT_MS < 0x80000000UL / 1000UL, "Invalid launch timeout.");
 static_assert(RPM_IR_INPUT_MODE == INPUT, "RPM input must have no internal pull.");
 static_assert(LOAD_IR_INPUT_MODE == INPUT, "LOAD input must have no internal pull.");
 static_assert(CHRG_DET_INPUT_MODE == INPUT_PULLUP, "Charge DET must use an internal pull-up.");

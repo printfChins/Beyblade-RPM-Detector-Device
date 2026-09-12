@@ -1,79 +1,78 @@
-# V0.10 已執行驗證
+# V0.12 驗證紀錄
 
-## 本次 HOLD 顯示驗證
+```cpp
+/*
+本文件只記錄本次實際完成的驗證，不沿用 V0.11 文件中的測試結論。
+測試對象為交付的完整 brd_measurement.cpp、brd_battery.cpp、brd_io.cpp、
+brd_oled.cpp 與 BRD_OLED.ino，GPIO、時間、ADC、I2C 及 MCU 重啟使用替代介面。
 
-以本次附件的實際 `.ino`、`.cpp`、`.h`，配合先前已有的 Arduino／GPIO／ADC／I2C 主機替代介面，編譯並擷取模擬 SSD1306 收到的畫面。編譯參數為 C++17、`-Wall -Wextra -Werror -Wshadow -pedantic`。
+已執行 38 個主機回歸案例，全數通過。
+編譯使用 C++17、-Wall -Wextra -Werror -Wshadow -pedantic，
+啟用 AddressSanitizer / UndefinedBehaviorSanitizer，未回報對應錯誤。
+LeakSanitizer 未啟用，未宣稱完成記憶體洩漏驗證。
+*/
+```
 
-已執行裝載、30000 RPM、發射、進入 MAX 自鎖、解鎖與重新裝載的一次完整流程，結果如下：
-
-| 階段 | 結果 |
+| 案例 | 確認內容 |
 | --- | --- |
-| 裝載完成 | LOADED READY／RPM 0 |
-| 發射後量測完成 | HOLD／MAX 30000；H 字元完整，右上角電量與充電圖示未重疊 |
-| 自鎖期間充電狀態切換 | 圖示重繪未重設自鎖起點 |
-| 首幅 MAX 送出後 2499 ms | HOLD 狀態仍為 true |
-| 首幅 MAX 送出後 2500 ms | HOLD 狀態為 false，MAX 30000 保留 |
-| 解鎖後完整畫面 | WAIT LOAD／MAX 30000；下半部 MAX 畫面位元組與 HOLD 時一致 |
-| 重新裝載 | LOADED READY／RPM 0 |
+| `threshold20` | MAX 20000 時，5000 RPM 不結束；4000 RPM 進入 HOLD |
+| `one_dropped_edge` | 20000 RPM 漏一個邊沿形成 10000 RPM 時，不再觸發原 50% 結束 |
+| `spike_policy_unchanged` | 插入假邊沿仍可形成 MAX 60000，確認未擅自加入相鄰週期檢查 |
+| `load_backlog` | 主迴圈延後處理時，LOW 2 ms 再 HIGH 仍辨識發射及下次裝載 |
+| `load_short_bounce` | LOW 999 us 的跳動不通過 1000 us 去抖 |
+| `load_exact_debounce` | LOW 恰好 1000 us 後回 HIGH，前一狀態仍被承認 |
+| `load_rpm_chronology` | 同批次 LOAD、RPM 與結算按時間順序處理；HOLD 後忽略重新裝載 |
+| `timeout_chronology` | 停轉結算期限早於較晚的 LOAD HIGH，優先形成並保持結果 |
+| `unload_before_first_rpm` | 卸載後才出現的首個 RPM 邊沿不冒充有效發射 |
+| `load_overflow` | LOAD 溢位累計診斷、作廢進行中量測、重新完整去抖後可再次量測 |
+| `rpm_overflow` | RPM 溢位不以遺失脈衝間距計算，之後兩個邊沿重新建立有效 RPM |
+| `hold_unlock_generation` | 完整 MAX 畫面起算 2.5 秒；解鎖重新去抖；舊畫面回報不鎖住新量測 |
+| `micros_wrap` | LOAD、RPM、去抖及 20% 門檻跨 micros 回繞仍正常 |
+| `millis_wrap_hold` | HOLD 計時跨 millis 回繞仍正常 |
+| `no_rpm_timeout` | 沒有形成有效 RPM 的發射，在 1200 ms 到期後清除 |
+| `normal_30k` | 持續 30000 RPM 正確；重複 begin 不重置既有量測 |
+| `adc_single_conversion` | 每週期最多一次 ADC；3700 mV 換算 20%；不重複建立 handle |
+| `adc_error_keeps_value` | 讀取失敗保留有效 7%，不觸發低電；保留最近失敗錯誤碼與累計次數 |
+| `adc_stale` | 有效資料達 3 秒未更新時進入 ADC 故障；下一筆有效 7% 可恢復 |
+| `adc_stale_latch_wrap` | 長時間故障跨 millis 回繞不會重新把舊讀值當成有效 |
+| `oled_boot_version` | 開機 framebuffer 使用 BRD 與 V0.12 |
+| `adc_boot_error` | 開機 ADC unit 建立失敗時暫停，但不設低電鎖定；下週期可恢復 |
+| `adc_config_retry` | 通道配置失敗可重試，已建立的 ADC unit 不重複配置 handle |
+| `adc_calibration_retry` | 校正 handle 建立失敗可重試；校正轉換失敗不改寫有效電量 |
+| `adc_invalid_data` | 負 raw／負校正電壓標為資料錯誤，不寫入 SOC |
+| `valid_zero_is_low` | API 成功的有效 0 mV 仍觸發低電，與讀取錯誤分開 |
+| `exact_five` | 恰好 5% 允許量測 |
+| `recovery_duration` | >=10% 的四筆每秒有效樣本跨滿 3 秒後才要求重啟 |
+| `recovery_error_break` | 恢復期間任一讀取失敗會重置計時 |
+| `recovery_low_break` | 恢復期間回到 7% 會重置計時，維持低電鎖定 |
+| `recovery_gap` | 過長取樣間隔不能算作連續達標，需要重新累積時間 |
+| `recovery_millis_wrap` | 恢復計時跨 millis 回繞仍正常 |
+| `reboot_policy_unchanged` | 重新 begin 模擬重新開機後，7% 可恢復，確認未新增跨重啟鎖定 |
+| `main_adc_fault_resume` | 主 loop 在 ADC 逾時時停用量測、顯示 ADC ERR，恢復後不重啟 MCU 即重新待測 |
+| `main_low_restart` | 主程式低電分支只在恢復時間達標後要求重啟 |
+| `oled_adc_boot_recover` | 開機 ADC 故障不等待版本畫面；C 字型存在；成功後恢復一般畫面 |
+| `oled_retry_hold` | MAX 畫面失敗不算完成；I2C 復原後開始 HOLD；重繪不延長自鎖 |
+| `gpio_pulls` | GPIO10 保留上拉，GPIO0／1／3／20／21 不啟用內部上下拉 |
 
-本次只修改 `brd_measurement.h`、`brd_measurement.cpp` 與 `brd_oled.cpp` 的程式碼，並更新文件。低電繪圖函式與其餘原始碼均與附件核對一致；`brd_config.h` 的 2500 ms 保持時間原樣保留。
+已由實際程式 framebuffer 輸出開機、HOLD／MAX 及 ADC ERR 畫面，放大檢視文字、數字與邊界。另分別對所有 `.cpp` 與 `.ino` 使用替代標頭做獨立語法檢查，避免單一測試 translation unit 掩蓋缺少 include 的問題。
 
-這是主機編譯與狀態／畫面模擬，未完成本次修改的 ESP32-C3 實際編譯、燒錄或實機驗證。附件內修改前的建置產物未納入交付 ZIP，避免被當成本次 HOLD 韌體使用。
+重跑方式：在解壓縮目錄使用 `python3 verification/run_host_tests.py`。需 Python 3、g++ 及 AddressSanitizer／UndefinedBehaviorSanitizer 支援；可加 `--output <目錄>` 保存測試產生的 PGM 畫面。此測試不需要修改 firmware 原始碼。
 
-以下 31 項為先前低電功能與舊設定的驗證紀錄，本次未重跑，不代表本次新增 31 項檢查。舊紀錄中的兩秒自鎖與驚嘆號圖示，已由目前的 2.5 秒設定與圓角電池閃電圖示取代。
+```cpp
+/*
+驗證限制：
 
-## 以下為先前低電功能的驗證紀錄
+本環境未安裝 Arduino-ESP32 board package 與 RISC-V 交叉編譯工具鏈。
+未完成 ESP32-C3 實際編譯、連結、燒錄、I2C / IR 實體量測或功耗量測。
+替代介面的成功不能當成目標晶片的編譯與即時性能保證。
 
-先前新增低電功能時使用當時交付的 `.ino`、`.cpp` 與 `.h` 原始碼，在主機上替換 Arduino、GPIO、ADC、時間與 I2C 硬體介面後執行模擬。測試檔與硬體替代介面保留在工作暫存區，沒有放入 Arduino 專案，避免被誤編譯。
+ADC API 與結構另外核對 Espressif 官方文件及 ESP-IDF v5.3 的標頭宣告。
+測試的 ADC 錯誤由替代介面注入，未驗證實機 ADC 故障發生率。
+沒有用示波器驗證 ISR 延遲、臨界區耗時、IR 邊沿品質或 ADC 節點精度。
 
-## 結果
+esp_restart() 在測試中以例外中止模擬本輪執行，確認觸發條件，
+未宣稱完成真實 MCU 重啟或硬體供電恢復驗證。
 
-新增低電鎖定後，共 31 個測試案例全部通過。包含既有 22 個量測、GPIO、電量與充電圖示案例，以及 9 個低電停用、警示與恢復重啟案例；主迴圈、量測及 OLED 路徑改動後，全部案例均重新執行。
-
-| 案例 | 實際檢查範圍 |
-| --- | --- |
-| pins | [本次重跑] GPIO10 為 INPUT_PULLUP 且僅上拉；其餘專案輸入腳無上下拉、I2C 內部上拉禁止、GPIO8 關燈 |
-| rpm | 未裝載不計算、首脈衝只作基準、20000/30000 RPM 換算、短雜訊脈衝 |
-| debounce | HIGH/LOW/HIGH 跳動後必須重新完成整段去抖 |
-| max_hold | MAX 完整畫面後兩秒保持、重繪不延時、解鎖重新去抖、舊畫面不鎖下一輪 |
-| lock_history | 丟棄自鎖期間 LOAD 歷史；MAX 維持至有效新裝載 |
-| timeouts | 一筆有效 RPM 的結果、空發射 timeout、即時歸零、重新旋轉、裝載中閒置重置 |
-| overflow | 佇列溢位且脈衝逾時時，保留已取得的正確最大值 |
-| overflow_resync | 短時間佇列溢位不誤觸 50% 結束；後續重新建立 RPM 週期 |
-| micros_wrap | 首次邊沿時間為零、長時間裝載後量測、micros 回繞的 RPM 換算 |
-| millis_wrap | millis 回繞時兩秒自鎖與解鎖 |
-| oled_recovery | OLED 未接時的初始重試、運行中斷線後復原、量測持續可用 |
-| oled_bus_failure | I2C bus 建立失敗後可重試 |
-| oled_device_failure | I2C device 建立失敗後可重試 |
-| oled_steps | 一般畫面每個 loop 最多一個 I2C 傳送；MAX 完整畫面後正確自鎖 |
-| oled_partial | 部分 MAX 畫面傳送失敗不能標記為完成；復原後重新送出 |
-| repeat | 連續 100 次裝載、轉動、發射、MAX 與解鎖循環 |
-| battery_conversion | 電池 mV 換算、SOC 插值、上下限、單次讀取且不平均或濾波 |
-| battery_interval | 1 秒取樣間隔、不重複取樣、millis 回繞後正常更新 |
-| charge_icons | GPIO10 極性、充電圖示出現與清除、正常電量填充與 0% 時優先顯示沒電警示 |
-| max_battery_charge | MAX 自鎖中電量與充電圖示更新，不清除結果或延長自鎖 |
-| battery_while_rpm | 持續模擬 20000 RPM 時，ADC 與 OLED 傳送期間仍正確處理 RPM 事件 |
-| charge_oled_recovery | OLED 初始化故障後，使用最新電量與充電狀態恢復圖示，GPIO 上下拉設定正確 |
-| low_boot | 開機 4% 直接顯示警示、不等待版本畫面、不掛載量測中斷；ADC 持續更新、不讀取一般充電圖示狀態、不反覆重啟 |
-| low_exact_five | 開機恰好 5% 不觸發低電停用，仍可正常量測 RPM |
-| low_running | 量測中降至 4% 時停用兩個中斷、清除佇列與結果；重複停用只解除中斷一次，延遲事件無法記錄，一般畫面改為警示 |
-| low_max_preempt | 低電警示優先於 MAX 自鎖，舊 MAX 畫面完成回報不再啟動自鎖 |
-| low_hysteresis_restart | 4% 觸發後升至 5%／7%／9% 仍鎖定，恰好 10% 要求重啟一次；模擬重新進入 setup 後正常量測、不持續重啟 |
-| low_splash_drop | 開機版本畫面期間由 40% 降至 4%，再次取樣後不啟動量測中斷 |
-| low_oled_fault | 低電開機且 OLED 缺席時仍停用；OLED 恢復後顯示警示；電量 10% 時即使 OLED 故障也要求重啟 |
-| low_partial_warning | 警示畫面傳送中途失敗後可重試補畫，量測中斷持續停用 |
-| low_millis_wrap | millis 回繞時不會錯誤解除鎖定，達到 10% 仍會要求重啟 |
-
-已檢視由實際 OLED framebuffer 產生的畫面，確認電量圖示、充電圖示、LOADED READY、WAIT LOAD、RPM、MAX 及本次大型空電池警示的位置和邊界。
-
-主機 C++17 編譯使用 `-Wall -Wextra -Werror -Wshadow -pedantic`，各 `.cpp` 與 `.ino` 亦分別完成語法檢查。模擬案例以 AddressSanitizer / UndefinedBehaviorSanitizer 執行，未回報對應錯誤；環境不支援 LeakSanitizer，未宣稱執行記憶體洩漏驗證。
-
-另外檢查所有交付原始碼，僅 GPIO10 充電 DET 使用 `INPUT_PULLUP` / `GPIO_PULLUP_ONLY`；其餘專案輸入腳不啟用內部上下拉。ADC 單次讀取集中在 `brd_battery.cpp`。沒有 `INPUT_PULLDOWN`、NimBLE 呼叫、BLE 模組引用、Wire 呼叫、Serial 初始化或 Deep-sleep 呼叫。輸出 ZIP 不含舊版建置產物。
-
-## 驗證限制
-
-本環境未安裝 ESP32 Arduino board package 與 RISC-V 交叉編譯工具鏈，因此沒有完成真正的 ESP32-C3 韌體編譯、連結或燒錄，也未以實體 OLED／IR 電路測試。主機語法與模擬結果不能代替開發板上的硬體驗證；原生 I2C API 使用方式另外參照 README 所列 Espressif 官方文件。
-
-重啟案例使用 `esp_restart()` 替代介面確認呼叫條件，再模擬重新進入 setup；未執行真實 MCU reset。低電與恢復測試使用模擬 ADC 電壓，未驗證實際電池、分壓誤差或充放電時的百分比準確度。
-
-ZIP 不提供 BIN，需於原使用者 Arduino 環境編譯產生。
+交付 ZIP 不含 BIN；所有 V0.12 韌體需在原 Arduino 環境重新編譯。
+*/
+```
