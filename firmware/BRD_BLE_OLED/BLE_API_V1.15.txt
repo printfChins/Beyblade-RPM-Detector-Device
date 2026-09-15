@@ -1,0 +1,475 @@
+BRD_BLE_OLED V1.15
+BRD Reliable BLE Protocol V4
+BLE API Specification
+============================================================
+
+1. BLE Device
+------------------------------------------------------------
+Device Name:
+BRD_XXXX
+
+XXXX = ESP32-C3 eFuse MAC 最低 16-bit（尾 4 碼 HEX，大寫）
+Example: eFuse MAC ...A1B2 -> BRD_A1B2
+
+BLE Settings:
+MTU         = 23
+Max Payload = 20 bytes
+TX Power    = -6 dBm
+Byte Order  = Little-endian
+
+
+2. GATT UUID
+------------------------------------------------------------
+Service UUID:
+7f510001-1b15-4d5f-9f4d-9b3c7a1d9a10
+
+0002 Data Characteristic:
+7f510002-1b15-4d5f-9f4d-9b3c7a1d9a10
+Property: READ / NOTIFY
+Packets: B1 / B2 / A1 / A2 / A3 / A4
+
+0003 Control Characteristic:
+7f510003-1b15-4d5f-9f4d-9b3c7a1d9a10
+Property: WRITE
+Commands: C1 / C2 / C3 / C4
+
+0004 Firmware Revision Characteristic:
+7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10
+Property: READ
+Response: V1.15
+
+0005 Diagnostic Characteristic:
+7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
+Property: READ
+Protocol Version: 4
+
+V1.15 沒有 0006 State Characteristic。
+
+
+3. V1.15 狀態同步修改
+------------------------------------------------------------
+V1.14 的以下機制全部移除：
+
+0x81 STATE
+C5 STATE_ACK
+state_seq
+LOAD READY pending
+READY ACK retry/確認流程
+
+V1.15 改回 B1 LIVE 每 200 ms 持續發送。
+
+只要：
+- BLE Connected
+- App 已訂閱 0002 Notify
+
+Device 就會持續送出 B1。
+
+WAIT_LOAD、LOADED_READY、SPINNING、RESULT_PENDING 都會送。
+
+App 不需要對 READY 回 ACK。
+App 不需要保存 state_seq。
+App 不需要處理 0x81。
+App 不需要送 C5。
+
+單筆 B1 掉包時不需補傳，下一筆 200 ms Snapshot 會再次帶回完整 State / Flags。
+
+
+4. B1 LIVE
+------------------------------------------------------------
+Direction:
+Device -> App
+
+Characteristic:
+0002
+
+Type:
+NOTIFY
+
+Cadence:
+200 ms
+
+Length:
+13 bytes
+
+Format:
+Offset  Size  Field
+0       1     0xB1
+1       1     State
+2       1     Flags
+3       2     Current RPM
+5       2     Max RPM
+7       2     Launch RPM
+9       2     Curve Duration ms
+11      2     Curve Sample Count
+
+State:
+0 = WAIT_LOAD
+1 = LOADED_READY
+2 = SPINNING_LOADED
+3 = SPINNING_LAUNCHED
+4 = RESULT_PENDING
+
+Flags:
+bit0 = Loaded
+bit1 = Active / Spinning
+bit2 = Launch Valid
+bit3 = Result Pending
+bit4 = Charging
+bit5 = WAIT_ACK
+bit6 = Reserved
+bit7 = Reserved
+
+App 使用規則：
+每收到 B1，直接以最新 State / Flags 覆蓋本地裝置狀態。
+不要把 B1 當成需要逐筆保存的事件。
+不要對 B1 回 ACK。
+
+
+5. LOAD Flow
+------------------------------------------------------------
+WAIT_LOAD:
+Device 持續每 200 ms 發：
+B1 State=WAIT_LOAD
+
+LOAD LOW -> HIGH 且通過韌體 debounce：
+State -> LOADED_READY
+
+之後 Device 持續每 200 ms 發：
+B1 State=LOADED_READY
+Flags bit0 Loaded = 1
+
+保持裝載時不需要任何 App ACK。
+
+開始旋轉：
+State -> SPINNING_LOADED
+B1 持續每 200 ms 發送，並更新 Current RPM。
+
+發射：
+State -> SPINNING_LAUNCHED
+Device 送一次 B2 LAUNCH，B1 仍持續每 200 ms同步狀態。
+
+量測完成 / Result Pending：
+State -> RESULT_PENDING
+B1 仍持續每 200 ms同步狀態。
+
+
+6. B2 LAUNCH
+------------------------------------------------------------
+Direction:
+Device -> App
+
+Characteristic:
+0002
+
+Type:
+NOTIFY
+
+Length:
+9 bytes
+
+Format:
+Offset  Size  Field
+0       1     0xB2
+1       2     Launch RPM
+3       2     Max RPM at Launch
+5       2     Launch Time ms
+7       2     Launch Sample Index
+
+V1.13 起 Launch RPM 使用最新 Rising/Falling 同極性完整一圈 RPM。
+App 直接使用 Device 傳回的 Launch RPM，不自行從 B1 重算。
+
+
+7. A1 CURVE START
+------------------------------------------------------------
+Direction: Device -> App
+Type: NOTIFY
+Length: 20 bytes
+
+Offset  Size  Field
+0       1     0xA1
+1       2     Sample Count
+3       2     Sample Interval (=0, Event Curve)
+5       2     Duration ms
+7       2     Max RPM
+9       2     Launch RPM
+11      2     Launch Time ms
+13      2     Launch Sample Index
+15      1     Flags
+16      2     Max RPM Time ms
+18      2     Session
+
+A1 Flags:
+bit0 = Launch Valid
+bit1 = Curve Complete
+bit2 = Event Curve Format
+
+
+8. A2 CURVE DATA
+------------------------------------------------------------
+Direction: Device -> App
+Type: NOTIFY
+
+Header:
+Byte 0    = 0xA2
+Byte 1    = N (1~4 samples)
+Byte 2..3 = Packet Index LE16
+Byte 4..  = Samples
+
+Each Sample = 4 bytes:
+uint16 Time_ms
+uint16 RPM
+
+V1.15 第一筆仍固定：
+Time_ms = 0
+RPM     = 0
+
+V1.13 起 sample 來源為 Rising/Falling 兩組交錯的完整 360 度 RPM。
+App 不需要知道 Edge polarity。
+
+
+9. A3 CURVE END
+------------------------------------------------------------
+Direction: Device -> App
+Type: NOTIFY
+Length: 11 bytes
+
+Offset  Size  Field
+0       1     0xA3
+1       2     Session
+3       2     Packet Count
+5       2     Sample Count
+7       4     CRC32
+
+
+10. CRC32
+------------------------------------------------------------
+Algorithm:
+CRC-32 / ISO-HDLC
+
+CRC Input:
+每一筆 Sample 依序使用：
+Time_L
+Time_H
+RPM_L
+RPM_H
+
+CRC 包含第一筆 0 ms / 0 RPM。
+
+
+11. C1 ACK
+------------------------------------------------------------
+Direction: App -> Device
+Characteristic: 0003
+Length: 9 bytes
+
+Byte 0    = 0xC1
+Byte 1..2 = Session
+Byte 3..4 = Sample Count
+Byte 5..8 = CRC32
+
+完整驗證成功後才送 C1。
+
+
+12. C2 Selective Retransmission
+------------------------------------------------------------
+Direction: App -> Device
+Characteristic: 0003
+
+Format:
+0xC2
+uint16 Session
+uint8 Count
+uint16 PacketIndex[Count]
+
+Count = 0~8
+Count = 0 表示只要求重送 A3。
+
+
+13. C3 Full Retransmission
+------------------------------------------------------------
+Direction: App -> Device
+Characteristic: 0003
+Length: 3 bytes
+
+0xC3
+uint16 Session
+
+Session 0xFFFF 可要求目前保存結果完整重傳。
+
+
+14. C4 Abort
+------------------------------------------------------------
+Direction: App -> Device
+Characteristic: 0003
+Length: 3 bytes
+
+0xC4
+uint16 Session
+
+
+15. A4 STATUS
+------------------------------------------------------------
+Direction: Device -> App
+Characteristic: 0002
+Type: NOTIFY
+Length: 6 bytes
+
+Offset  Size  Field
+0       1     0xA4
+1       2     Session
+3       1     Status
+4       2     Detail
+
+Status:
+0x00 = ACK Accepted
+0x01 = Selective Retransmission Accepted
+0x02 = Full Retransmission Accepted
+0x03 = Abort Accepted
+0x80 = Session Mismatch
+0x81 = Packet Index Invalid
+0x82 = Command Format Invalid
+0x83 = Sample Count Mismatch
+0x84 = CRC Mismatch
+0x85 = No Result
+0x86 = ACK Window Invalid / Expired
+
+注意：A4 的 Status Code 0x81 是「Packet Index Invalid」，與已移除的舊 0x81 STATE Packet 無關。
+
+
+16. Timeout
+------------------------------------------------------------
+BLE_LIVE_INTERVAL_MS   = 200 ms
+BLE_PACKET_INTERVAL_MS = 8 ms
+BLE_SEND_TIMEOUT_MS    = 5000 ms
+BLE_ACK_TIMEOUT_MS     = 5000 ms
+BLE_ACK_RETRY_MS       = 1000 ms
+BLE_STATUS_TIMEOUT_MS  = 2000 ms
+
+Curve timeout 只改變 Curve TX state，不會主動切斷 BLE connection。
+
+
+17. 不主動斷線原則
+------------------------------------------------------------
+V1.15 BLE protocol 不因以下情況主動呼叫 disconnect():
+
+- B1 Notify failure
+- Curve Notify failure
+- Curve Send timeout
+- ACK timeout
+- A4 Status timeout
+- 未知/錯誤 Control command
+
+V1.15 已移除待機 Deep-sleep；待機不會因時間到而停止 BLE。低電保護仍可停用 BLE。
+
+
+18. Firmware Version API
+------------------------------------------------------------
+UUID:
+7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10
+
+Property:
+READ
+
+Response:
+V1.15
+
+
+19. Diagnostic API
+------------------------------------------------------------
+UUID:
+7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
+
+Property:
+READ
+
+Length:
+20 bytes
+
+Offset  Size  Field
+0       1     Protocol Version (=4)
+1       1     TX State
+2       1     Flags
+3       1     Reliable Mode
+4       2     Current Result Session
+6       2     Sample Count
+8       4     CRC32
+12      2     Duration ms
+14      2     Command Errors
+16      2     Notify Failures
+18      2     ACK Timeouts
+
+TX State:
+0 = IDLE
+1 = START
+2 = DATA
+3 = END
+4 = WAIT_ACK
+5 = DONE
+6 = TIMEOUT
+
+
+20. App Connection Flow
+------------------------------------------------------------
+1. Scan BRD_XXXX
+2. Connect
+3. Discover Service 0001
+4. Subscribe 0002 Notification
+5. Read 0004 Firmware Revision
+6. 等待 B1 LIVE
+7. 每收到 B1 直接更新 State / Flags / RPM UI
+
+不需要：
+- Subscribe 0006
+- 解析 0x81 STATE
+- 回 C5 ACK
+- 保存 state_seq
+
+
+21. App Measurement Flow
+------------------------------------------------------------
+Connect
+-> Subscribe 0002
+-> B1 WAIT_LOAD every 200 ms
+
+LOAD
+-> B1 LOADED_READY every 200 ms
+
+Spin
+-> B1 SPINNING_LOADED every 200 ms
+
+Launch
+-> B2 LAUNCH once
+-> B1 SPINNING_LAUNCHED every 200 ms
+
+Finish
+-> B1 RESULT_PENDING every 200 ms
+-> A1
+-> A2...
+-> A3
+-> App validation
+-> C1 / C2 / C3 / C4 as required
+-> A4 STATUS
+
+
+22. Protocol Summary
+------------------------------------------------------------
+Protocol Name:
+BRD Reliable BLE Protocol V4
+
+Firmware:
+BRD_BLE_OLED V1.15
+
+State Sync:
+B1 LIVE periodic snapshot, 200 ms
+
+Legacy 0x81 STATE:
+Removed
+
+C5 STATE_ACK:
+Removed
+
+state_seq:
+Removed
+
+Reliable Curve:
+A1/A2/A3/A4 + C1/C2/C3/C4 retained

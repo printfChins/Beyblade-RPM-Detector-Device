@@ -1,0 +1,393 @@
+diff -ruN brd_v115_original/BRD_BLE_OLED/BLE_API_V1.15.txt brd_v115_work/BRD_BLE_OLED/BLE_API_V1.15.txt
+--- brd_v115_original/BRD_BLE_OLED/BLE_API_V1.15.txt	2026-09-14 06:12:55.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BLE_API_V1.15.txt	2026-09-14 06:19:20.819958335 +0000
+@@ -359,7 +359,7 @@
+ - A4 Status timeout
+ - 未知/錯誤 Control command
+ 
+-低電模式或 Deep-sleep 需要停止 BLE stack 時，實體連線仍會自然結束；這是電源管理，不是 protocol recovery disconnect。
++V1.15 已移除待機 Deep-sleep；待機不會因時間到而停止 BLE。低電保護仍可停用 BLE。
+ 
+ 
+ 18. Firmware Version API
+diff -ruN brd_v115_original/BRD_BLE_OLED/BLE_PROTOCOL.md brd_v115_work/BRD_BLE_OLED/BLE_PROTOCOL.md
+--- brd_v115_original/BRD_BLE_OLED/BLE_PROTOCOL.md	2026-09-14 06:03:31.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BLE_PROTOCOL.md	2026-09-14 06:19:20.819869251 +0000
+@@ -62,7 +62,7 @@
+ 
+ V1.15 protocol flow 不因 Notify failure、Curve ACK timeout、A4 timeout 或未知控制命令主動呼叫 BLE `disconnect()`。
+ 
+-低電停用 BLE 或 Deep-sleep 會關閉 BLE stack，屬於電源管理，不是 protocol recovery disconnect。
++V1.15 已移除待機 Deep-sleep；待機不會因超時關閉 BLE stack。低電保護仍可停用 BLE。
+ 
+ ## B2 LAUNCH
+ 
+diff -ruN brd_v115_original/BRD_BLE_OLED/BRD_BLE_OLED.ino brd_v115_work/BRD_BLE_OLED/BRD_BLE_OLED.ino
+--- brd_v115_original/BRD_BLE_OLED/BRD_BLE_OLED.ino	2026-09-14 06:03:31.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BRD_BLE_OLED.ino	2026-09-14 06:19:20.820149723 +0000
+@@ -15,14 +15,14 @@
+ #include "brd_io.h"
+ #include "brd_measurement.h"
+ #include "brd_oled.h"
+-// [V1.10 新增] 主迴圈待機管理；Deep-sleep 僅在無連線、無充電且 WAIT LOAD 時觸發。
++// [V1.15 修改] 待機休眠已移除；保留 power 介面只確保 OLED 常亮。
+ #include "brd_power.h"
+ 
+ void setup(void) {
+     setCpuFrequencyMhz(CPU_FIXED_FREQ_MHZ);
+     brd_io_begin();
+     brd_battery_begin();
+-    /* [V1.11 修改] 只有真正上電才播放開機版本畫面；Deep-sleep 喚醒直接進主畫面。 */
++    /* [V1.15 保留] 只有真正上電才播放開機版本畫面；其他 reset 直接進主畫面。 */
+     brd_oled_begin(esp_reset_reason() == ESP_RST_POWERON);
+     brd_battery_update();
+     if (!brd_battery_measurement_allowed()) {
+@@ -39,14 +39,14 @@
+             brd_measurement_stop();
+         }
+     }
+-    // [V1.10 新增] 初始化閒置計時，Deep-sleep 喚醒會重新執行 setup()。
++    // [V1.15 修改] 不建立待機計時；確保 OLED 維持啟用。
+     brd_power_begin();
+ }
+ 
+ void loop(void) {
+     brd_battery_update();
+     if (!brd_battery_measurement_allowed()) {
+-        // [V1.10 新增] 警示畫面優先於待機關屏。
++        // [V1.15 修改] 低電流程不再涉及待機休眠。
+         brd_power_begin();
+         brd_measurement_stop();
+         brd_ble_set_enabled(false);
+@@ -73,7 +73,7 @@
+     /* [修改] 每輪先處理 RPM / LOAD 及曲線，再各送一個 BLE / OLED 封包。 */
+     brd_measurement_update();
+     brd_ble_update();
+-    // [V1.10 新增] 量測與 BLE 處理後再判斷待機，關屏由 OLED 主迴圈執行。
++    // [V1.15 修改] 待機休眠已移除；此介面只維持 OLED 啟用。
+     brd_power_update();
+     brd_oled_update();
+     delay(MAIN_LOOP_DELAY_MS);
+diff -ruN brd_v115_original/BRD_BLE_OLED/CHANGELOG.md brd_v115_work/BRD_BLE_OLED/CHANGELOG.md
+--- brd_v115_original/BRD_BLE_OLED/CHANGELOG.md	2026-09-14 06:12:55.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/CHANGELOG.md	2026-09-14 06:19:49.729473308 +0000
+@@ -1,3 +1,10 @@
++## V1.15 - Standby Sleep Removed
++
++- [修改] 移除 30 秒待機 OLED OFF。
++- [修改] 移除 5 分鐘待機 Deep-sleep 與 GPIO1 喚醒流程。
++- [修改] WAIT_LOAD / LOADED_READY 長時間待機仍維持 OLED、BLE 與主迴圈正常運作。
++- [保留] 低電量 / ADC 故障保護邏輯，不屬於待機休眠。
++
+ # CHANGELOG
+ 
+ ## V1.15 - 2026-09-14
+@@ -12,7 +19,7 @@
+ - [修改] WAIT_LOAD / LOADED_READY / SPINNING / RESULT_PENDING 都持續送 B1；單包掉包由下一筆 Snapshot 自動恢復。
+ - [保留] 韌體 protocol 不主動呼叫 BLE `disconnect()`。
+ - [保留] B2、Reliable Curve A1~A4/C1~C4、雙邊沿完整一圈 RPM、35% 結束條件。
+-- [驗證] 81 項主機硬體替身回歸通過；13 項 millis/micros/ACK/B1 rollover 專項通過。
++- [驗證] 78 項主機硬體替身回歸通過；13 項 millis/micros/ACK/B1 rollover 專項通過。
+ 
+ ## V1.14 - 2026-09-14
+ 
+diff -ruN brd_v115_original/BRD_BLE_OLED/CHANGES_STANDBY_SLEEP_REMOVED.patch brd_v115_work/BRD_BLE_OLED/CHANGES_STANDBY_SLEEP_REMOVED.patch
+--- brd_v115_original/BRD_BLE_OLED/CHANGES_STANDBY_SLEEP_REMOVED.patch	1970-01-01 00:00:00.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/CHANGES_STANDBY_SLEEP_REMOVED.patch	2026-09-14 06:19:49.896322771 +0000
+@@ -0,0 +1,93 @@
++diff -ruN brd_v115_original/BRD_BLE_OLED/BLE_API_V1.15.txt brd_v115_work/BRD_BLE_OLED/BLE_API_V1.15.txt
++--- brd_v115_original/BRD_BLE_OLED/BLE_API_V1.15.txt	2026-09-14 06:12:55.000000000 +0000
+++++ brd_v115_work/BRD_BLE_OLED/BLE_API_V1.15.txt	2026-09-14 06:19:20.819958335 +0000
++@@ -359,7 +359,7 @@
++ - A4 Status timeout
++ - 未知/錯誤 Control command
++ 
++-低電模式或 Deep-sleep 需要停止 BLE stack 時，實體連線仍會自然結束；這是電源管理，不是 protocol recovery disconnect。
+++V1.15 已移除待機 Deep-sleep；待機不會因時間到而停止 BLE。低電保護仍可停用 BLE。
++ 
++ 
++ 18. Firmware Version API
++diff -ruN brd_v115_original/BRD_BLE_OLED/BLE_PROTOCOL.md brd_v115_work/BRD_BLE_OLED/BLE_PROTOCOL.md
++--- brd_v115_original/BRD_BLE_OLED/BLE_PROTOCOL.md	2026-09-14 06:03:31.000000000 +0000
+++++ brd_v115_work/BRD_BLE_OLED/BLE_PROTOCOL.md	2026-09-14 06:19:20.819869251 +0000
++@@ -62,7 +62,7 @@
++ 
++ V1.15 protocol flow 不因 Notify failure、Curve ACK timeout、A4 timeout 或未知控制命令主動呼叫 BLE `disconnect()`。
++ 
++-低電停用 BLE 或 Deep-sleep 會關閉 BLE stack，屬於電源管理，不是 protocol recovery disconnect。
+++V1.15 已移除待機 Deep-sleep；待機不會因超時關閉 BLE stack。低電保護仍可停用 BLE。
++ 
++ ## B2 LAUNCH
++ 
++diff -ruN brd_v115_original/BRD_BLE_OLED/BRD_BLE_OLED.ino brd_v115_work/BRD_BLE_OLED/BRD_BLE_OLED.ino
++--- brd_v115_original/BRD_BLE_OLED/BRD_BLE_OLED.ino	2026-09-14 06:03:31.000000000 +0000
+++++ brd_v115_work/BRD_BLE_OLED/BRD_BLE_OLED.ino	2026-09-14 06:19:20.820149723 +0000
++@@ -15,14 +15,14 @@
++ #include "brd_io.h"
++ #include "brd_measurement.h"
++ #include "brd_oled.h"
++-// [V1.10 新增] 主迴圈待機管理；Deep-sleep 僅在無連線、無充電且 WAIT LOAD 時觸發。
+++// [V1.15 修改] 待機休眠已移除；保留 power 介面只確保 OLED 常亮。
++ #include "brd_power.h"
++ 
++ void setup(void) {
++     setCpuFrequencyMhz(CPU_FIXED_FREQ_MHZ);
++     brd_io_begin();
++     brd_battery_begin();
++-    /* [V1.11 修改] 只有真正上電才播放開機版本畫面；Deep-sleep 喚醒直接進主畫面。 */
+++    /* [V1.15 保留] 只有真正上電才播放開機版本畫面；其他 reset 直接進主畫面。 */
++     brd_oled_begin(esp_reset_reason() == ESP_RST_POWERON);
++     brd_battery_update();
++     if (!brd_battery_measurement_allowed()) {
++@@ -39,14 +39,14 @@
++             brd_measurement_stop();
++         }
++     }
++-    // [V1.10 新增] 初始化閒置計時，Deep-sleep 喚醒會重新執行 setup()。
+++    // [V1.15 修改] 不建立待機計時；確保 OLED 維持啟用。
++     brd_power_begin();
++ }
++ 
++ void loop(void) {
++     brd_battery_update();
++     if (!brd_battery_measurement_allowed()) {
++-        // [V1.10 新增] 警示畫面優先於待機關屏。
+++        // [V1.15 修改] 低電流程不再涉及待機休眠。
++         brd_power_begin();
++         brd_measurement_stop();
++         brd_ble_set_enabled(false);
++@@ -73,7 +73,7 @@
++     /* [修改] 每輪先處理 RPM / LOAD 及曲線，再各送一個 BLE / OLED 封包。 */
++     brd_measurement_update();
++     brd_ble_update();
++-    // [V1.10 新增] 量測與 BLE 處理後再判斷待機，關屏由 OLED 主迴圈執行。
+++    // [V1.15 修改] 待機休眠已移除；此介面只維持 OLED 啟用。
++     brd_power_update();
++     brd_oled_update();
++     delay(MAIN_LOOP_DELAY_MS);
++diff -ruN brd_v115_original/BRD_BLE_OLED/CHANGELOG.md brd_v115_work/BRD_BLE_OLED/CHANGELOG.md
++--- brd_v115_original/BRD_BLE_OLED/CHANGELOG.md	2026-09-14 06:12:55.000000000 +0000
+++++ brd_v115_work/BRD_BLE_OLED/CHANGELOG.md	2026-09-14 06:19:49.729473308 +0000
++@@ -1,3 +1,10 @@
+++## V1.15 - Standby Sleep Removed
+++
+++- [修改] 移除 30 秒待機 OLED OFF。
+++- [修改] 移除 5 分鐘待機 Deep-sleep 與 GPIO1 喚醒流程。
+++- [修改] WAIT_LOAD / LOADED_READY 長時間待機仍維持 OLED、BLE 與主迴圈正常運作。
+++- [保留] 低電量 / ADC 故障保護邏輯，不屬於待機休眠。
+++
++ # CHANGELOG
++ 
++ ## V1.15 - 2026-09-14
++@@ -12,7 +19,7 @@
++ - [修改] WAIT_LOAD / LOADED_READY / SPINNING / RESULT_PENDING 都持續送 B1；單包掉包由下一筆 Snapshot 自動恢復。
++ - [保留] 韌體 protocol 不主動呼叫 BLE `disconnect()`。
++ - [保留] B2、Reliable Curve A1~A4/C1~C4、雙邊沿完整一圈 RPM、35% 結束條件。
++-- [驗證] 81 項主機硬體替身回歸通過；13 項 millis/micros/ACK/B1 rollover 專項通過。
+++- [驗證] 78 項主機硬體替身回歸通過；13 項 millis/micros/ACK/B1 rollover 專項通過。
++ 
++ ## V1.14 - 2026-09-14
++ 
+diff -ruN brd_v115_original/BRD_BLE_OLED/README.md brd_v115_work/BRD_BLE_OLED/README.md
+--- brd_v115_original/BRD_BLE_OLED/README.md	2026-09-14 06:12:55.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/README.md	2026-09-14 06:19:20.819744513 +0000
+@@ -76,4 +76,4 @@
+ 
+ ## 電源管理注意
+ 
+-正常 BLE protocol timeout 不會主動斷線。裝置若因低電停用 BLE 或進入 Deep-sleep，BLE stack 會被關閉，實體連線自然結束；這屬於電源管理，不是 BLE protocol recovery disconnect。
++正常 BLE protocol timeout 不會主動斷線。V1.15 已移除待機 OLED OFF 與 Deep-sleep；裝置待機時維持 OLED、BLE 與主迴圈正常運作。低電保護仍可停用 BLE。
+diff -ruN brd_v115_original/BRD_BLE_OLED/VALIDATION.md brd_v115_work/BRD_BLE_OLED/VALIDATION.md
+--- brd_v115_original/BRD_BLE_OLED/VALIDATION.md	2026-09-14 06:13:44.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/VALIDATION.md	2026-09-14 06:19:49.729328049 +0000
+@@ -11,7 +11,7 @@
+ 
+ 最終 V1.15 工作樹執行 `verification/run_host_tests.py`：
+ 
+-- 81 / 81 cases PASS。
++- 78 / 78 cases PASS。
+ - 8 個 `.ino/.cpp` 來源檔通過 C++17 `-Wall -Wextra -Werror -Wshadow -pedantic` syntax check。
+ - AddressSanitizer / UndefinedBehaviorSanitizer 啟用於主機測試。
+ 
+@@ -31,3 +31,5 @@
+ ## 限制
+ 
+ 主機測試使用硬體替身，不能取代 ESP32-C3 + 真實 NimBLE + 手機/上位機的 RF、GATT timing 與功耗實機驗證。
++
++- `standby_never_sleeps`：模擬待機 10 分鐘，OLED 不關閉、BLE stack 保持啟用、Deep-sleep 不觸發。
+diff -ruN brd_v115_original/BRD_BLE_OLED/brd_ble.h brd_v115_work/BRD_BLE_OLED/brd_ble.h
+--- brd_v115_original/BRD_BLE_OLED/brd_ble.h	2026-09-14 06:01:25.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_ble.h	2026-09-14 06:19:20.820104355 +0000
+@@ -40,7 +40,7 @@
+ void brd_ble_update(void);
+ brd_ble_diagnostics_t brd_ble_get_diagnostics(void);
+ const char *brd_ble_get_device_name(void);
+-/* [V1.10 新增] Deep-sleep 前確認 NimBLE host 已確實停止。 */
++/* [V1.15 保留] 查詢 NimBLE host 是否停止；目前待機休眠已移除，低電關閉 BLE 仍可使用。 */
+ bool brd_ble_stack_stopped(void);
+ 
+ #endif
+diff -ruN brd_v115_original/BRD_BLE_OLED/brd_config.h brd_v115_work/BRD_BLE_OLED/brd_config.h
+--- brd_v115_original/BRD_BLE_OLED/brd_config.h	2026-09-14 06:12:55.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_config.h	2026-09-14 06:18:51.592363917 +0000
+@@ -1,7 +1,7 @@
+ /*
+     檔案位置: BRD_BLE_OLED/brd_config.h
+     [V0.12 修改] 以 BRD_OLED V0.12 建立 BLE + OLED 獨立專案。
+-    [V1.12 保留] 待機 OLED OFF 與 GPIO1 深度睡眠喚醒。
++    [V1.15 修改] 移除待機 OLED OFF 與 Deep-sleep；裝置待機時維持正常運作。
+     [V0.10 恢復] 電池 ADC 取樣與 OLED 電量、充電圖示。
+     [V0.10 新增] 低電鎖定、沒電警示及恢復後重新啟動。
+ */
+@@ -26,11 +26,6 @@
+ #define PROJECT_VERSION                   "V1.15"
+ #define CPU_FIXED_FREQ_MHZ                80U
+ #define MAIN_LOOP_DELAY_MS                1UL
+-/* [V1.10 新增] WAIT LOAD、未連線、未充電、無待傳結果才開始待機計時。 */
+-#define LOW_POWER_OLED_OFF_TIMEOUT_MS     30000UL
+-#define LOW_POWER_DEEP_SLEEP_TIMEOUT_MS   300000UL
+-#define LOW_POWER_WAKE_GPIO               LOAD_IR_GPIO
+-
+ /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
+ #define RPM_IR_GPIO                       3
+ #define RPM_IR_INPUT_MODE                 INPUT
+diff -ruN brd_v115_original/BRD_BLE_OLED/brd_oled.cpp brd_v115_work/BRD_BLE_OLED/brd_oled.cpp
+--- brd_v115_original/BRD_BLE_OLED/brd_oled.cpp	2026-09-13 13:09:34.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_oled.cpp	2026-09-14 06:19:20.820336455 +0000
+@@ -553,7 +553,7 @@
+         g_frame_is_low_battery = false;
+         g_frame_is_adc_fault = false;
+     } else {
+-        /* [V1.11 新增] Deep-sleep / 軟體 / WDT reset 跳過 Boot Logo，下一輪直接畫正常畫面。 */
++        /* [V1.15 保留] 非真正上電 reset 跳過 Boot Logo，下一輪直接畫正常畫面。 */
+         g_frame_active = false;
+         g_frame_is_low_battery = false;
+         g_frame_is_adc_fault = false;
+diff -ruN brd_v115_original/BRD_BLE_OLED/brd_oled.h brd_v115_work/BRD_BLE_OLED/brd_oled.h
+--- brd_v115_original/BRD_BLE_OLED/brd_oled.h	2026-09-13 13:09:34.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_oled.h	2026-09-14 06:19:20.820066859 +0000
+@@ -6,7 +6,7 @@
+ /* [V1.11 修改] show_boot_screen=false 時只初始化 OLED，不播放版本畫面。 */
+ void brd_oled_begin(bool show_boot_screen);
+ void brd_oled_update(void);
+-/* [V1.10 新增] 待機關屏要求由主 loop 執行；低電與 ADC 警示仍可顯示。 */
++/* [V1.15 修改] 待機關屏已停用；介面保留供 power 模組確保 OLED 啟用。 */
+ void brd_oled_set_idle_off(bool off);
+ bool brd_oled_idle_is_off(void);
+ 
+diff -ruN brd_v115_original/BRD_BLE_OLED/brd_power.cpp brd_v115_work/BRD_BLE_OLED/brd_power.cpp
+--- brd_v115_original/BRD_BLE_OLED/brd_power.cpp	2026-09-13 13:09:34.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_power.cpp	2026-09-14 06:18:51.119784679 +0000
+@@ -1,97 +1,15 @@
+ /* 檔案位置: BRD_BLE_OLED/brd_power.cpp
+-   [V1.10 移植] 取自 BLE_RPM V1.9 的 30 秒 OLED OFF / 5 分鐘 Deep-sleep。
+-   [V1.10 修改] 改由目前主 loop 操作 OLED，避免舊版跨 Task I2C 存取。
+-   [V1.10 刪減] 舊版 brd_context / OLED Task / Serial / Light-sleep 相依。 */
+-#include <Arduino.h>
+-#include <esp_idf_version.h>
+-#include <esp_sleep.h>
+-#include <driver/gpio.h>
+-
+-#include "brd_battery.h"
+-#include "brd_ble.h"
+-#include "brd_config.h"
+-#include "brd_io.h"
+-#include "brd_measurement.h"
++   [V1.15 修改] 移除待機 OLED OFF 與 Deep-sleep。
++   裝置只要電源與電池條件允許，就維持正常運作；低電保護仍由 brd_battery / 主程式處理。 */
+ #include "brd_oled.h"
+ #include "brd_power.h"
+-#include "brd_record.h"
+-
+-static bool g_idle_active = false;
+-static uint32_t g_idle_start_ms = 0UL;
+-
+-static bool power_idle_allowed(void) {
+-    const brd_telemetry_t state = brd_measurement_get_telemetry();
+-    const brd_ble_diagnostics_t ble = brd_ble_get_diagnostics();
+-    const brd_record_info_t record = brd_record_get_info();
+-    /* [V1.11 修改] 只要曲線尚保存在 RAM 就禁止 Deep-sleep，避免 TIMEOUT 後資料遺失。 */
+-    const bool result_pending = record.ready;
+-    return brd_battery_measurement_allowed() && state.state == BRD_STATE_WAIT_LOAD &&
+-           !state.loaded && !state.active && !ble.connected &&
+-           !brd_io_is_charging() && !result_pending;
+-}
+ 
+ void brd_power_begin(void) {
+-    g_idle_active = false;
+-    g_idle_start_ms = millis();
++    /* [V1.15 修改] 不建立待機計時；確保 OLED 不因舊待機要求保持關閉。 */
+     brd_oled_set_idle_off(false);
+ }
+ 
+ void brd_power_update(void) {
+-    if (!power_idle_allowed()) {
+-        g_idle_active = false;
+-        brd_oled_set_idle_off(false);
+-        return;
+-    }
+-    uint32_t now_ms = millis();
+-    if (!g_idle_active) {
+-        g_idle_active = true;
+-        g_idle_start_ms = now_ms;
+-        return;
+-    }
+-    uint32_t elapsed_ms = (uint32_t)(now_ms - g_idle_start_ms);
+-    if (elapsed_ms >= LOW_POWER_OLED_OFF_TIMEOUT_MS) {
+-        brd_oled_set_idle_off(true);
+-    }
+-    if (elapsed_ms < LOW_POWER_DEEP_SLEEP_TIMEOUT_MS) {
+-        return;
+-    }
+-    // [V1.10 新增] 活動時 GPIO1 無內部上下拉；Deep-sleep 喚醒電阻
+-    // 另受 Arduino Core 的 ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS 設定影響。
+-    // 先設定喚醒來源；設定失敗時保持運作，每次待機重新計時。
+-    (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+-#if ESP_IDF_VERSION_MAJOR >= 6
+-    esp_err_t result = esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
+-        1ULL << LOW_POWER_WAKE_GPIO, ESP_GPIO_WAKEUP_GPIO_HIGH);
+-#else
+-    esp_err_t result = esp_deep_sleep_enable_gpio_wakeup(
+-        1ULL << LOW_POWER_WAKE_GPIO, ESP_GPIO_WAKEUP_GPIO_HIGH);
+-#endif
+-    if (result != ESP_OK) {
+-        g_idle_active = false;
+-        brd_oled_set_idle_off(false);
+-        return;
+-    }
+-    // [V1.10 新增] 檢查休眠門檻與關屏狀態後才停 BLE；意外裝載須恢復 BLE。
+-    if (!power_idle_allowed() || !brd_oled_idle_is_off()) {
+-        (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+-        return;
+-    }
+-    brd_ble_set_enabled(false);
+-    // [V1.10 新增] BLE 釋放失敗或電池在關閉期間變為故障時放棄睡眠。
+-    brd_battery_update();
+-    if (!brd_ble_stack_stopped() || !brd_battery_measurement_allowed()) {
+-        (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+-        brd_oled_set_idle_off(false);
+-        g_idle_active = false;
+-        return;
+-    }
+-    if (gpio_get_level((gpio_num_t)LOAD_IR_GPIO) == LOAD_ACTIVE_LEVEL || brd_io_is_charging()) {
+-        (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+-        brd_ble_set_enabled(true);
+-        brd_oled_set_idle_off(false);
+-        g_idle_active = false;
+-        return;
+-    }
+-    // [V1.10 移植] GPIO8 維持原專案固定熄燈狀態；HIGH 裝載喚醒後執行 setup()。
+-    esp_deep_sleep_start();
++    /* [V1.15 修改] 待機不再關閉 OLED，也不進入 Deep-sleep。 */
++    brd_oled_set_idle_off(false);
+ }
+diff -ruN brd_v115_original/BRD_BLE_OLED/brd_power.h brd_v115_work/BRD_BLE_OLED/brd_power.h
+--- brd_v115_original/BRD_BLE_OLED/brd_power.h	2026-09-13 07:28:40.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_power.h	2026-09-14 06:18:51.120613448 +0000
+@@ -1,5 +1,5 @@
+ /* 檔案位置: BRD_BLE_OLED/brd_power.h
+-   [V1.10 新增] 待機關閉 OLED 與 GPIO1 HIGH 深度睡眠喚醒。 */
++   [V1.15 修改] 待機休眠已移除；保留介面避免影響主程式模組結構。 */
+ #ifndef BRD_POWER_H
+ #define BRD_POWER_H
+ 
