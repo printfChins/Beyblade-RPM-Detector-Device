@@ -1,4 +1,4 @@
-# BRD_BLE_OLED V1.15 時間與 Rollover 檢查
+# BRD_BLE_OLED V1.16 時間與 Rollover 檢查
 
 ## 主要時間參數
 
@@ -10,7 +10,7 @@
 - Curve Send timeout：`5000 ms`。
 - A4 Status timeout：`2000 ms`。
 
-## V1.15 B1 rollover
+## V1.16 B1 rollover
 
 `live_periodic_millis_wrap` 將 `millis()` 放在 32-bit rollover 前，確認 rollover 前後 B1 仍持續每 200 ms 發送，BLE 連線不因 rollover 或狀態同步被主動斷開。
 

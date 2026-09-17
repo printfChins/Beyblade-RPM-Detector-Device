@@ -1,4 +1,4 @@
-BRD_BLE_OLED V1.15
+BRD_BLE_OLED V1.16
 BRD Reliable BLE Protocol V4
 BLE API Specification
 ============================================================
@@ -14,8 +14,10 @@ Example: eFuse MAC ...A1B2 -> BRD_A1B2
 BLE Settings:
 MTU         = 23
 Max Payload = 20 bytes
-TX Power    = -6 dBm
+TX Power    = 0 dBm
 Byte Order  = Little-endian
+
+V1.16 變更：BLE TX Power = 0 dBm；Protocol V4 封包格式與 V1.15 相同。
 
 
 2. GATT UUID
@@ -36,17 +38,17 @@ Commands: C1 / C2 / C3 / C4
 0004 Firmware Revision Characteristic:
 7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10
 Property: READ
-Response: V1.15
+Response: V1.16
 
 0005 Diagnostic Characteristic:
 7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
 Property: READ
 Protocol Version: 4
 
-V1.15 沒有 0006 State Characteristic。
+V1.16 沒有 0006 State Characteristic。
 
 
-3. V1.15 狀態同步修改
+3. V1.16 狀態同步
 ------------------------------------------------------------
 V1.14 的以下機制全部移除：
 
@@ -56,7 +58,7 @@ state_seq
 LOAD READY pending
 READY ACK retry/確認流程
 
-V1.15 改回 B1 LIVE 每 200 ms 持續發送。
+V1.16 維持 B1 LIVE 每 200 ms 持續發送。
 
 只要：
 - BLE Connected
@@ -219,7 +221,7 @@ Each Sample = 4 bytes:
 uint16 Time_ms
 uint16 RPM
 
-V1.15 第一筆仍固定：
+V1.16 第一筆仍固定：
 Time_ms = 0
 RPM     = 0
 
@@ -350,7 +352,7 @@ Curve timeout 只改變 Curve TX state，不會主動切斷 BLE connection。
 
 17. 不主動斷線原則
 ------------------------------------------------------------
-V1.15 BLE protocol 不因以下情況主動呼叫 disconnect():
+V1.16 BLE protocol 不因以下情況主動呼叫 disconnect():
 
 - B1 Notify failure
 - Curve Notify failure
@@ -359,7 +361,7 @@ V1.15 BLE protocol 不因以下情況主動呼叫 disconnect():
 - A4 Status timeout
 - 未知/錯誤 Control command
 
-V1.15 已移除待機 Deep-sleep；待機不會因時間到而停止 BLE。低電保護仍可停用 BLE。
+V1.16 維持無待機 Deep-sleep；待機不會因時間到而停止 BLE。低電保護仍可停用 BLE。
 
 
 18. Firmware Version API
@@ -371,7 +373,7 @@ Property:
 READ
 
 Response:
-V1.15
+V1.16
 
 
 19. Diagnostic API
@@ -457,7 +459,7 @@ Protocol Name:
 BRD Reliable BLE Protocol V4
 
 Firmware:
-BRD_BLE_OLED V1.15
+BRD_BLE_OLED V1.16
 
 State Sync:
 B1 LIVE periodic snapshot, 200 ms

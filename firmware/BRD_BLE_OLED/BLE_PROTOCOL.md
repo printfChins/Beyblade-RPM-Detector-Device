@@ -1,14 +1,16 @@
 # BRD Reliable BLE Protocol V4
 
-對應韌體：`BRD_BLE_OLED V1.15`
+對應韌體：`BRD_BLE_OLED V1.16`
 
 ## 架構
 
-V1.15 回到週期式狀態同步。Device 只使用 `0002 NOTIFY` 傳送 B1/B2 與 Reliable Curve，不再存在獨立 State Packet 或 State ACK。
+V1.16 BLE TX Power = 0 dBm；BLE Protocol V4 封包格式不變。
+
+V1.16 維持週期式狀態同步。Device 只使用 `0002 NOTIFY` 傳送 B1/B2 與 Reliable Curve，不再存在獨立 State Packet 或 State ACK。
 
 - `0002`：Device -> App，READ / NOTIFY，傳送 `B1 / B2 / A1 / A2 / A3 / A4`。
 - `0003`：App -> Device，WRITE，傳送 `C1 / C2 / C3 / C4`。
-- `0004`：Firmware Revision READ，V1.15 回傳 `V1.15`。
+- `0004`：Firmware Revision READ，V1.16 回傳 `V1.16`。
 - `0005`：Diagnostic READ，Protocol Version = 4。
 
 ## B1 LIVE：唯一狀態來源
@@ -47,7 +49,7 @@ App 必須以最新一筆 B1 的 State / Flags 覆蓋本地狀態。B1 是週期
 
 ## 已移除
 
-V1.15 不再使用：
+V1.16 不使用：
 
 - `0x81 STATE`
 - `C5 STATE_ACK`
@@ -56,13 +58,13 @@ V1.15 不再使用：
 - LOAD READY ACK timeout/retry state machine
 - State Indication / ATT Confirmation
 
-舊 App 若仍送 C5，V1.15 不會把它視為有效控制命令。
+舊 App 若仍送 C5，V1.16 不會把它視為有效控制命令。
 
 ## 不主動斷線
 
-V1.15 protocol flow 不因 Notify failure、Curve ACK timeout、A4 timeout 或未知控制命令主動呼叫 BLE `disconnect()`。
+V1.16 protocol flow 不因 Notify failure、Curve ACK timeout、A4 timeout 或未知控制命令主動呼叫 BLE `disconnect()`。
 
-V1.15 已移除待機 Deep-sleep；待機不會因超時關閉 BLE stack。低電保護仍可停用 BLE。
+V1.16 維持無待機 Deep-sleep；待機不會因超時關閉 BLE stack。低電保護仍可停用 BLE。
 
 ## B2 LAUNCH
 
@@ -91,4 +93,4 @@ V1.13 起 RPM 使用 Rising/Falling 雙邊沿，但每筆 RPM 都是同極性 ed
 
 Curve 第一筆固定為 `0 ms / 0 RPM`。
 
-完整位元組格式以 `BLE_API_V1.15.txt` 為準。
+完整位元組格式以 `BLE_API_V1.16.txt` 為準。

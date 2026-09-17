@@ -1,10 +1,11 @@
-# BRD_BLE_OLED V1.15
+# BRD_BLE_OLED V1.16
 
-`BRD_BLE_OLED V1.15` 延續 V1.13 的雙邊沿完整一圈 RPM 量測，BLE 更新為 **BRD Reliable BLE Protocol V4**。
+`BRD_BLE_OLED V1.16` 延續 V1.15 的量測、BLE Protocol V4 與無待機休眠架構，本版只將 BLE TX Power 由 -6 dBm 調整為 0 dBm。
 
-## V1.15 主要修改
+## V1.16 主要修改
 
-- `PROJECT_VERSION` 更新為 `V1.15`。
+- `PROJECT_VERSION` 更新為 `V1.16`。
+- BLE TX Power 由 `-6 dBm` 調整為 `0 dBm`。
 - BLE 廣播名稱固定為 `BRD_XXXX`，`XXXX` 取 ESP32-C3 eFuse MAC 尾 4 碼 HEX。
 - 移除 `0x81 STATE` 封包。
 - 移除 `C5 STATE_ACK`。
@@ -25,7 +26,7 @@
 | Service | `0001` | - | BRD Service |
 | Data | `0002` | READ / NOTIFY | `B1/B2/A1/A2/A3/A4` |
 | Control | `0003` | WRITE | `C1/C2/C3/C4` |
-| Firmware | `0004` | READ | `V1.15` |
+| Firmware | `0004` | READ | `V1.16` |
 | Diagnostic | `0005` | READ | Protocol V4 / BLE diagnostics |
 
 ## App 狀態同步
@@ -68,7 +69,7 @@ Rising[n-1]  -> Rising[n]  = 360° RPM
 
 ## 文件
 
-- `BLE_API_V1.15.txt`：App 實作 API。
+- `BLE_API_V1.16.txt`：App 實作 API。
 - `BLE_PROTOCOL.md`：Protocol 說明。
 - `CHANGELOG.md`：版本修改。
 - `VALIDATION.md`：主機測試結果。
@@ -76,4 +77,4 @@ Rising[n-1]  -> Rising[n]  = 360° RPM
 
 ## 電源管理注意
 
-正常 BLE protocol timeout 不會主動斷線。V1.15 已移除待機 OLED OFF 與 Deep-sleep；裝置待機時維持 OLED、BLE 與主迴圈正常運作。低電保護仍可停用 BLE。
+正常 BLE protocol timeout 不會主動斷線。V1.16 延續 V1.15 已移除待機 OLED OFF 與 Deep-sleep 的行為；裝置待機時維持 OLED、BLE 與主迴圈正常運作。低電保護仍可停用 BLE。

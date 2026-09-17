@@ -20,10 +20,10 @@
 #endif
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector"
-#define PROJECT_SHORT_NAME                "BRD"
+#define PROJECT_SHORT_NAME                "BRD_BLE"
 #define PROJECT_VARIANT                   "BRD_BLE_OLED"
-/* [V1.15 修改] 版本標示更新為 V1.15，供 OLED 與 BLE Firmware Revision 共用。 */
-#define PROJECT_VERSION                   "V1.15"
+/* [V1.16 修改] 版本標示更新為 V1.16，供 OLED 與 BLE Firmware Revision 共用。 */
+#define PROJECT_VERSION                   "V1.16"
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
@@ -147,7 +147,8 @@
 #define BLE_DEVICE_NAME_PREFIX            "BRD"
 #define BLE_DEVICE_SUFFIX_MASK            0xFFFFULL
 #define BLE_DEVICE_NAME_MAX_LEN           16U
-#define BLE_TX_POWER_DBM                  (-6)
+/* [V1.16 修改] BLE TX Power 由 -6 dBm 提升為 0 dBm。 */
+#define BLE_TX_POWER_DBM                  0
 #define BLE_LIVE_INTERVAL_MS              200UL
 #define BLE_PACKET_INTERVAL_MS            8UL
 #define BLE_SUBSCRIBE_SETTLE_MS           100UL

@@ -1,11 +1,19 @@
+# CHANGELOG
+
+## V1.16 - 2026-09-15
+
+- [修改] `PROJECT_VERSION` -> `V1.16`。
+- [修改] BLE TX Power 由 `-6 dBm` 調整為 `0 dBm`。
+- [保留] BLE Device Name `BRD_XXXX`、Protocol V4、B1 每 200 ms 持續狀態同步。
+- [保留] B2、Reliable Curve A1~A4/C1~C4、雙邊沿完整一圈 RPM、35% 結束條件。
+- [保留] 已移除待機 OLED OFF / Deep-sleep；低電保護仍可停用 BLE。
+
 ## V1.15 - Standby Sleep Removed
 
 - [修改] 移除 30 秒待機 OLED OFF。
 - [修改] 移除 5 分鐘待機 Deep-sleep 與 GPIO1 喚醒流程。
 - [修改] WAIT_LOAD / LOADED_READY 長時間待機仍維持 OLED、BLE 與主迴圈正常運作。
 - [保留] 低電量 / ADC 故障保護邏輯，不屬於待機休眠。
-
-# CHANGELOG
 
 ## V1.15 - 2026-09-14
 
