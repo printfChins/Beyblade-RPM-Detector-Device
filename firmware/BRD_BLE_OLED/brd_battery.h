@@ -1,5 +1,5 @@
 /*
-    檔案位置: BRD_OLED/brd_battery.h
+    檔案位置: BRD_BLE_OLED/brd_battery.h
     [V0.12 新增] ADC 狀態、錯誤碼、資料有效性與恢復計時診斷。
     所有介面由 setup / 主 loop 呼叫，不在 ISR 內使用。
 */

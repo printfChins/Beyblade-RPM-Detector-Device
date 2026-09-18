@@ -1,31 +1,42 @@
-BRD_OLED
-版本: V0.10
-本次基礎: BRD_OLED(1).zip
-來源 ZIP SHA-256: a4557c9b59f7a480aaf1880d56f09a4571c68c9b18ef23f283d5fdb9dfd0f38b
+BRD_OLED V0.12
+來源: BRD_OLED_V0.11.zip
+來源 ZIP SHA-256: 1f3759fba1718222b68d0b68cdc0e29ecea5998434088500a284c1999c223f18
 
-新增: 發射後 MAX 自鎖時第一行顯示 HOLD；補上 H 字型。
-修改: HOLD 狀態切換觸發 OLED 重畫，第二行仍顯示 MAX。
-保留: OLED_MAX_HOLD_MS = 2500；版本、低電圖示、電量、充電圖示與 GPIO。
-修改程式: brd_measurement.h、brd_measurement.cpp、brd_oled.cpp。
-刪減: 交付 ZIP 排除附件內修改前的 build/ 與獨立 BIN。
-所有檔案為完整內容，直接放在 BRD_OLED/。
-Arduino IDE 開啟位置: BRD_OLED/BRD_OLED.ino。
+[修改] MAX 結束條件為 20%。
+[新增] 有界 LOAD 佇列與依事件時間去抖。
+[新增] 原生單次 ADC 錯誤碼與診斷；有效資料逾時 3000 ms。
+[新增] 低電恢復需有效電量 >=10% 持續 3000 ms。
+[保留] 不加相鄰週期檢查；開機清除低電鎖定。
+[刪減] 不包含 V0.11 建置產物；未提供 V0.12 BIN。
 
-SHA-256  檔案位置  位元組數  行數
-1eee02e7aaf0e6da3a303b5509daaf76f34fe3d812e697e4ae2961e397cf9bbd  BRD_OLED/BRD_OLED.ino  2315  63
-609fe8ad4d2c1f4aac0510588e12de89d88168f4a5d4c898b7cd0d255f1a8bc1  BRD_OLED/CHANGELOG.md  5329  67
-23f4fe4d3287f37e8a100da0f25e1c6838e5391fc1e9ffdb2dd58161fb0b7f4d  BRD_OLED/README.md  15219  198
-42118e00dd1a6d182f0e6fa7acb533a7c1005f95a2b7533a8e24395dec0ed147  BRD_OLED/VALIDATION.md  6970  79
-b2843b15791327656f550cba79c6dbf5e62ca55e8dd94e53acbbce4fc9b8b3ce  BRD_OLED/brd_battery.cpp  4488  133
-79b3ad00869feb566e9ba7aa8138e0c9caafe2270908e385e7ad8581c6449591  BRD_OLED/brd_battery.h  597  19
-ab6640a1405cc4ca2851fa031f0134cbea99153094a037a4ffc5e10bb9cca19b  BRD_OLED/brd_config.h  6855  136
-444005b9f057638143073f74204fea9337a4582d4ded753ed9745c9b89d602fd  BRD_OLED/brd_io.cpp  1661  42
-7fe3de8dfd81fa2052d1ce2173d9140aed227604d931a3ee3faf363ddeaba2d4  BRD_OLED/brd_io.h  280  10
-16b9498f4b9e8cd25df413feb1d97c168ac3b09232c7bc3ecb0051138a9a0db1  BRD_OLED/brd_measurement.cpp  13279  418
-e86def0e58f73306a9dd32e99ae973a3acdfc039e2ae00f5eb175eb15941dd88  BRD_OLED/brd_measurement.h  966  34
-2944cc5876d19ab819cb5df4316249394a22cc07672eb628e284b14422a5e07c  BRD_OLED/brd_oled.cpp  20851  582
-0501d95e0411139a01ed9855c02d71ab1f39aa1caf896a89ba03bd082664548a  BRD_OLED/brd_oled.h  248  9
+SHA-256  壓縮檔內路徑  位元組數  行數
+d7600f41d75708b430e7cae09ee7eee8279b1a337a3adc8fd366c797934415ec  BRD_OLED/BRD_OLED.ino  2671  67
+95e60465a3f9ec09f82ca9f61563f1662b6d84aa7a6d0895898d809a7177fd9c  BRD_OLED/CHANGELOG.md  7766  95
+4afc3f2d329226c769d53c3d436675c240dd0602d16424e3b8302e8667fb2855  BRD_OLED/README.md  11309  168
+52b8e0426ea5eb4d94ea2c2839d874f299953ef816a27bb7767cc12ff7071f90  BRD_OLED/VALIDATION.md  5497  78
+9a05b6cc5eb6657d32b93380d06e33ff7b6dad43f9158821e0d8f04cdce5f9fe  BRD_OLED/brd_battery.cpp  10710  274
+d96193df74952423d25f30c43e5e04a915399d86e5f6ab41ec8f256aed9e4720  BRD_OLED/brd_battery.h  1560  52
+dfc5446340079054c2d1308775ee60c75af72ea6d843262f2bc1d3e34f446b79  BRD_OLED/brd_config.h  8893  167
+8f29c6cf29cf8678b9cedf94785f6dd26651f2f9482b11d5559a767ffa192ac5  BRD_OLED/brd_io.cpp  1717  43
+51c06302dde1fca14569842b8aee172c03fb34c5f39f9ccbdef99c79404cf91c  BRD_OLED/brd_io.h  274  10
+9b4d73bb47a329ae4160924c37e37f189a06219dd22a734a53e959c16ac2639c  BRD_OLED/brd_measurement.cpp  16116  463
+d9a07a6ee3fab1e3596b16e1c8ba098930141e6ab7da13180d16e13bbf3361b0  BRD_OLED/brd_measurement.h  1382  44
+18470b27c5f260bf0b7e94432a490dd2ce4d7825fdb9c03ad30571e4ff497f18  BRD_OLED/brd_oled.cpp  22198  613
+76817daa50c7dc8432967d0bf5985276263eabcd06c622f430a4724b0cbbf6ce  BRD_OLED/brd_oled.h  242  9
+256288df7377f61d6fb66adce193d40f3efefd2f8ab23cd4017e148f94495468  verification/host/Arduino.h  1117  29
+2d866994b70e5d8830dab891047cdc32db35ee455c546f767b8fc58225936f8a  verification/host/driver/gpio.h  457  11
+13a9e006dea74a6df04d06e5fc647305220216e91143c5faf5dcf791fddf1185  verification/host/driver/i2c_master.h  1149  16
+ab99061295380af3e6b2273f883f91aced4da7c99e4ad677c2798c5ff02b8d66  verification/host/esp_adc/adc_cali.h  227  5
+56a3fc67e2ad19d1f7b52f04c88db60e892332e80fb7d6db2d025cbb5ae6bba5  verification/host/esp_adc/adc_cali_scheme.h  472  9
+ba7083af6dc4ff9a613ab4bafbf8b908278cf315baba8e282487e74e0e6e909a  verification/host/esp_adc/adc_oneshot.h  1361  25
+7d2684364d922d0b57de899adccd0db1e78e826072c1c818a5b5d84d4710e3c2  verification/host/esp_err.h  257  9
+71dcbd9a02061a74b274ffb5da69ae752db6c62740ec39bac63656faa8abb116  verification/host/esp_idf_version.h  124  3
+0a210176a3cf674fa0589baec2d48d49c305ee5536e0f89f0c64bebd5732bdd0  verification/host/esp_system.h  160  4
+24633269b55928c7bc5fc7957a0e130c6509dc0968867a5da3f1bc1a251c4626  verification/host/hal/adc_types.h  225  6
+0a4beeddcb26c3a8faa22093dcccace90750aa4c5a6e147a04d1449a6139871c  verification/host/soc/gpio_struct.h  106  4
+ad989d76bf50f5477f96dbfcc81e0b53b418bb6848b05c293d3895d7b66c0c46  verification/host/test_v012.cpp  18657  344
+91347dd11da575cff82c10a4623d83e806f70dd1dbf5d69d9a9d5e4dac0a4034  verification/run_host_tests.py  1932  37
 
 FILE_MANIFEST.txt 不列入自身雜湊。
-本次完成主機編譯、HOLD 狀態轉換與 framebuffer 檢查，未重跑先前 31 項完整測試。
-尚未完成本次修改的 ESP32-C3 實際編譯與實機驗證；請重新編譯燒錄。
+已通過 38 個主機回歸案例、獨立語法檢查與三種 framebuffer 畫面檢查。
+未完成 ESP32-C3 目標編譯、燒錄及硬體量測。

@@ -1,5 +1,5 @@
 /*
-    檔案位置: BRD_OLED/brd_battery.cpp
+    檔案位置: BRD_BLE_OLED/brd_battery.cpp
     [V0.12 刪減] analogReadMilliVolts() 無法區分錯誤回傳與有效 0 mV 的路徑。
     [V0.12 新增] ESP-IDF ADC oneshot 讀值、校正與明確 esp_err_t 診斷。
     [保留] 每秒最多單次 ADC 轉換，直接換算 470k / 470k 分壓與 SOC。

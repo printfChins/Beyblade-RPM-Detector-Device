@@ -1,7 +1,8 @@
 /*
-    檔案位置: BRD_OLED/brd_measurement.h
-    [V0.10 修改] 僅公開單機量測與 OLED 畫面資料，不包含 BLE 狀態。
+    檔案位置: BRD_BLE_OLED/brd_measurement.h
+    [V0.12 修改] OLED 畫面與 BLE 即時快照分開；BLE 不控制量測狀態機。
     [V0.10 新增] 畫面資料提供實際 HOLD 自鎖狀態。
+    [V1.13 修改] RPM 使用雙邊沿捕捉，但每筆數值仍由同極性完整一圈週期計算。
 */
 #ifndef BRD_MEASUREMENT_H
 #define BRD_MEASUREMENT_H
@@ -24,6 +25,15 @@ struct brd_display_t {
     bool hold_active;
 };
 
+/* [V0.12 新增] 由主 loop 取得，不由 NimBLE callback 直接讀量測變數。 */
+struct brd_telemetry_t {
+    brd_state_t state;
+    bool loaded;
+    bool active;
+    uint16_t current_rpm;
+    uint16_t max_rpm;
+};
+
 /* [V0.12 新增] 診斷計數由主 loop 更新，達 UINT32_MAX 後飽和。 */
 struct brd_measurement_diagnostics_t {
     uint32_t load_queue_overflows;
@@ -38,6 +48,7 @@ void brd_measurement_begin(void);
 void brd_measurement_stop(void);
 void brd_measurement_update(void);
 brd_display_t brd_measurement_get_display(void);
+brd_telemetry_t brd_measurement_get_telemetry(void);
 brd_measurement_diagnostics_t brd_measurement_get_diagnostics(void);
 void brd_measurement_max_frame_presented(uint32_t generation);
 

@@ -1,0 +1,2933 @@
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/BLE_API_V1.14.txt brd_v115_work/BRD_BLE_OLED/BLE_API_V1.14.txt
+--- brd_v114_orig/BRD_BLE_OLED/BLE_API_V1.14.txt	2026-09-14 05:35:42.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BLE_API_V1.14.txt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,514 +0,0 @@
+-BRD_BLE_OLED V1.14
+-BRD Reliable BLE Protocol V3
+-BLE API Specification
+-========================================
+-
+-1. BLE Device
+-----------------------------------------
+-Device Name:
+-BRD_XXXX
+-
+-XXXX = ESP32-C3 MCU ID 最後 4 碼 HEX
+-
+-BLE Settings:
+-MTU         = 23
+-Max Payload = 20 bytes
+-TX Power    = -6 dBm
+-Byte Order  = Little-endian
+-
+-
+-2. GATT UUID
+-----------------------------------------
+-Service:
+-7f510001-1b15-4d5f-9f4d-9b3c7a1d9a10
+-
+-0002 Data Notify:
+-7f510002-1b15-4d5f-9f4d-9b3c7a1d9a10
+-Property: READ / NOTIFY
+-Packets : 0x81, B1, B2, A1, A2, A3, A4
+-
+-0003 Control:
+-7f510003-1b15-4d5f-9f4d-9b3c7a1d9a10
+-Property: WRITE
+-Commands: C1, C2, C3, C4, C5
+-
+-0004 Firmware Revision:
+-7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10
+-Property: READ
+-Response: V1.14
+-
+-0005 Diagnostic:
+-7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
+-Property: READ
+-
+-V1.14 已移除 V1.12/V1.13 的 0006 State READ / INDICATE Characteristic。
+-App 不需要訂閱 0006。
+-
+-
+-3. App Connection Flow
+-----------------------------------------
+-1. Scan BRD_XXXX
+-2. Connect
+-3. Discover Service 0001
+-4. Subscribe 0002 Notification
+-5. Read 0004 Firmware Revision
+-6. 等待 0002 傳入 0x81 Current State Snapshot
+-7. 進入正常操作
+-
+-BLE Disconnect 狀態只能依手機 Native BLE Connection Event 判斷。
+-不可因一段時間沒有 B1 / 0x81 就自行判定斷線。
+-
+-
+-4. 0x81 STATE
+-----------------------------------------
+-Direction:
+-Device -> App
+-
+-Characteristic:
+-0002
+-
+-Type:
+-NOTIFY
+-
+-Length:
+-5 bytes
+-
+-Format:
+-Byte 0      = 0x81
+-Byte 1      = State
+-Byte 2      = Flags
+-Byte 3      = state_seq Low
+-Byte 4      = state_seq High
+-
+-State:
+-0 = WAIT_LOAD
+-1 = LOADED_READY
+-2 = SPINNING_LOADED
+-3 = SPINNING_LAUNCHED
+-4 = RESULT_PENDING
+-
+-Flags:
+-bit0 = Loaded
+-bit1 = Active / Spinning
+-bit2 = Launch Valid
+-bit3 = Result Pending
+-bit4 = Charging
+-bit5 = WAIT_ACK
+-bit6 = Reserved
+-bit7 = Reserved
+-
+-state_seq:
+-uint16 little-endian
+-每次 State 或 Flags 真正改變時 +1。
+-允許 65535 -> 0 rollover。
+-新連線 Snapshot 本身不增加 state_seq。
+-
+-
+-5. LOAD READY Reliable Notify - V1.14 主要修改
+-----------------------------------------
+-LOAD LOW -> HIGH
+--> LOAD debounce 完成
+--> State = LOADED_READY
+--> state_seq 更新
+--> Device 發送 0x81 LOADED_READY
+--> 每 200 ms 重送同一個目前 LOADED_READY state_seq
+--> 直到 App 回傳 C5 ACK
+--> ACK 正確後停止 READY 重送
+-
+-重要：
+-- 沒有 ACK timeout。
+-- 沒有 State timeout。
+-- 沒有 Indication / ATT Confirmation。
+-- 沒有因 READY ACK 遺失而主動 Disconnect。
+-- App 可以晚一點 ACK；Device 會繼續重送 READY。
+-
+-如果 READY 尚未 ACK，但實際狀態已變成 SPINNING / WAIT_LOAD / 其他 State：
+-- 舊 READY 重送立即停止。
+-- 舊 C5 ACK 之後到達會被忽略。
+-- 不會阻止量測。
+-
+-如果 BLE 自然斷線後重新連線，而且 Device 當下仍是 LOADED_READY：
+-- App 訂閱 0002 後 Device 重新送 State Snapshot。
+-- READY 再次每 200 ms 重送，直到收到對應 C5。
+-
+-
+-6. C5 LOAD READY ACK
+-----------------------------------------
+-Direction:
+-App -> Device
+-
+-Characteristic:
+-0003 WRITE
+-
+-Length:
+-4 bytes
+-
+-Format:
+-Byte 0      = 0xC5
+-Byte 1      = State
+-Byte 2      = state_seq Low
+-Byte 3      = state_seq High
+-
+-有效 ACK 必須同時符合：
+-State == 1 (LOADED_READY)
+-state_seq == Device 目前 LOADED_READY state_seq
+-Device 目前仍為 LOADED_READY
+-Device 目前仍在等待 READY ACK
+-
+-Example:
+-Device -> App:
+-81 01 01 25 00
+-
+-代表：
+-State = LOADED_READY
+-Flags = 0x01
+-state_seq = 0x0025 = 37
+-
+-App -> Device:
+-C5 01 25 00
+-
+-正確後 Device 停止重送 READY。
+-
+-錯誤或舊的 state_seq：
+-- Device 忽略 ACK。
+-- READY 繼續重送。
+-- 不斷線。
+-
+-C5 沒有 A4 Response。
+-停止收到相同 READY 重送即可視為 Device 已接受 C5。
+-
+-
+-7. 其他 0x81 State Event
+-----------------------------------------
+-除 LOADED_READY 外，其餘狀態：
+-- State / Flags 改變時送一次 0x81 Notify。
+-- 不要求 C5 ACK。
+-- 新連線訂閱 0002 後會送一次目前 State Snapshot。
+-
+-App 應永遠以最新的 0x81 State 為目前 Device State。
+-state_seq 跳號時可記錄診斷，但不要猜測漏掉的中間 State。
+-
+-
+-8. B1 LIVE
+-----------------------------------------
+-Direction: Device -> App
+-Characteristic: 0002 NOTIFY
+-Length: 13 bytes
+-
+-Offset  Size  Field
+-0       1     0xB1
+-1       1     State
+-2       1     Flags
+-3       2     Current RPM
+-5       2     Max RPM
+-7       2     Launch RPM
+-9       2     Curve Duration ms
+-11      2     Curve Sample Count
+-
+-B1 只在 SPINNING 狀態使用，約每 200 ms 更新。
+-B1 不是 BLE heartbeat。
+-WAIT_LOAD / LOADED_READY 不要求週期 B1。
+-
+-正式 State 以 0x81 為主。
+-
+-
+-9. B2 LAUNCH
+-----------------------------------------
+-Direction: Device -> App
+-Characteristic: 0002 NOTIFY
+-Length: 9 bytes
+-
+-Offset  Size  Field
+-0       1     0xB2
+-1       2     Launch RPM
+-3       2     Max RPM at Launch
+-5       2     Launch Time ms
+-7       2     Launch Sample Index
+-
+-V1.13/V1.14 RPM 採 Rising + Falling 雙邊沿，但每筆 RPM 仍由同極性完整 360 度週期計算。
+-App 不需要知道 Edge 類型，也不要自行重算 Launch RPM。
+-
+-
+-10. A1 CURVE START
+-----------------------------------------
+-Direction: Device -> App
+-Characteristic: 0002 NOTIFY
+-Length: 20 bytes
+-
+-Offset  Size  Field
+-0       1     0xA1
+-1       2     Sample Count
+-3       2     Sample Interval (Event Curve 固定 0)
+-5       2     Duration ms
+-7       2     Max RPM
+-9       2     Launch RPM
+-11      2     Launch Time ms
+-13      2     Launch Sample Index
+-15      1     Flags
+-16      2     Max RPM Time ms
+-18      2     Session
+-
+-Flags:
+-bit0 = Launch Valid
+-bit1 = Curve Complete
+-bit2 = Event Curve Format
+-
+-
+-11. A2 CURVE DATA
+-----------------------------------------
+-Direction: Device -> App
+-Characteristic: 0002 NOTIFY
+-
+-Byte 0      = 0xA2
+-Byte 1      = N (1~4 samples)
+-Byte 2..3   = Packet Index
+-Byte 4..    = Samples
+-
+-Each Sample = 4 bytes:
+-uint16 Time_ms
+-uint16 RPM
+-
+-第一筆固定：
+-Time = 0 ms
+-RPM  = 0
+-
+-V1.14 曲線 RPM sample 來源維持 V1.13 雙邊沿完整一圈量測。
+-App parser 不需分辨 Rising / Falling。
+-
+-
+-12. A3 CURVE END
+-----------------------------------------
+-Direction: Device -> App
+-Characteristic: 0002 NOTIFY
+-Length: 11 bytes
+-
+-Offset  Size  Field
+-0       1     0xA3
+-1       2     Session
+-3       2     Packet Count
+-5       2     Sample Count
+-7       4     CRC32
+-
+-
+-13. CRC32
+-----------------------------------------
+-CRC-32 / ISO-HDLC
+-
+-CRC Input:
+-依 Sample 順序對每筆原始 4 bytes 計算：
+-Time_L
+-Time_H
+-RPM_L
+-RPM_H
+-
+-包含第一筆 0 ms / 0 RPM。
+-
+-
+-14. A4 STATUS
+-----------------------------------------
+-Direction: Device -> App
+-Characteristic: 0002 NOTIFY
+-Length: 6 bytes
+-
+-Offset  Size  Field
+-0       1     0xA4
+-1       2     Session
+-3       1     Status
+-4       2     Detail
+-
+-Status:
+-0x00 = ACK Accepted
+-0x01 = Selective Retransmission Accepted
+-0x02 = Full Retransmission Accepted
+-0x03 = Abort Accepted
+-0x80 = Session Mismatch
+-0x81 = Packet Index Invalid
+-0x82 = Command Format Invalid
+-0x83 = Sample Count Mismatch
+-0x84 = CRC Mismatch
+-0x85 = No Result
+-0x86 = ACK Window Invalid / Expired
+-
+-注意：
+-A4 Status code 0x81 與 Packet Type 0x81 位於不同欄位，不衝突。
+-
+-
+-15. C1 CURVE ACK
+-----------------------------------------
+-Direction: App -> Device
+-Characteristic: 0003 WRITE
+-Length: 9 bytes
+-
+-Byte 0      = 0xC1
+-Byte 1..2   = Session
+-Byte 3..4   = Sample Count
+-Byte 5..8   = CRC32
+-
+-全部正確且在 WAIT_ACK window 內才接受。
+-成功後 Device 發 A4 Status 0x00。
+-
+-
+-16. C2 SELECTIVE RETRANSMISSION
+-----------------------------------------
+-Direction: App -> Device
+-Characteristic: 0003 WRITE
+-
+-Format:
+-0xC2
+-uint16 Session
+-uint8 Count
+-uint16 PacketIndex[Count]
+-
+-Count = 0~8
+-Count = 0 表示只重送 A3 END。
+-
+-成功後 Device 發 A4 Status 0x01，接著重送指定 A2 + A3。
+-
+-
+-17. C3 FULL RETRANSMISSION
+-----------------------------------------
+-Direction: App -> Device
+-Characteristic: 0003 WRITE
+-Length: 3 bytes
+-
+-0xC3
+-uint16 Session
+-
+-Session = 0xFFFF 可要求目前保存的結果完整重傳。
+-成功後 Device 發 A4 Status 0x02，再重送 A1/A2/A3。
+-
+-
+-18. C4 ABORT
+-----------------------------------------
+-Direction: App -> Device
+-Characteristic: 0003 WRITE
+-Length: 3 bytes
+-
+-0xC4
+-uint16 Session
+-
+-成功後 Device 發 A4 Status 0x03，並清除 RAM Curve。
+-OLED MAX 顯示不受影響。
+-
+-
+-19. Timeout / Retry
+-----------------------------------------
+-LOAD READY:
+-BLE_LOAD_READY_INTERVAL_MS = 200 ms
+-沒有 ACK timeout
+-沒有斷線 recovery
+-收到正確 C5 才停止，或 Device State 離開 LOADED_READY 時停止
+-
+-Curve:
+-BLE_PACKET_INTERVAL_MS = 8 ms
+-BLE_SEND_TIMEOUT_MS    = 5000 ms
+-BLE_ACK_RETRY_MS       = 1000 ms
+-BLE_ACK_TIMEOUT_MS     = 5000 ms
+-BLE_STATUS_TIMEOUT_MS  = 2000 ms
+-
+-Curve timeout 只改變 Curve transaction state，不主動斷開 BLE Connection。
+-
+-
+-20. Firmware 不主動斷線規則
+-----------------------------------------
+-V1.14 BLE protocol flow 不使用任何主動 disconnect() recovery。
+-
+-以下狀況都不會因 protocol timeout 主動斷線：
+-- LOAD READY 沒收到 C5
+-- C5 state_seq 錯誤
+-- State Notify 送失敗
+-- Curve Send Timeout
+-- Curve ACK Timeout
+-- A4 Status Timeout
+-
+-如果 Native BLE Connection 真正斷線，Device 被動處理並重新 Advertising。
+-
+-注意：裝置低電停用 BLE 或進入 Deep-sleep 時會關閉 BLE stack，實體連線自然會結束；這屬於電源管理，不是 protocol recovery disconnect。
+-
+-
+-21. Diagnostic API
+-----------------------------------------
+-UUID:
+-7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
+-
+-Property: READ
+-Length: 20 bytes
+-
+-Offset  Size  Field
+-0       1     Protocol Version = 3
+-1       1     TX State
+-2       1     Flags
+-3       1     Reliable Mode = 1
+-4       2     Current Result Session
+-6       2     Sample Count
+-8       4     CRC32
+-12      2     Duration ms
+-14      2     Command Errors
+-16      2     Notify Failures
+-18      2     ACK Timeouts
+-
+-TX State:
+-0 = IDLE
+-1 = START
+-2 = DATA
+-3 = END
+-4 = WAIT_ACK
+-5 = DONE
+-6 = TIMEOUT
+-
+-
+-22. Recommended App Flow
+-----------------------------------------
+-Connect
+--> Subscribe 0002 Notify
+--> Read 0004 Firmware Version
+--> Receive 0x81 State Snapshot
+-
+-WAIT_LOAD:
+-0x81 WAIT_LOAD once
+-
+-LOAD completed:
+-0x81 LOADED_READY every 200 ms
+--> App immediately updates UI READY
+--> App writes C5 with same State + state_seq
+--> Device stops READY resend
+-
+-Spin starts before ACK:
+-Device leaves LOADED_READY
+--> READY resend stops automatically
+--> latest 0x81 State wins
+--> stale C5 is ignored
+-
+-SPINNING:
+-0x81 SPINNING event
+-+B1 every 200 ms
+-
+-LAUNCH:
+-B2 LAUNCH
+-+0x81 SPINNING_LAUNCHED event
+-
+-RESULT:
+-0x81 RESULT_PENDING
+-+A1/A2/A3 reliable curve
+--> verify packet count/sample count/CRC
+--> C1 ACK / C2 / C3 / C4
+-
+-
+-23. App Rules
+-----------------------------------------
+-- 不訂閱 0006；V1.14 已移除。
+-- 只需 Subscribe 0002 Notify。
+-- 收到 LOADED_READY 後必須回 C5。
+-- C5 必須使用收到的同一個 state_seq。
+-- 重複 READY 封包可以重複回相同 C5，安全。
+-- 不要用「沒有 B1」判斷斷線。
+-- BLE Connection 只依 Native BLE Connected/Disconnected Event。
+-- App 永遠以最新 0x81 State 為準。
+-- B1 只做即時 RPM。
+-- B2 的 Launch RPM 與 Device MAX 為正式量測值。
+-- Curve 仍須做 CRC / Packet Index / ACK。
+-
+-========================================
+-Firmware: BRD_BLE_OLED V1.14
+-Protocol: BRD Reliable BLE Protocol V3
+-========================================
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/BLE_API_V1.15.txt brd_v115_work/BRD_BLE_OLED/BLE_API_V1.15.txt
+--- brd_v114_orig/BRD_BLE_OLED/BLE_API_V1.15.txt	1970-01-01 00:00:00.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BLE_API_V1.15.txt	2026-09-14 06:03:31.501563235 +0000
+@@ -0,0 +1,474 @@
++BRD_BLE_OLED V1.15
++BRD Reliable BLE Protocol V4
++BLE API Specification
++============================================================
++
++1. BLE Device
++------------------------------------------------------------
++Device Name:
++BRD_XXXX
++
++XXXX = ESP32-C3 MCU ID 最後 4 碼 HEX
++
++BLE Settings:
++MTU         = 23
++Max Payload = 20 bytes
++TX Power    = -6 dBm
++Byte Order  = Little-endian
++
++
++2. GATT UUID
++------------------------------------------------------------
++Service UUID:
++7f510001-1b15-4d5f-9f4d-9b3c7a1d9a10
++
++0002 Data Characteristic:
++7f510002-1b15-4d5f-9f4d-9b3c7a1d9a10
++Property: READ / NOTIFY
++Packets: B1 / B2 / A1 / A2 / A3 / A4
++
++0003 Control Characteristic:
++7f510003-1b15-4d5f-9f4d-9b3c7a1d9a10
++Property: WRITE
++Commands: C1 / C2 / C3 / C4
++
++0004 Firmware Revision Characteristic:
++7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10
++Property: READ
++Response: V1.15
++
++0005 Diagnostic Characteristic:
++7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
++Property: READ
++Protocol Version: 4
++
++V1.15 沒有 0006 State Characteristic。
++
++
++3. V1.15 狀態同步修改
++------------------------------------------------------------
++V1.14 的以下機制全部移除：
++
++0x81 STATE
++C5 STATE_ACK
++state_seq
++LOAD READY pending
++READY ACK retry/確認流程
++
++V1.15 改回 B1 LIVE 每 200 ms 持續發送。
++
++只要：
++- BLE Connected
++- App 已訂閱 0002 Notify
++
++Device 就會持續送出 B1。
++
++WAIT_LOAD、LOADED_READY、SPINNING、RESULT_PENDING 都會送。
++
++App 不需要對 READY 回 ACK。
++App 不需要保存 state_seq。
++App 不需要處理 0x81。
++App 不需要送 C5。
++
++單筆 B1 掉包時不需補傳，下一筆 200 ms Snapshot 會再次帶回完整 State / Flags。
++
++
++4. B1 LIVE
++------------------------------------------------------------
++Direction:
++Device -> App
++
++Characteristic:
++0002
++
++Type:
++NOTIFY
++
++Cadence:
++200 ms
++
++Length:
++13 bytes
++
++Format:
++Offset  Size  Field
++0       1     0xB1
++1       1     State
++2       1     Flags
++3       2     Current RPM
++5       2     Max RPM
++7       2     Launch RPM
++9       2     Curve Duration ms
++11      2     Curve Sample Count
++
++State:
++0 = WAIT_LOAD
++1 = LOADED_READY
++2 = SPINNING_LOADED
++3 = SPINNING_LAUNCHED
++4 = RESULT_PENDING
++
++Flags:
++bit0 = Loaded
++bit1 = Active / Spinning
++bit2 = Launch Valid
++bit3 = Result Pending
++bit4 = Charging
++bit5 = WAIT_ACK
++bit6 = Reserved
++bit7 = Reserved
++
++App 使用規則：
++每收到 B1，直接以最新 State / Flags 覆蓋本地裝置狀態。
++不要把 B1 當成需要逐筆保存的事件。
++不要對 B1 回 ACK。
++
++
++5. LOAD Flow
++------------------------------------------------------------
++WAIT_LOAD:
++Device 持續每 200 ms 發：
++B1 State=WAIT_LOAD
++
++LOAD LOW -> HIGH 且通過韌體 debounce：
++State -> LOADED_READY
++
++之後 Device 持續每 200 ms 發：
++B1 State=LOADED_READY
++Flags bit0 Loaded = 1
++
++保持裝載時不需要任何 App ACK。
++
++開始旋轉：
++State -> SPINNING_LOADED
++B1 持續每 200 ms 發送，並更新 Current RPM。
++
++發射：
++State -> SPINNING_LAUNCHED
++Device 送一次 B2 LAUNCH，B1 仍持續每 200 ms同步狀態。
++
++量測完成 / Result Pending：
++State -> RESULT_PENDING
++B1 仍持續每 200 ms同步狀態。
++
++
++6. B2 LAUNCH
++------------------------------------------------------------
++Direction:
++Device -> App
++
++Characteristic:
++0002
++
++Type:
++NOTIFY
++
++Length:
++9 bytes
++
++Format:
++Offset  Size  Field
++0       1     0xB2
++1       2     Launch RPM
++3       2     Max RPM at Launch
++5       2     Launch Time ms
++7       2     Launch Sample Index
++
++V1.13 起 Launch RPM 使用最新 Rising/Falling 同極性完整一圈 RPM。
++App 直接使用 Device 傳回的 Launch RPM，不自行從 B1 重算。
++
++
++7. A1 CURVE START
++------------------------------------------------------------
++Direction: Device -> App
++Type: NOTIFY
++Length: 20 bytes
++
++Offset  Size  Field
++0       1     0xA1
++1       2     Sample Count
++3       2     Sample Interval (=0, Event Curve)
++5       2     Duration ms
++7       2     Max RPM
++9       2     Launch RPM
++11      2     Launch Time ms
++13      2     Launch Sample Index
++15      1     Flags
++16      2     Max RPM Time ms
++18      2     Session
++
++A1 Flags:
++bit0 = Launch Valid
++bit1 = Curve Complete
++bit2 = Event Curve Format
++
++
++8. A2 CURVE DATA
++------------------------------------------------------------
++Direction: Device -> App
++Type: NOTIFY
++
++Header:
++Byte 0    = 0xA2
++Byte 1    = N (1~4 samples)
++Byte 2..3 = Packet Index LE16
++Byte 4..  = Samples
++
++Each Sample = 4 bytes:
++uint16 Time_ms
++uint16 RPM
++
++V1.15 第一筆仍固定：
++Time_ms = 0
++RPM     = 0
++
++V1.13 起 sample 來源為 Rising/Falling 兩組交錯的完整 360 度 RPM。
++App 不需要知道 Edge polarity。
++
++
++9. A3 CURVE END
++------------------------------------------------------------
++Direction: Device -> App
++Type: NOTIFY
++Length: 11 bytes
++
++Offset  Size  Field
++0       1     0xA3
++1       2     Session
++3       2     Packet Count
++5       2     Sample Count
++7       4     CRC32
++
++
++10. CRC32
++------------------------------------------------------------
++Algorithm:
++CRC-32 / ISO-HDLC
++
++CRC Input:
++每一筆 Sample 依序使用：
++Time_L
++Time_H
++RPM_L
++RPM_H
++
++CRC 包含第一筆 0 ms / 0 RPM。
++
++
++11. C1 ACK
++------------------------------------------------------------
++Direction: App -> Device
++Characteristic: 0003
++Length: 9 bytes
++
++Byte 0    = 0xC1
++Byte 1..2 = Session
++Byte 3..4 = Sample Count
++Byte 5..8 = CRC32
++
++完整驗證成功後才送 C1。
++
++
++12. C2 Selective Retransmission
++------------------------------------------------------------
++Direction: App -> Device
++Characteristic: 0003
++
++Format:
++0xC2
++uint16 Session
++uint8 Count
++uint16 PacketIndex[Count]
++
++Count = 0~8
++Count = 0 表示只要求重送 A3。
++
++
++13. C3 Full Retransmission
++------------------------------------------------------------
++Direction: App -> Device
++Characteristic: 0003
++Length: 3 bytes
++
++0xC3
++uint16 Session
++
++Session 0xFFFF 可要求目前保存結果完整重傳。
++
++
++14. C4 Abort
++------------------------------------------------------------
++Direction: App -> Device
++Characteristic: 0003
++Length: 3 bytes
++
++0xC4
++uint16 Session
++
++
++15. A4 STATUS
++------------------------------------------------------------
++Direction: Device -> App
++Characteristic: 0002
++Type: NOTIFY
++Length: 6 bytes
++
++Offset  Size  Field
++0       1     0xA4
++1       2     Session
++3       1     Status
++4       2     Detail
++
++Status:
++0x00 = ACK Accepted
++0x01 = Selective Retransmission Accepted
++0x02 = Full Retransmission Accepted
++0x03 = Abort Accepted
++0x80 = Session Mismatch
++0x81 = Packet Index Invalid
++0x82 = Command Format Invalid
++0x83 = Sample Count Mismatch
++0x84 = CRC Mismatch
++0x85 = No Result
++0x86 = ACK Window Invalid / Expired
++
++注意：A4 的 Status Code 0x81 是「Packet Index Invalid」，與已移除的舊 0x81 STATE Packet 無關。
++
++
++16. Timeout
++------------------------------------------------------------
++BLE_LIVE_INTERVAL_MS   = 200 ms
++BLE_PACKET_INTERVAL_MS = 8 ms
++BLE_SEND_TIMEOUT_MS    = 5000 ms
++BLE_ACK_TIMEOUT_MS     = 5000 ms
++BLE_ACK_RETRY_MS       = 1000 ms
++BLE_STATUS_TIMEOUT_MS  = 2000 ms
++
++Curve timeout 只改變 Curve TX state，不會主動切斷 BLE connection。
++
++
++17. 不主動斷線原則
++------------------------------------------------------------
++V1.15 BLE protocol 不因以下情況主動呼叫 disconnect():
++
++- B1 Notify failure
++- Curve Notify failure
++- Curve Send timeout
++- ACK timeout
++- A4 Status timeout
++- 未知/錯誤 Control command
++
++低電模式或 Deep-sleep 需要停止 BLE stack 時，實體連線仍會自然結束；這是電源管理，不是 protocol recovery disconnect。
++
++
++18. Firmware Version API
++------------------------------------------------------------
++UUID:
++7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10
++
++Property:
++READ
++
++Response:
++V1.15
++
++
++19. Diagnostic API
++------------------------------------------------------------
++UUID:
++7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10
++
++Property:
++READ
++
++Length:
++20 bytes
++
++Offset  Size  Field
++0       1     Protocol Version (=4)
++1       1     TX State
++2       1     Flags
++3       1     Reliable Mode
++4       2     Current Result Session
++6       2     Sample Count
++8       4     CRC32
++12      2     Duration ms
++14      2     Command Errors
++16      2     Notify Failures
++18      2     ACK Timeouts
++
++TX State:
++0 = IDLE
++1 = START
++2 = DATA
++3 = END
++4 = WAIT_ACK
++5 = DONE
++6 = TIMEOUT
++
++
++20. App Connection Flow
++------------------------------------------------------------
++1. Scan BRD_XXXX
++2. Connect
++3. Discover Service 0001
++4. Subscribe 0002 Notification
++5. Read 0004 Firmware Revision
++6. 等待 B1 LIVE
++7. 每收到 B1 直接更新 State / Flags / RPM UI
++
++不需要：
++- Subscribe 0006
++- 解析 0x81 STATE
++- 回 C5 ACK
++- 保存 state_seq
++
++
++21. App Measurement Flow
++------------------------------------------------------------
++Connect
++-> Subscribe 0002
++-> B1 WAIT_LOAD every 200 ms
++
++LOAD
++-> B1 LOADED_READY every 200 ms
++
++Spin
++-> B1 SPINNING_LOADED every 200 ms
++
++Launch
++-> B2 LAUNCH once
++-> B1 SPINNING_LAUNCHED every 200 ms
++
++Finish
++-> B1 RESULT_PENDING every 200 ms
++-> A1
++-> A2...
++-> A3
++-> App validation
++-> C1 / C2 / C3 / C4 as required
++-> A4 STATUS
++
++
++22. Protocol Summary
++------------------------------------------------------------
++Protocol Name:
++BRD Reliable BLE Protocol V4
++
++Firmware:
++BRD_BLE_OLED V1.15
++
++State Sync:
++B1 LIVE periodic snapshot, 200 ms
++
++Legacy 0x81 STATE:
++Removed
++
++C5 STATE_ACK:
++Removed
++
++state_seq:
++Removed
++
++Reliable Curve:
++A1/A2/A3/A4 + C1/C2/C3/C4 retained
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/BLE_PROTOCOL.md brd_v115_work/BRD_BLE_OLED/BLE_PROTOCOL.md
+--- brd_v114_orig/BRD_BLE_OLED/BLE_PROTOCOL.md	2026-09-14 05:35:42.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BLE_PROTOCOL.md	2026-09-14 06:03:31.501489574 +0000
+@@ -1,41 +1,29 @@
+-# BRD Reliable BLE Protocol V3
++# BRD Reliable BLE Protocol V4
+ 
+-對應韌體：`BRD_BLE_OLED V1.14`
++對應韌體：`BRD_BLE_OLED V1.15`
+ 
+ ## 架構
+ 
+-V1.14 將狀態、即時 RPM 與 Reliable Curve 全部統一到 `0002 NOTIFY`。V1.12/V1.13 的 `0006 READ/INDICATE` 已移除。
++V1.15 回到週期式狀態同步。Device 只使用 `0002 NOTIFY` 傳送 B1/B2 與 Reliable Curve，不再存在獨立 State Packet 或 State ACK。
+ 
+-- `0002`：Device -> App，READ / NOTIFY，傳送 `0x81 / B1 / B2 / A1 / A2 / A3 / A4`。
+-- `0003`：App -> Device，WRITE，傳送 `C1 / C2 / C3 / C4 / C5`。
+-- `0004`：Firmware Revision READ，V1.14 回傳 `V1.14`。
+-- `0005`：Diagnostic READ，Protocol Version = 3。
++- `0002`：Device -> App，READ / NOTIFY，傳送 `B1 / B2 / A1 / A2 / A3 / A4`。
++- `0003`：App -> Device，WRITE，傳送 `C1 / C2 / C3 / C4`。
++- `0004`：Firmware Revision READ，V1.15 回傳 `V1.15`。
++- `0005`：Diagnostic READ，Protocol Version = 4。
+ 
+-## LOAD READY
++## B1 LIVE：唯一狀態來源
+ 
+-`LOAD LOW -> HIGH` 通過 debounce 後進入 `LOADED_READY`，Device 以 `0x81` Notify 每 200 ms 重送目前 READY 狀態，直到 App 回傳：
++BLE 已連線且 App 訂閱 `0002` 後，Device 每 `200 ms` 固定送出一筆 B1。
+ 
+ ```text
+-C5 | State=LOADED_READY | state_seq_le16
+-```
+-
+-ACK 只有在 State 與 `state_seq` 都等於目前 Device READY 狀態時有效。舊 ACK、錯誤 seq 或錯誤 State 只忽略，不斷線。
+-
+-若 Device 在 ACK 前已離開 `LOADED_READY`，READY 重送立即停止，後續舊 C5 無效；量測流程不會等待 ACK。
+-
+-## 不主動斷線
+-
+-V1.14 protocol flow 不再使用 Indication timeout、State timeout 或 ACK timeout 來主動斷開 BLE。Curve timeout 只進入交易 `TIMEOUT` 狀態，Connection 保持。
+-
+-低電停用 BLE 或 Deep-sleep 會關閉 BLE stack，屬於電源管理，不是 protocol recovery disconnect。
+-
+-## 0x81 STATE
+-
+-```text
+-Byte 0    0x81
+-Byte 1    State
+-Byte 2    Flags
+-Byte 3-4  state_seq (LE16)
++Byte 0     0xB1
++Byte 1     State
++Byte 2     Flags
++Byte 3-4   Current RPM LE16
++Byte 5-6   Max RPM LE16
++Byte 7-8   Launch RPM LE16
++Byte 9-10  Curve Duration ms LE16
++Byte 11-12 Curve Sample Count LE16
+ ```
+ 
+ State：
+@@ -55,31 +43,40 @@
+ - bit4 Charging
+ - bit5 WAIT_ACK
+ 
+-除 `LOADED_READY` 外，其餘 State/Flags 變化只送一次；新訂閱 0002 後送一次目前 Snapshot。
++App 必須以最新一筆 B1 的 State / Flags 覆蓋本地狀態。B1 是週期 Snapshot，不是事件佇列；單筆掉包不需要 ACK，下一個 200 ms Snapshot 會重新同步。
+ 
+-## C5 LOAD READY ACK
++## 已移除
+ 
+-```text
+-Byte 0    0xC5
+-Byte 1    State (=1)
+-Byte 2-3  state_seq (LE16)
+-```
++V1.15 不再使用：
+ 
+-C5 無 A4 response。App 可用「同一 READY 不再重送」判斷 ACK 已被接受。
++- `0x81 STATE`
++- `C5 STATE_ACK`
++- `state_seq`
++- LOAD READY pending
++- LOAD READY ACK timeout/retry state machine
++- State Indication / ATT Confirmation
+ 
+-## 即時 RPM
++舊 App 若仍送 C5，V1.15 不會把它視為有效控制命令。
+ 
+-`B1` 只在 SPINNING 期間約每 200 ms Notify。它不是 BLE heartbeat。
++## 不主動斷線
+ 
+-```text
+-B1 | State | Flags | CurrentRPM | MaxRPM | LaunchRPM | Duration | SampleCount
+-```
++V1.15 protocol flow 不因 Notify failure、Curve ACK timeout、A4 timeout 或未知控制命令主動呼叫 BLE `disconnect()`。
+ 
+-## Launch
++低電停用 BLE 或 Deep-sleep 會關閉 BLE stack，屬於電源管理，不是 protocol recovery disconnect。
++
++## B2 LAUNCH
++
++B2 只在發射事件送一次：
+ 
+-`B2` 封包格式不變：Launch RPM、Max at Launch、Launch Time、Launch Sample Index。
++```text
++Byte 0    0xB2
++Byte 1-2  Launch RPM LE16
++Byte 3-4  Max RPM at Launch LE16
++Byte 5-6  Launch Time ms LE16
++Byte 7-8  Launch Sample Index LE16
++```
+ 
+-V1.13/V1.14 量測使用 Rising/Falling 雙邊沿，但每筆 RPM 都是同極性 edge 到同極性 edge 的完整 360 度週期值。
++V1.13 起 RPM 使用 Rising/Falling 雙邊沿，但每筆 RPM 都是同極性 edge 到同極性 edge 的完整 360 度週期值。
+ 
+ ## Reliable Curve
+ 
+@@ -94,4 +91,4 @@
+ 
+ Curve 第一筆固定為 `0 ms / 0 RPM`。
+ 
+-完整位元組格式以 `BLE_API_V1.14.txt` 為準。
++完整位元組格式以 `BLE_API_V1.15.txt` 為準。
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/BRD_BLE_OLED.ino brd_v115_work/BRD_BLE_OLED/BRD_BLE_OLED.ino
+--- brd_v114_orig/BRD_BLE_OLED/BRD_BLE_OLED.ino	2026-09-14 05:33:45.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/BRD_BLE_OLED.ino	2026-09-14 06:03:31.501742115 +0000
+@@ -4,7 +4,7 @@
+     [V0.12 新增] BLE 即時 RPM、發射摘要、曲線與可選 ACK / 重傳。
+     [V0.12 修改] 低電 / ADC 故障同時停止量測與 BLE。
+     [V1.11 修改] 保留 GPIO / 去抖 / ADC / OLED HOLD；停止門檻改為 MAX 35%。
+-    [V1.14 修改] 0x81 狀態改由 0002 Notify；LOAD READY 每 200 ms 重送至 C5 ACK，無 timeout 主動斷線。
++    [V1.15 修改] 移除 0x81/C5/state_seq；B1 LIVE 每 200 ms 持續同步狀態，無 protocol 主動斷線。
+     不啟用 Serial / UART，GPIO20/21 保留給 OLED I2C。
+ */
+ #include <esp_system.h>
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/CHANGELOG.md brd_v115_work/BRD_BLE_OLED/CHANGELOG.md
+--- brd_v114_orig/BRD_BLE_OLED/CHANGELOG.md	2026-09-14 05:35:43.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/CHANGELOG.md	2026-09-14 06:03:31.501677577 +0000
+@@ -1,5 +1,18 @@
+ # CHANGELOG
+ 
++## V1.15 - 2026-09-14
++
++- [修改] `PROJECT_VERSION` -> `V1.15`。
++- [修改] BLE Protocol -> `BRD Reliable BLE Protocol V4`。
++- [刪除] `0x81 STATE` Packet。
++- [刪除] `C5 STATE_ACK`、`state_seq`、LOAD READY pending/ACK 狀態機。
++- [修改] `B1 LIVE` 改回 BLE connected + subscribed 後每 200 ms 固定發送。
++- [修改] `B1 State / Flags` 成為 App 唯一狀態同步來源。
++- [修改] WAIT_LOAD / LOADED_READY / SPINNING / RESULT_PENDING 都持續送 B1；單包掉包由下一筆 Snapshot 自動恢復。
++- [保留] 韌體 protocol 不主動呼叫 BLE `disconnect()`。
++- [保留] B2、Reliable Curve A1~A4/C1~C4、雙邊沿完整一圈 RPM、35% 結束條件。
++- [驗證] 81 項主機硬體替身回歸通過；13 項 millis/micros/ACK/B1 rollover 專項通過。
++
+ ## V1.14 - 2026-09-14
+ 
+ - [修改] `PROJECT_VERSION` -> `V1.14`。
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/README.md brd_v115_work/BRD_BLE_OLED/README.md
+--- brd_v114_orig/BRD_BLE_OLED/README.md	2026-09-14 05:35:42.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/README.md	2026-09-14 06:03:31.501376774 +0000
+@@ -1,56 +1,59 @@
+-# BRD_BLE_OLED V1.14
++# BRD_BLE_OLED V1.15
+ 
+-`BRD_BLE_OLED V1.14` 延續 V1.13 的雙邊沿完整一圈 RPM 量測，BLE 更新為 **BRD Reliable BLE Protocol V3**。
++`BRD_BLE_OLED V1.15` 延續 V1.13 的雙邊沿完整一圈 RPM 量測，BLE 更新為 **BRD Reliable BLE Protocol V4**。
+ 
+-## V1.14 主要修改
++## V1.15 主要修改
+ 
+-- `PROJECT_VERSION` 更新為 `V1.14`。
+-- 移除 `0006 State READ / INDICATE`。
+-- `0x81 State` 改由 `0002 NOTIFY` 傳送。
+-- `LOADED_READY` 每 200 ms 重送 `0x81`，直到 App 回 `C5 + state_seq`。
+-- 錯誤 / 舊 C5 只忽略，不會斷線。
+-- READY 沒有 ACK timeout；不回 ACK 就持續重送。
+-- Device State 離開 READY 時，自動停止 READY 重送，不阻止量測。
+-- 移除 State Indication / ATT Confirmation / State timeout 主動斷線機制。
+-- Firmware protocol flow 不呼叫 BLE `disconnect()` recovery。
+-- Curve A1/A2/A3/A4 + C1/C2/C3/C4 保留。
+-- B1 仍只在 SPINNING 約每 200 ms傳送即時 RPM。
+-- V1.13 的 Rising/Falling 雙邊沿完整 360 度 RPM 計算保留。
+-- Curve 第一筆 `0 ms / 0 RPM`、35% 結束條件保留。
++- `PROJECT_VERSION` 更新為 `V1.15`。
++- 移除 `0x81 STATE` 封包。
++- 移除 `C5 STATE_ACK`。
++- 移除 `state_seq`、READY pending 與 LOAD READY ACK 狀態機。
++- `B1 LIVE` 改回連線且訂閱後 **每 200 ms 固定發送**。
++- `B1 State / Flags` 為 App 唯一即時狀態來源。
++- `WAIT_LOAD / LOADED_READY / SPINNING / RESULT_PENDING` 都會持續收到 B1。
++- 單一 B1 Notify 掉包時，下一個 200 ms 封包會重新同步目前狀態。
++- 韌體不因 BLE ACK、Notify、狀態同步或 timeout 主動呼叫 `disconnect()`。
++- B2 LAUNCH 與 Reliable Curve A1/A2/A3/A4 + C1/C2/C3/C4 完整保留。
++- V1.13 Rising/Falling 雙邊沿完整 360 度 RPM 計算保留。
++- Curve 第一筆 `0 ms / 0 RPM`、MAX 35% 結束條件保留。
+ 
+ ## GATT
+ 
+ | 用途 | UUID 尾碼 | Property | 內容 |
+ |---|---|---|---|
+ | Service | `0001` | - | BRD Service |
+-| Data | `0002` | READ / NOTIFY | `0x81/B1/B2/A1/A2/A3/A4` |
+-| Control | `0003` | WRITE | `C1/C2/C3/C4/C5` |
+-| Firmware | `0004` | READ | `V1.14` |
+-| Diagnostic | `0005` | READ | Protocol V3 / BLE diagnostics |
++| Data | `0002` | READ / NOTIFY | `B1/B2/A1/A2/A3/A4` |
++| Control | `0003` | WRITE | `C1/C2/C3/C4` |
++| Firmware | `0004` | READ | `V1.15` |
++| Diagnostic | `0005` | READ | Protocol V4 / BLE diagnostics |
+ 
+-## LOAD App Flow
++## App 狀態同步
+ 
+ ```text
+ Connect
+ -> Subscribe 0002 Notify
+--> Receive current 0x81 State Snapshot
++-> 約 100 ms settle
++-> B1 LIVE 開始每 200 ms固定送出
+ 
+-LOAD completed
+--> 0x81 LOADED_READY seq=N
+--> Device repeats every 200 ms
+--> App writes C5 LOADED_READY seq=N
+--> Device stops READY repeats
+-
+-No ACK
+--> Device stays connected
+--> READY keeps repeating
+-
+-State changes before ACK
+--> READY repeat stops
+--> latest State wins
+--> stale C5 ignored
++WAIT_LOAD
++-> B1 State=0 持續發送
++
++LOAD 完成
++-> B1 State=1 LOADED_READY 持續發送
++
++開始旋轉
++-> B1 State=2 SPINNING_LOADED 持續發送，同時帶 Current RPM
++
++發射
++-> B2 LAUNCH 一次
++-> B1 State=3 SPINNING_LAUNCHED 持續發送
++
++Result Pending
++-> B1 State=4 持續發送
+ ```
+ 
++App 不需要對 LOAD/READY 回 ACK，也不需要處理 `0x81` 或 `C5`。
++
+ ## RPM 量測
+ 
+ RPM GPIO 使用 `CHANGE` 同時捕捉 Rising / Falling。每一筆 RPM 都由同極性完整一圈週期計算：
+@@ -64,7 +67,7 @@
+ 
+ ## 文件
+ 
+-- `BLE_API_V1.14.txt`：App 實作 API。
++- `BLE_API_V1.15.txt`：App 實作 API。
+ - `BLE_PROTOCOL.md`：Protocol 說明。
+ - `CHANGELOG.md`：版本修改。
+ - `VALIDATION.md`：主機測試結果。
+@@ -72,4 +75,4 @@
+ 
+ ## 電源管理注意
+ 
+-正常 BLE protocol timeout 不會主動斷線。裝置若因低電停用 BLE 或進入 Deep-sleep，BLE stack 會被關閉，實體連線自然結束；這是既有電源管理行為。
++正常 BLE protocol timeout 不會主動斷線。裝置若因低電停用 BLE 或進入 Deep-sleep，BLE stack 會被關閉，實體連線自然結束；這屬於電源管理，不是 BLE protocol recovery disconnect。
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/TIME_REVIEW.md brd_v115_work/BRD_BLE_OLED/TIME_REVIEW.md
+--- brd_v114_orig/BRD_BLE_OLED/TIME_REVIEW.md	2026-09-14 05:35:43.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/TIME_REVIEW.md	2026-09-14 06:03:31.501770838 +0000
+@@ -1,18 +1,19 @@
+-# BRD_BLE_OLED V1.14 時間與 Rollover 檢查
++# BRD_BLE_OLED V1.15 時間與 Rollover 檢查
+ 
+ ## 主要時間參數
+ 
+-- LOAD debounce：依 `LOAD_IR_DEBOUNCE_US`。
+-- RPM：Rising/Falling 各自使用 `uint32_t micros()` 差值，支援自然 rollover。
+-- LOAD READY resend：`BLE_LOAD_READY_INTERVAL_MS = 200 ms`。
+-- LOAD READY：沒有 ACK timeout，沒有 protocol disconnect timeout。
+-- B1 LIVE：`BLE_LIVE_INTERVAL_MS = 200 ms`，僅 SPINNING。
+-- Curve packet gate：`BLE_PACKET_INTERVAL_MS = 8 ms`。
+-- Curve send timeout：5000 ms。
+-- Curve ACK retry：1000 ms。
+-- Curve ACK timeout：5000 ms。
+-- A4 status timeout：2000 ms。
++- B1 LIVE：`BLE_LIVE_INTERVAL_MS = 200 ms`。
++- BLE packet gate：`BLE_PACKET_INTERVAL_MS = 8 ms`。
++- Subscribe settle：`BLE_SUBSCRIBE_SETTLE_MS = 100 ms`。
++- Curve ACK timeout：`5000 ms`。
++- Curve ACK retry：`1000 ms`。
++- Curve Send timeout：`5000 ms`。
++- A4 Status timeout：`2000 ms`。
+ 
+-所有 `millis()/micros()` elapsed 判斷使用 unsigned subtraction，對 32-bit rollover 進行主機端專項驗證。
++## V1.15 B1 rollover
+ 
+-V1.14 新增 `load_ready_millis_wrap`，確認 READY 在 millis rollover 前後仍每 200 ms 重送且不會斷線。
++`live_periodic_millis_wrap` 將 `millis()` 放在 32-bit rollover 前，確認 rollover 前後 B1 仍持續每 200 ms 發送，BLE 連線不因 rollover 或狀態同步被主動斷開。
++
++## 專項結果
++
++共 13 項時間 / rollover 測試通過，包含 measurement micros rollover、雙邊沿 RPM micros rollover、OLED HOLD、Battery recovery/stale、Curve、ACK、Reconnect 與 B1 periodic millis rollover。
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/VALIDATION.md brd_v115_work/BRD_BLE_OLED/VALIDATION.md
+--- brd_v114_orig/BRD_BLE_OLED/VALIDATION.md	2026-09-14 05:35:43.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/VALIDATION.md	2026-09-14 06:03:31.501837528 +0000
+@@ -1,55 +1,26 @@
+-# BRD_BLE_OLED V1.14 驗證紀錄
++# BRD_BLE_OLED V1.15 驗證紀錄
+ 
+ ## Host Regression
+ 
+-最終 V1.14 工作樹執行：
++最終 V1.15 工作樹執行 `verification/run_host_tests.py`：
+ 
+-```text
+-python verification/run_host_tests.py
+-```
+-
+-結果：
+-
+-```text
+-81 cases passed; hardware interfaces are mocked.
+-```
+-
+-並對以下 8 個來源檔執行獨立 C++17 syntax check：
+-
+-- `BRD_BLE_OLED.ino`
+-- `brd_battery.cpp`
+-- `brd_ble.cpp`
+-- `brd_io.cpp`
+-- `brd_measurement.cpp`
+-- `brd_oled.cpp`
+-- `brd_power.cpp`
+-- `brd_record.cpp`
+-
+-## V1.14 LOAD / BLE 新增驗證
+-
+-- `load_ready_notify_until_ack`：READY 每 200 ms 重送，正確 C5 後停止。
+-- `load_ready_wrong_ack_keeps_resending`：錯誤 seq C5 不停止重送且不斷線。
+-- `load_ready_no_ack_never_disconnects`：5 秒完全無 C5，仍保持 connected 並持續重送。
+-- `load_ready_millis_wrap`：READY resend 跨 millis rollover 正常。
+-- `state_event_notify`：State 由 0002 Notify 傳送，READY ACK 後停止重複，SPINNING 仍有 B1。
+-- `state_notify_failure_never_disconnects`：State Notify 持續失敗不觸發 Disconnect，恢復後可再送。
++- 81 / 81 cases PASS。
++- 8 個 `.ino/.cpp` 來源檔通過 C++17 `-Wall -Wextra -Werror -Wshadow -pedantic` syntax check。
++- AddressSanitizer / UndefinedBehaviorSanitizer 啟用於主機測試。
++
++## V1.15 BLE 新增驗證
++
++- `live_periodic_wait_load`：WAIT_LOAD 每 200 ms 持續 B1，無 0x81。
++- `live_periodic_loaded_ready`：LOADED_READY 每 200 ms 持續 B1，無 C5 需求。
++- `live_periodic_no_c5`：舊 C5 誤送不會停止 B1 或斷線。
++- `live_periodic_millis_wrap`：B1 cadence 跨 millis rollover 正常。
++- `live_periodic_state_change`：WAIT_LOAD -> READY -> SPINNING 均由週期 B1 同步。
++- `live_notify_failure_never_disconnects`：Notify 失敗不觸發 protocol disconnect，恢復後 B1 繼續。
+ 
+ ## Time / Rollover
+ 
+-```text
+-python verification/time_review/run_time_review.py --project-root <unzipped-root>
+-```
+-
+-結果：
+-
+-```text
+-Complete: 13 V1.14 time/rollover checks passed; firmware unchanged.
+-```
+-
+-## 尚需實機驗證
+-
+-- ESP32-C3 Arduino/NimBLE 實際編譯。
+-- iOS / Android 0002 Notify + C5 實際互通。
+-- RF 干擾下 READY 重送與 C5 行為。
+-- 連線中實際功耗。
+-- 低電 / Deep-sleep 關閉 BLE stack 的硬體行為。
++`verification/time_review/run_time_review.py`：13 / 13 PASS。
++
++## 限制
++
++主機測試使用硬體替身，不能取代 ESP32-C3 + 真實 NimBLE + 手機/上位機的 RF、GATT timing 與功耗實機驗證。
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/brd_ble.cpp brd_v115_work/BRD_BLE_OLED/brd_ble.cpp
+--- brd_v114_orig/BRD_BLE_OLED/brd_ble.cpp	2026-09-14 05:36:21.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_ble.cpp	2026-09-14 06:04:03.885259940 +0000
+@@ -1,7 +1,7 @@
+ /*
+     檔案位置: BRD_BLE_OLED/brd_ble.cpp
+-    [V1.14 修改] Reliable BLE Protocol V3：0x81 狀態回到 0002 Notify，LOAD READY 重送至 C5 ACK。
+-    [V1.14 修改] 移除 State Indication timeout / 主動斷線 recovery；韌體不因通訊逾時主動斷線。
++    [V1.15 修改] Reliable BLE Protocol V4：恢復 B1 每 200 ms 持續同步狀態，移除 0x81/C5/state_seq。
++    [V1.15 保留] 韌體不因通訊逾時主動斷線。
+     [V1.11 保留] START/DATA/END/A4 timeout、Session、Packet Index、CRC32、ACK/重傳/Abort。
+     [保留] NimBLE callback 只更新連線快照與有界命令佇列；封包處理由主 loop 執行。
+ */
+@@ -62,22 +62,12 @@
+ static uint32_t g_ble_subscribe_ms = 0UL;
+ static uint32_t g_ble_last_packet_ms = 0UL;
+ static uint32_t g_ble_last_live_ms = 0UL;
+-static uint32_t g_ble_state_last_attempt_ms = 0UL;
+ static uint32_t g_ble_tx_start_ms = 0UL;
+ static uint32_t g_ble_ack_start_ms = 0UL;
+ static uint32_t g_ble_last_end_ms = 0UL;
+ static bool g_ble_ack_clock_started = false;
+ static bool g_ble_launch_sent = false;
+ static bool g_ble_have_live = false;
+-/* [V1.12 新增] 狀態序號只在狀態/旗標改變時遞增；Snapshot 不遞增。 */
+-static bool g_ble_state_initialized = false;
+-static bool g_ble_state_event_pending = false;
+-static bool g_ble_state_snapshot_requested = false;
+-static bool g_ble_load_ready_pending = false;
+-static uint8_t g_ble_state_code = 0U;
+-static uint8_t g_ble_state_flags = 0U;
+-static uint16_t g_ble_state_seq = 0U;
+-static uint8_t g_ble_state_value[5] = {0x81U, 0U, 0U, 0U, 0U};
+ static uint8_t g_ble_control_value[20] = {};
+ static ble_reliable_status_t g_reliable_status = {};
+ static uint16_t g_reliable_packet_index = 0U;
+@@ -140,7 +130,7 @@
+         }
+         portEXIT_CRITICAL(&g_ble_mux);
+         (void)server;
+-        /* [V1.14] 不主動斷線；非目前追蹤連線不進入 BRD link state。 */
++        /* [V1.15 保留] 不主動斷線；非目前追蹤連線不進入 BRD link state。 */
+     }
+ 
+     void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
+@@ -150,9 +140,6 @@
+         if (g_ble_link.connected && g_ble_link.handle == info.getConnHandle()) {
+             g_ble_link.connected = false;
+             g_ble_link.notify_subscribed = false;
+-            g_ble_state_snapshot_requested = false;
+-            g_ble_state_event_pending = false;
+-            g_ble_load_ready_pending = false;
+             g_ble_link.session++;
+             g_ble_command_head = g_ble_command_tail = 0U;
+         }
+@@ -174,11 +161,6 @@
+             g_ble_link.notify_subscribed = enabled;
+             g_ble_link.session++;
+             g_ble_command_head = g_ble_command_tail = 0U;
+-            g_ble_state_snapshot_requested = enabled;
+-            if (!enabled) {
+-                g_ble_state_event_pending = false;
+-                g_ble_load_ready_pending = false;
+-            }
+         }
+         portEXIT_CRITICAL(&g_ble_mux);
+     }
+@@ -244,9 +226,6 @@
+     g_ble_accept_connections = false;
+     g_ble_link.connected = false;
+     g_ble_link.notify_subscribed = false;
+-    g_ble_state_snapshot_requested = false;
+-    g_ble_state_event_pending = false;
+-    g_ble_load_ready_pending = false;
+     g_ble_link.session++;
+     g_ble_command_head = g_ble_command_tail = 0U;
+     portEXIT_CRITICAL(&g_ble_mux);
+@@ -254,7 +233,7 @@
+         g_ble_advertising->stop();
+     }
+     (void)previous_link;
+-    /* [V1.14] 不主動呼叫 BLE 斷線 API；BLE stack deinit 僅用於功能停用/睡眠關閉。 */
++    /* [V1.15 保留] 不主動呼叫 BLE 斷線 API；BLE stack deinit 僅用於功能停用/睡眠關閉。 */
+     g_ble_diag.initialized = false;
+     g_ble_diag.connected = false;
+     g_ble_diag.subscribed = false;
+@@ -317,7 +296,7 @@
+     g_ble_notify->setValue(live, sizeof(live));
+     g_ble_firmware->setValue(PROJECT_VERSION);
+     memset(g_ble_control_value, 0, sizeof(g_ble_control_value));
+-    g_ble_control_value[0] = 3U;
++    g_ble_control_value[0] = 4U;
+     if (!g_ble_server->start()) {
+         return false;
+     }
+@@ -425,26 +404,6 @@
+     uint16_t session = record.ready ? ble_protocol_session(record) : 0U;
+     brd_event_info_t events = brd_record_get_event_info();
+ 
+-    if (p[0] == 0xC5U) {
+-        /* [V1.14 新增] LOAD READY ACK：C5, State, state_seq_le16。 */
+-        if (command.size != 4U) {
+-            ble_count(g_ble_diag.command_errors);
+-            return;
+-        }
+-        uint16_t ack_seq = ble_read_u16(p + 2U);
+-        if (p[1] == BRD_STATE_LOADED_READY &&
+-            g_ble_state_code == BRD_STATE_LOADED_READY &&
+-            ack_seq == g_ble_state_seq) {
+-            /* [V1.14] C5 為 idempotent；重複 ACK 不算錯誤。 */
+-            g_ble_load_ready_pending = false;
+-            g_ble_state_event_pending = false;
+-        } else {
+-            /* 舊 ACK / 錯誤 seq 只忽略，不斷線、不改變目前狀態。 */
+-            ble_count(g_ble_diag.state_ack_errors);
+-        }
+-        return;
+-    }
+-
+     if (command.size < 3U) {
+         ble_count(g_ble_diag.command_errors);
+         ble_status(requested, 0x82U, command.size, now_ms);
+@@ -532,116 +491,6 @@
+     return sent;
+ }
+ 
+-/*
+-    [V1.14 修改] 0x81 狀態改由 0002 Notify 傳送。
+-    - 所有狀態變更先送一筆 0x81 snapshot/event。
+-    - LOADED_READY 每 BLE_LOAD_READY_INTERVAL_MS 重送，直到收到 C5 + state_seq ACK。
+-    - 不使用 Indication、ATT Confirmation 或狀態 timeout 主動斷線。
+-*/
+-static void ble_state_snapshot(const brd_record_info_t &record, uint8_t &state, uint8_t &flags,
+-                               bool &active) {
+-    brd_telemetry_t telemetry = brd_measurement_get_telemetry();
+-    bool pending = record.ready && g_ble_diag.tx_state != BRD_BLE_TX_DONE;
+-    state = pending ? 4U : (uint8_t)telemetry.state;
+-    flags = (telemetry.loaded ? 1U : 0U) | (telemetry.active ? 2U : 0U) |
+-            (record.launch_valid ? 4U : 0U) | (pending ? 8U : 0U) |
+-            (brd_io_is_charging() ? 16U : 0U) |
+-            (g_ble_diag.tx_state == BRD_BLE_TX_WAIT_ACK ? 32U : 0U);
+-    active = telemetry.active;
+-}
+-
+-static void ble_state_store_value(void) {
+-    uint8_t value[5] = {0x81U, g_ble_state_code, g_ble_state_flags, 0U, 0U};
+-    ble_u16(value + 3U, g_ble_state_seq);
+-    portENTER_CRITICAL(&g_ble_mux);
+-    memcpy(g_ble_state_value, value, sizeof(value));
+-    portEXIT_CRITICAL(&g_ble_mux);
+-}
+-
+-static void ble_track_state(const ble_link_t &link, const brd_record_info_t &record, uint32_t now_ms) {
+-    uint8_t state = 0U;
+-    uint8_t flags = 0U;
+-    bool active = false;
+-    ble_state_snapshot(record, state, flags, active);
+-
+-    bool changed = false;
+-    if (!g_ble_state_initialized) {
+-        g_ble_state_initialized = true;
+-        g_ble_state_code = state;
+-        g_ble_state_flags = flags;
+-        changed = true;
+-    } else if (state != g_ble_state_code || flags != g_ble_state_flags) {
+-        g_ble_state_code = state;
+-        g_ble_state_flags = flags;
+-        g_ble_state_seq++;
+-        changed = true;
+-    }
+-    if (!active) {
+-        g_ble_have_live = false;
+-    }
+-
+-    bool snapshot_requested = false;
+-    portENTER_CRITICAL(&g_ble_mux);
+-    snapshot_requested = g_ble_state_snapshot_requested;
+-    g_ble_state_snapshot_requested = false;
+-    portEXIT_CRITICAL(&g_ble_mux);
+-
+-    if (changed || snapshot_requested) {
+-        ble_state_store_value();
+-    }
+-
+-    if (!link.connected || !link.notify_subscribed) {
+-        g_ble_state_event_pending = false;
+-        g_ble_load_ready_pending = false;
+-        return;
+-    }
+-
+-    if (changed || snapshot_requested) {
+-        g_ble_state_event_pending = true;
+-        g_ble_load_ready_pending = (g_ble_state_code == BRD_STATE_LOADED_READY);
+-        g_ble_state_last_attempt_ms = now_ms - BLE_LOAD_READY_INTERVAL_MS;
+-    }
+-}
+-
+-static bool ble_state_update(const ble_link_t &link, uint32_t now_ms) {
+-    if (!link.connected || !link.notify_subscribed) {
+-        return false;
+-    }
+-
+-    bool ready_retry = g_ble_load_ready_pending && g_ble_state_code == BRD_STATE_LOADED_READY;
+-    if (!g_ble_state_event_pending && !ready_retry) {
+-        return false;
+-    }
+-
+-    if ((uint32_t)(now_ms - g_ble_subscribe_ms) < BLE_SUBSCRIBE_SETTLE_MS) {
+-        return false;
+-    }
+-    /* [V1.14] 狀態 Notify 失敗也只按固定週期重試，不能壟斷 BLE 主迴圈。 */
+-    if ((uint32_t)(now_ms - g_ble_state_last_attempt_ms) < BLE_LOAD_READY_INTERVAL_MS) {
+-        return false;
+-    }
+-
+-    uint8_t packet[5];
+-    portENTER_CRITICAL(&g_ble_mux);
+-    memcpy(packet, g_ble_state_value, sizeof(packet));
+-    portEXIT_CRITICAL(&g_ble_mux);
+-
+-    g_ble_state_last_attempt_ms = now_ms;
+-    ble_link_t latest = ble_get_link();
+-    if (!latest.connected || !latest.notify_subscribed || latest.session != link.session) {
+-        return false;
+-    }
+-
+-    bool sent = g_ble_notify->notify(packet, sizeof(packet), link.handle);
+-    if (!sent) {
+-        ble_count(g_ble_diag.state_notify_failures);
+-        return true;
+-    }
+-
+-    g_ble_state_event_pending = false;
+-    return true;
+-}
+-
+ static void ble_process_commands(const ble_link_t &link, const brd_record_info_t &record,
+                                  uint32_t now_ms) {
+     if (g_reliable_status.pending) {
+@@ -666,7 +515,7 @@
+ static void ble_update_control(const brd_record_info_t &record) {
+     uint8_t value[20] = {};
+     brd_event_info_t events = brd_record_get_event_info();
+-    value[0] = 3U; /* Reliable Protocol V3 */
++    value[0] = 4U; /* Reliable Protocol V4 */
+     value[1] = (uint8_t)g_ble_diag.tx_state;
+     value[2] = (record.ready ? 1U : 0U) | (events.truncated ? 2U : 0U);
+     value[3] = g_ble_diag.reliable_mode ? 1U : 0U;
+@@ -745,8 +594,8 @@
+         packet[3] = g_reliable_status.code;
+         ble_u16(packet + 4U, g_reliable_status.detail);
+         size = 6U;
+-    } else if (telemetry.active &&
+-               (!g_ble_have_live || (uint32_t)(now_ms - g_ble_last_live_ms) >= BLE_LIVE_INTERVAL_MS)) {
++    } else if (!g_ble_have_live ||
++               (uint32_t)(now_ms - g_ble_last_live_ms) >= BLE_LIVE_INTERVAL_MS) {
+         kind = 2U;
+         packet[0] = 0xB1U;
+         packet[1] = state;
+@@ -884,8 +733,6 @@
+ 
+     ble_process_commands(link, record, now_ms);
+     record = brd_record_get_info();
+-    /* [V1.14] 狀態先更新；只有實際送出 0x81 時才佔用本次 Notify。 */
+-    ble_track_state(link, record, now_ms);
+ 
+     if (!link.connected) {
+         if (!g_ble_advertising->isAdvertising() &&
+@@ -897,11 +744,6 @@
+         return;
+     }
+ 
+-    if (ble_state_update(link, now_ms)) {
+-        ble_update_control(brd_record_get_info());
+-        return;
+-    }
+-
+     ble_reliable_update(link, record, now_ms);
+     ble_update_control(brd_record_get_info());
+ }
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/brd_ble.h brd_v115_work/BRD_BLE_OLED/brd_ble.h
+--- brd_v114_orig/BRD_BLE_OLED/brd_ble.h	2026-09-14 05:31:31.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_ble.h	2026-09-14 06:01:25.803975422 +0000
+@@ -1,6 +1,6 @@
+ /*
+     檔案位置: BRD_BLE_OLED/brd_ble.h
+-    [V1.14 修改] BLE 主迴圈工作與診斷；0x81 LOAD READY 使用 Notify + C5 ACK。
++    [V1.15 修改] BLE 主迴圈工作與診斷；B1 每 200 ms 持續同步狀態。
+ */
+ #ifndef BRD_BLE_H
+ #define BRD_BLE_H
+@@ -32,9 +32,6 @@
+     /* [V1.11 新增] 分離記錄送出階段與 A4 STATUS 的逾時。 */
+     uint32_t send_timeouts;
+     uint32_t status_timeouts;
+-    /* [V1.14 新增] 狀態 Notify 失敗與 C5 ACK 錯誤統計。 */
+-    uint32_t state_notify_failures;
+-    uint32_t state_ack_errors;
+ };
+ 
+ /* [新增] 低電 / ADC 故障時傳 false，停止廣播、連線並釋放 BLE stack。 */
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/BRD_BLE_OLED/brd_config.h brd_v115_work/BRD_BLE_OLED/brd_config.h
+--- brd_v114_orig/BRD_BLE_OLED/brd_config.h	2026-09-14 05:33:45.000000000 +0000
++++ brd_v115_work/BRD_BLE_OLED/brd_config.h	2026-09-14 06:01:25.804133440 +0000
+@@ -22,8 +22,8 @@
+ #define PROJECT_FULL_NAME                 "Beyblade RPM Detector"
+ #define PROJECT_SHORT_NAME                "BRD"
+ #define PROJECT_VARIANT                   "BRD_BLE_OLED"
+-/* [V1.14 修改] 版本標示更新為 V1.14，供 OLED 與 BLE Firmware Revision 共用。 */
+-#define PROJECT_VERSION                   "V1.14"
++/* [V1.15 修改] 版本標示更新為 V1.15，供 OLED 與 BLE Firmware Revision 共用。 */
++#define PROJECT_VERSION                   "V1.15"
+ #define CPU_FIXED_FREQ_MHZ                80U
+ #define MAIN_LOOP_DELAY_MS                1UL
+ /* [V1.10 新增] WAIT LOAD、未連線、未充電、無待傳結果才開始待機計時。 */
+@@ -130,13 +130,13 @@
+ #define OLED_RETRY_INTERVAL_MS           1000UL
+ 
+ /*
+-    [V1.14 修改] BRD Reliable BLE Protocol V3。
+-    0002: Notify (0x81/B1/B2/A1/A2/A3/A4)
+-    0003: Control WRITE (C1/C2/C3/C4/C5)
++    [V1.15 修改] BRD Reliable BLE Protocol V4。
++    0002: Notify (B1/B2/A1/A2/A3/A4)
++    0003: Control WRITE (C1/C2/C3/C4)
+     0004: Firmware Revision READ
+     0005: Diagnostic READ
+-    LOAD READY 使用 0x81 每 200 ms 重送，收到 C5 + state_seq ACK 後停止。
+-    其餘狀態只在變化或新訂閱 Snapshot 時送一次；無任何 timeout 主動斷線。
++    B1 LIVE 在 BLE 已連線且訂閱後每 200 ms 固定發送，State/Flags 為上位機唯一狀態來源。
++    不再使用 0x81、C5、state_seq 或 LOAD READY ACK；韌體不因通訊逾時主動斷線。
+     曲線使用實際有效 RPM 事件，第一筆固定為 t=0 / 0 RPM。
+ */
+ #define BRD_SERVICE_UUID                  "7f510001-1b15-4d5f-9f4d-9b3c7a1d9a10"
+@@ -154,7 +154,6 @@
+ #define BLE_ACK_RETRY_MS                  1000UL
+ #define BLE_SEND_TIMEOUT_MS               5000UL
+ #define BLE_STATUS_TIMEOUT_MS             2000UL
+-#define BLE_LOAD_READY_INTERVAL_MS       200UL
+ #define BLE_COMMAND_QUEUE_SIZE            8U
+ #define BLE_SAMPLES_PER_PACKET            4U
+ #define CURVE_MAX_DURATION_MS             60000UL
+@@ -172,8 +171,7 @@
+               "Invalid BLE command queue size.");
+ static_assert(BLE_ACK_TIMEOUT_MS < 0x80000000UL && BLE_ACK_RETRY_MS < BLE_ACK_TIMEOUT_MS &&
+               BLE_SEND_TIMEOUT_MS < 0x80000000UL && BLE_STATUS_TIMEOUT_MS > 0UL &&
+-              BLE_STATUS_TIMEOUT_MS < BLE_ACK_TIMEOUT_MS &&
+-              BLE_LOAD_READY_INTERVAL_MS > 0UL && BLE_LOAD_READY_INTERVAL_MS < 0x80000000UL,
++              BLE_STATUS_TIMEOUT_MS < BLE_ACK_TIMEOUT_MS,
+               "Invalid BLE timeout.");
+ 
+ /* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/brd_ble_full.txt brd_v115_work/brd_ble_full.txt
+--- brd_v114_orig/brd_ble_full.txt	1970-01-01 00:00:00.000000000 +0000
++++ brd_v115_work/brd_ble_full.txt	2026-09-14 05:59:04.733547303 +0000
+@@ -0,0 +1,927 @@
++/*
++    檔案位置: BRD_BLE_OLED/brd_ble.cpp
++    [V1.14 修改] Reliable BLE Protocol V3：0x81 狀態回到 0002 Notify，LOAD READY 重送至 C5 ACK。
++    [V1.14 修改] 移除 State Indication timeout / 主動斷線 recovery；韌體不因通訊逾時主動斷線。
++    [V1.11 保留] START/DATA/END/A4 timeout、Session、Packet Index、CRC32、ACK/重傳/Abort。
++    [保留] NimBLE callback 只更新連線快照與有界命令佇列；封包處理由主 loop 執行。
++*/
++#include <NimBLEDevice.h>
++#include <cstdio>
++#include <cstring>
++
++#include "brd_ble.h"
++#include "brd_config.h"
++#include "brd_io.h"
++#include "brd_measurement.h"
++#include "brd_record.h"
++
++struct ble_link_t {
++    uint32_t session;
++    uint16_t handle;
++    bool connected;
++    bool notify_subscribed;
++};
++
++struct ble_command_t {
++    uint32_t session;
++    uint8_t size;
++    uint8_t bytes[20];
++};
++
++struct ble_reliable_status_t {
++    bool pending;
++    uint16_t session;
++    uint16_t detail;
++    uint8_t code;
++    uint8_t after;
++    uint32_t start_ms;
++};
++
++static portMUX_TYPE g_ble_mux = portMUX_INITIALIZER_UNLOCKED;
++static ble_link_t g_ble_link = {};
++static bool g_ble_accept_connections = false;
++static ble_command_t g_ble_commands[BLE_COMMAND_QUEUE_SIZE];
++static uint8_t g_ble_command_head = 0U;
++static uint8_t g_ble_command_tail = 0U;
++static uint32_t g_ble_callback_errors = 0UL;
++static NimBLEServer *g_ble_server = nullptr;
++static NimBLECharacteristic *g_ble_notify = nullptr;
++static NimBLECharacteristic *g_ble_control = nullptr;
++static NimBLECharacteristic *g_ble_firmware = nullptr;
++static NimBLECharacteristic *g_ble_diagnostic = nullptr;
++static NimBLEAdvertising *g_ble_advertising = nullptr;
++static brd_ble_diagnostics_t g_ble_diag = {};
++static char g_ble_name[BLE_DEVICE_NAME_MAX_LEN] = {};
++static bool g_ble_init_attempted = false;
++static bool g_ble_teardown_pending = false;
++static uint32_t g_ble_last_shutdown_ms = 0UL;
++static uint32_t g_ble_last_init_ms = 0UL;
++static uint32_t g_ble_last_adv_ms = 0UL;
++static uint32_t g_ble_session_seen = UINT32_MAX;
++static uint32_t g_ble_epoch_seen = UINT32_MAX;
++static uint32_t g_ble_subscribe_ms = 0UL;
++static uint32_t g_ble_last_packet_ms = 0UL;
++static uint32_t g_ble_last_live_ms = 0UL;
++static uint32_t g_ble_state_last_attempt_ms = 0UL;
++static uint32_t g_ble_tx_start_ms = 0UL;
++static uint32_t g_ble_ack_start_ms = 0UL;
++static uint32_t g_ble_last_end_ms = 0UL;
++static bool g_ble_ack_clock_started = false;
++static bool g_ble_launch_sent = false;
++static bool g_ble_have_live = false;
++/* [V1.12 新增] 狀態序號只在狀態/旗標改變時遞增；Snapshot 不遞增。 */
++static bool g_ble_state_initialized = false;
++static bool g_ble_state_event_pending = false;
++static bool g_ble_state_snapshot_requested = false;
++static bool g_ble_load_ready_pending = false;
++static uint8_t g_ble_state_code = 0U;
++static uint8_t g_ble_state_flags = 0U;
++static uint16_t g_ble_state_seq = 0U;
++static uint8_t g_ble_state_value[5] = {0x81U, 0U, 0U, 0U, 0U};
++static uint8_t g_ble_control_value[20] = {};
++static ble_reliable_status_t g_reliable_status = {};
++static uint16_t g_reliable_packet_index = 0U;
++static uint16_t g_reliable_retry_indexes[8] = {};
++static uint8_t g_reliable_retry_count = 0U;
++static uint8_t g_reliable_retry_cursor = 0U;
++static bool g_reliable_retrying = false;
++static uint16_t g_reliable_last_ack_session = 0U;
++static uint16_t g_reliable_last_ack_count = 0U;
++static uint32_t g_reliable_last_ack_crc = 0UL;
++static bool g_reliable_last_ack_valid = false;
++
++static void ble_count(uint32_t &value) {
++    if (value != UINT32_MAX) {
++        value++;
++    }
++}
++
++static void ble_u16(uint8_t *out, uint16_t value) {
++    out[0] = (uint8_t)value;
++    out[1] = (uint8_t)(value >> 8);
++}
++
++static void ble_u32(uint8_t *out, uint32_t value) {
++    for (uint8_t i = 0U; i < 4U; i++) {
++        out[i] = (uint8_t)(value >> (8U * i));
++    }
++}
++
++static uint32_t ble_read_u32(const uint8_t *data) {
++    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
++           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
++}
++
++static uint16_t ble_read_u16(const uint8_t *data) {
++    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
++}
++
++static uint16_t ble_protocol_session(const brd_record_info_t &record) {
++    return (uint16_t)((record.result_id - 1UL) % 65534UL + 1UL);
++}
++
++static ble_link_t ble_get_link(void) {
++    portENTER_CRITICAL(&g_ble_mux);
++    ble_link_t link = g_ble_link;
++    portEXIT_CRITICAL(&g_ble_mux);
++    return link;
++}
++
++class BrdServerCallbacks final : public NimBLEServerCallbacks {
++    void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
++        portENTER_CRITICAL(&g_ble_mux);
++        bool accept = g_ble_accept_connections && !g_ble_link.connected;
++        if (accept) {
++            g_ble_link.session++;
++            g_ble_link.handle = info.getConnHandle();
++            g_ble_link.connected = true;
++            g_ble_link.notify_subscribed = false;
++            g_ble_command_head = g_ble_command_tail = 0U;
++        }
++        portEXIT_CRITICAL(&g_ble_mux);
++        (void)server;
++        /* [V1.14] 不主動斷線；非目前追蹤連線不進入 BRD link state。 */
++    }
++
++    void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
++        (void)server;
++        (void)reason;
++        portENTER_CRITICAL(&g_ble_mux);
++        if (g_ble_link.connected && g_ble_link.handle == info.getConnHandle()) {
++            g_ble_link.connected = false;
++            g_ble_link.notify_subscribed = false;
++            g_ble_state_snapshot_requested = false;
++            g_ble_state_event_pending = false;
++            g_ble_load_ready_pending = false;
++            g_ble_link.session++;
++            g_ble_command_head = g_ble_command_tail = 0U;
++        }
++        portEXIT_CRITICAL(&g_ble_mux);
++        /* [V1.11 保留] 由主 loop 決定是否重新廣播，斷線不清除尚未 ACK 的曲線。 */
++    }
++};
++
++class BrdNotifyCallbacks final : public NimBLECharacteristicCallbacks {
++    void onSubscribe(NimBLECharacteristic *characteristic, NimBLEConnInfo &info,
++                     uint16_t subscription) override {
++        if (characteristic != g_ble_notify) {
++            return;
++        }
++        portENTER_CRITICAL(&g_ble_mux);
++        bool enabled = (subscription & 1U) != 0U;
++        if (g_ble_link.connected && g_ble_link.handle == info.getConnHandle() &&
++            enabled != g_ble_link.notify_subscribed) {
++            g_ble_link.notify_subscribed = enabled;
++            g_ble_link.session++;
++            g_ble_command_head = g_ble_command_tail = 0U;
++            g_ble_state_snapshot_requested = enabled;
++            if (!enabled) {
++                g_ble_state_event_pending = false;
++                g_ble_load_ready_pending = false;
++            }
++        }
++        portEXIT_CRITICAL(&g_ble_mux);
++    }
++};
++
++class BrdControlCallbacks final : public NimBLECharacteristicCallbacks {
++    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &info) override {
++        (void)info;
++        if (characteristic == g_ble_firmware) {
++            characteristic->setValue(PROJECT_VERSION);
++            return;
++        }
++        if (characteristic == g_ble_diagnostic) {
++            uint8_t value[20];
++            portENTER_CRITICAL(&g_ble_mux);
++            memcpy(value, g_ble_control_value, sizeof(value));
++            portEXIT_CRITICAL(&g_ble_mux);
++            characteristic->setValue(value, sizeof(value));
++            return;
++        }
++    }
++
++    void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &info) override {
++        NimBLEAttValue value = characteristic->getValue();
++        portENTER_CRITICAL(&g_ble_mux);
++        uint8_t next = (uint8_t)((g_ble_command_head + 1U) % BLE_COMMAND_QUEUE_SIZE);
++        if (characteristic != g_ble_control || !g_ble_accept_connections ||
++            !g_ble_link.connected || !g_ble_link.notify_subscribed ||
++            g_ble_link.handle != info.getConnHandle() || value.size() == 0U ||
++            value.size() > sizeof(g_ble_commands[0].bytes) || next == g_ble_command_tail) {
++            ble_count(g_ble_callback_errors);
++        } else {
++            ble_command_t &command = g_ble_commands[g_ble_command_head];
++            command.session = g_ble_link.session;
++            command.size = (uint8_t)value.size();
++            for (uint8_t i = 0U; i < command.size; i++) {
++                command.bytes[i] = value.data()[i];
++            }
++            g_ble_command_head = next;
++        }
++        portEXIT_CRITICAL(&g_ble_mux);
++    }
++};
++
++static BrdServerCallbacks g_ble_server_callbacks;
++static BrdNotifyCallbacks g_ble_notify_callbacks;
++static BrdControlCallbacks g_ble_control_callbacks;
++
++static void ble_reset_transfer(void) {
++    g_ble_diag.tx_state = BRD_BLE_TX_IDLE;
++    g_ble_ack_clock_started = false;
++    g_ble_launch_sent = false;
++    g_reliable_packet_index = 0U;
++    g_reliable_retry_count = 0U;
++    g_reliable_retry_cursor = 0U;
++    g_reliable_retrying = false;
++}
++
++static bool ble_shutdown(void) {
++    ble_link_t previous_link = ble_get_link();
++    g_ble_last_shutdown_ms = millis();
++    portENTER_CRITICAL(&g_ble_mux);
++    g_ble_accept_connections = false;
++    g_ble_link.connected = false;
++    g_ble_link.notify_subscribed = false;
++    g_ble_state_snapshot_requested = false;
++    g_ble_state_event_pending = false;
++    g_ble_load_ready_pending = false;
++    g_ble_link.session++;
++    g_ble_command_head = g_ble_command_tail = 0U;
++    portEXIT_CRITICAL(&g_ble_mux);
++    if (g_ble_advertising != nullptr) {
++        g_ble_advertising->stop();
++    }
++    (void)previous_link;
++    /* [V1.14] 不主動呼叫 BLE 斷線 API；BLE stack deinit 僅用於功能停用/睡眠關閉。 */
++    g_ble_diag.initialized = false;
++    g_ble_diag.connected = false;
++    g_ble_diag.subscribed = false;
++    g_ble_diag.reliable_mode = false;
++    g_reliable_status = {};
++    g_ble_have_live = false;
++    ble_reset_transfer();
++    if (NimBLEDevice::isInitialized() && !NimBLEDevice::deinit(false)) {
++        g_ble_teardown_pending = true;
++        ble_count(g_ble_diag.shutdown_failures);
++        return false;
++    }
++    NimBLEDevice::deinit(true);
++    g_ble_server = nullptr;
++    g_ble_notify = nullptr;
++    g_ble_control = nullptr;
++    g_ble_firmware = nullptr;
++    g_ble_diagnostic = nullptr;
++    g_ble_advertising = nullptr;
++    g_ble_teardown_pending = false;
++    return true;
++}
++
++static bool ble_initialize(void) {
++    uint16_t suffix = (uint16_t)(ESP.getEfuseMac() & 0xFFFFULL);
++    snprintf(g_ble_name, sizeof(g_ble_name), "%s_%04X", PROJECT_SHORT_NAME, (unsigned)suffix);
++    if (!NimBLEDevice::init(g_ble_name)) {
++        return false;
++    }
++    if (!NimBLEDevice::setPower(BLE_TX_POWER_DBM) || !NimBLEDevice::setMTU(23U)) {
++        return false;
++    }
++    g_ble_server = NimBLEDevice::createServer();
++    if (g_ble_server == nullptr) {
++        return false;
++    }
++    g_ble_server->setCallbacks(&g_ble_server_callbacks, false);
++    g_ble_server->advertiseOnDisconnect(false);
++    NimBLEService *service = g_ble_server->createService(BRD_SERVICE_UUID);
++    if (service == nullptr) {
++        return false;
++    }
++    g_ble_notify = service->createCharacteristic(BRD_NOTIFY_CHAR_UUID,
++        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY, 20U);
++    g_ble_control = service->createCharacteristic(BRD_CONTROL_CHAR_UUID,
++        NIMBLE_PROPERTY::WRITE, 20U);
++    g_ble_firmware = service->createCharacteristic(BRD_FIRMWARE_REVISION_CHAR_UUID,
++        NIMBLE_PROPERTY::READ, 16U);
++    g_ble_diagnostic = service->createCharacteristic(BRD_DIAGNOSTIC_CHAR_UUID,
++        NIMBLE_PROPERTY::READ, 20U);
++    if (g_ble_notify == nullptr || g_ble_control == nullptr || g_ble_firmware == nullptr ||
++        g_ble_diagnostic == nullptr) {
++        return false;
++    }
++    g_ble_notify->setCallbacks(&g_ble_notify_callbacks);
++    g_ble_control->setCallbacks(&g_ble_control_callbacks);
++    g_ble_firmware->setCallbacks(&g_ble_control_callbacks);
++    g_ble_diagnostic->setCallbacks(&g_ble_control_callbacks);
++    uint8_t live[13] = {0xB1U};
++    g_ble_notify->setValue(live, sizeof(live));
++    g_ble_firmware->setValue(PROJECT_VERSION);
++    memset(g_ble_control_value, 0, sizeof(g_ble_control_value));
++    g_ble_control_value[0] = 3U;
++    if (!g_ble_server->start()) {
++        return false;
++    }
++    g_ble_advertising = NimBLEDevice::getAdvertising();
++    if (g_ble_advertising == nullptr) {
++        return false;
++    }
++    g_ble_advertising->enableScanResponse(true);
++    if (!g_ble_advertising->addServiceUUID(BRD_SERVICE_UUID) ||
++        !g_ble_advertising->setName(g_ble_name)) {
++        return false;
++    }
++    g_ble_advertising->setMinInterval(160U);
++    g_ble_advertising->setMaxInterval(800U);
++    portENTER_CRITICAL(&g_ble_mux);
++    g_ble_accept_connections = true;
++    portEXIT_CRITICAL(&g_ble_mux);
++    return g_ble_advertising->start();
++}
++
++void brd_ble_set_enabled(bool enabled) {
++    if (g_ble_teardown_pending) {
++        if ((uint32_t)(millis() - g_ble_last_shutdown_ms) < BLE_INIT_RETRY_MS || !ble_shutdown()) {
++            return;
++        }
++    }
++    if (!enabled) {
++        if (g_ble_diag.initialized || NimBLEDevice::isInitialized()) {
++            (void)ble_shutdown();
++        }
++        g_ble_init_attempted = false;
++        return;
++    }
++    if (g_ble_diag.initialized) {
++        return;
++    }
++    uint32_t now_ms = millis();
++    if (g_ble_init_attempted && (uint32_t)(now_ms - g_ble_last_init_ms) < BLE_INIT_RETRY_MS) {
++        return;
++    }
++    g_ble_init_attempted = true;
++    g_ble_last_init_ms = now_ms;
++    if (!ble_initialize()) {
++        ble_count(g_ble_diag.init_failures);
++        (void)ble_shutdown();
++        return;
++    }
++    g_ble_diag.initialized = true;
++    g_ble_diag.reliable_mode = true;
++    g_ble_last_adv_ms = now_ms;
++}
++
++static bool ble_pop_command(ble_command_t &command) {
++    portENTER_CRITICAL(&g_ble_mux);
++    bool available = g_ble_command_head != g_ble_command_tail;
++    if (available) {
++        command = g_ble_commands[g_ble_command_tail];
++        g_ble_command_tail = (uint8_t)((g_ble_command_tail + 1U) % BLE_COMMAND_QUEUE_SIZE);
++    }
++    portEXIT_CRITICAL(&g_ble_mux);
++    return available;
++}
++
++static void ble_start_transfer(uint32_t now_ms, bool new_window) {
++    g_ble_diag.tx_state = BRD_BLE_TX_START;
++    g_reliable_packet_index = 0U;
++    g_reliable_retrying = false;
++    g_ble_tx_start_ms = now_ms;
++    if (new_window) {
++        g_ble_ack_clock_started = false;
++    }
++}
++
++static void ble_status(uint16_t session, uint8_t status, uint16_t detail,
++                       uint32_t now_ms, uint8_t after = 0U) {
++    g_reliable_status = {true, session, detail, status, after, now_ms};
++}
++
++static void ble_apply_status_after(uint8_t after, uint32_t now_ms) {
++    if (after == 1U) {
++        /* [V1.11 修改] C1 是交易完成依據；A4 若失敗也不可永久卡住或保留舊曲線。 */
++        g_reliable_last_ack_valid = true;
++        brd_record_reset();
++        g_ble_diag.tx_state = BRD_BLE_TX_DONE;
++        g_ble_ack_clock_started = false;
++    } else if (after == 2U) {
++        g_ble_ack_clock_started = false;
++        g_ble_tx_start_ms = now_ms;
++        g_reliable_retrying = g_reliable_retry_count != 0U;
++        g_ble_diag.tx_state = g_reliable_retrying ? BRD_BLE_TX_DATA : BRD_BLE_TX_END;
++    } else if (after == 3U) {
++        ble_start_transfer(now_ms, true);
++        ble_count(g_ble_diag.retransmissions);
++    } else if (after == 4U) {
++        brd_record_reset();
++        g_ble_diag.tx_state = BRD_BLE_TX_DONE;
++        g_ble_ack_clock_started = false;
++    }
++}
++
++static void ble_command(const ble_command_t &command, const brd_record_info_t &record,
++                        uint32_t now_ms) {
++    const uint8_t *p = command.bytes;
++    uint16_t requested = command.size >= 3U ? ble_read_u16(p + 1U) : 0U;
++    uint16_t session = record.ready ? ble_protocol_session(record) : 0U;
++    brd_event_info_t events = brd_record_get_event_info();
++
++    if (p[0] == 0xC5U) {
++        /* [V1.14 新增] LOAD READY ACK：C5, State, state_seq_le16。 */
++        if (command.size != 4U) {
++            ble_count(g_ble_diag.command_errors);
++            return;
++        }
++        uint16_t ack_seq = ble_read_u16(p + 2U);
++        if (p[1] == BRD_STATE_LOADED_READY &&
++            g_ble_state_code == BRD_STATE_LOADED_READY &&
++            ack_seq == g_ble_state_seq) {
++            /* [V1.14] C5 為 idempotent；重複 ACK 不算錯誤。 */
++            g_ble_load_ready_pending = false;
++            g_ble_state_event_pending = false;
++        } else {
++            /* 舊 ACK / 錯誤 seq 只忽略，不斷線、不改變目前狀態。 */
++            ble_count(g_ble_diag.state_ack_errors);
++        }
++        return;
++    }
++
++    if (command.size < 3U) {
++        ble_count(g_ble_diag.command_errors);
++        ble_status(requested, 0x82U, command.size, now_ms);
++        return;
++    }
++    if (p[0] == 0xC1U && command.size == 9U && g_reliable_last_ack_valid &&
++        requested == g_reliable_last_ack_session && ble_read_u16(p + 3U) == g_reliable_last_ack_count &&
++        ble_read_u32(p + 5U) == g_reliable_last_ack_crc) {
++        /* [V1.11 保留] Duplicate ACK 為 idempotent，只重回 A4，不碰目前新結果。 */
++        ble_status(requested, 0x00U, 0U, now_ms);
++        return;
++    }
++    if (!record.ready) {
++        ble_count(g_ble_diag.command_errors);
++        ble_status(requested, 0x85U, 0U, now_ms);
++        return;
++    }
++    if (requested != session && !(p[0] == 0xC3U && requested == 0xFFFFU)) {
++        ble_count(g_ble_diag.command_errors);
++        ble_status(requested, 0x80U, session, now_ms);
++        return;
++    }
++
++    if (p[0] == 0xC1U) {
++        if (command.size != 9U) {
++            ble_count(g_ble_diag.command_errors);
++            ble_status(requested, 0x82U, command.size, now_ms);
++        } else if (ble_read_u16(p + 3U) != events.count) {
++            ble_count(g_ble_diag.command_errors);
++            ble_status(requested, 0x83U, events.count, now_ms);
++        } else if (ble_read_u32(p + 5U) != events.crc32) {
++            ble_count(g_ble_diag.command_errors);
++            ble_status(requested, 0x84U, 0U, now_ms);
++        } else if (g_ble_diag.tx_state != BRD_BLE_TX_WAIT_ACK ||
++                   (uint32_t)(now_ms - g_ble_ack_start_ms) >= BLE_ACK_TIMEOUT_MS) {
++            ble_count(g_ble_diag.command_errors);
++            ble_status(requested, 0x86U, 0U, now_ms);
++        } else {
++            g_reliable_last_ack_session = session;
++            g_reliable_last_ack_count = events.count;
++            g_reliable_last_ack_crc = events.crc32;
++            ble_status(session, 0x00U, 0U, now_ms, 1U);
++        }
++    } else if (p[0] == 0xC2U) {
++        if (command.size < 4U || p[3] > 8U || command.size != 4U + 2U * p[3]) {
++            ble_count(g_ble_diag.command_errors);
++            ble_status(requested, 0x82U, command.size, now_ms);
++            return;
++        }
++        uint16_t packet_count = (uint16_t)((events.count + BLE_SAMPLES_PER_PACKET - 1U) /
++                                           BLE_SAMPLES_PER_PACKET);
++        for (uint8_t i = 0U; i < p[3]; i++) {
++            uint16_t index = ble_read_u16(p + 4U + 2U * i);
++            if (index >= packet_count) {
++                ble_count(g_ble_diag.command_errors);
++                ble_status(requested, 0x81U, index, now_ms);
++                return;
++            }
++            g_reliable_retry_indexes[i] = index;
++        }
++        g_reliable_retry_count = p[3];
++        g_reliable_retry_cursor = 0U;
++        ble_status(session, 0x01U, p[3], now_ms, 2U);
++    } else if (p[0] == 0xC3U && command.size == 3U) {
++        uint16_t packet_count = (uint16_t)((events.count + BLE_SAMPLES_PER_PACKET - 1U) /
++                                           BLE_SAMPLES_PER_PACKET);
++        ble_status(session, 0x02U, packet_count, now_ms, 3U);
++    } else if (p[0] == 0xC4U && command.size == 3U) {
++        ble_status(session, 0x03U, 0U, now_ms, 4U);
++    } else {
++        ble_count(g_ble_diag.command_errors);
++        ble_status(requested, 0x82U, command.size, now_ms);
++    }
++}
++
++static bool ble_notify_packet(const ble_link_t &link, const uint8_t *packet, size_t size) {
++    ble_link_t latest = ble_get_link();
++    if (!latest.connected || !latest.notify_subscribed || latest.session != link.session) {
++        return false;
++    }
++    bool sent = g_ble_notify->notify(packet, size, link.handle);
++    if (!sent) {
++        ble_count(g_ble_diag.notify_failures);
++    }
++    return sent;
++}
++
++/*
++    [V1.14 修改] 0x81 狀態改由 0002 Notify 傳送。
++    - 所有狀態變更先送一筆 0x81 snapshot/event。
++    - LOADED_READY 每 BLE_LOAD_READY_INTERVAL_MS 重送，直到收到 C5 + state_seq ACK。
++    - 不使用 Indication、ATT Confirmation 或狀態 timeout 主動斷線。
++*/
++static void ble_state_snapshot(const brd_record_info_t &record, uint8_t &state, uint8_t &flags,
++                               bool &active) {
++    brd_telemetry_t telemetry = brd_measurement_get_telemetry();
++    bool pending = record.ready && g_ble_diag.tx_state != BRD_BLE_TX_DONE;
++    state = pending ? 4U : (uint8_t)telemetry.state;
++    flags = (telemetry.loaded ? 1U : 0U) | (telemetry.active ? 2U : 0U) |
++            (record.launch_valid ? 4U : 0U) | (pending ? 8U : 0U) |
++            (brd_io_is_charging() ? 16U : 0U) |
++            (g_ble_diag.tx_state == BRD_BLE_TX_WAIT_ACK ? 32U : 0U);
++    active = telemetry.active;
++}
++
++static void ble_state_store_value(void) {
++    uint8_t value[5] = {0x81U, g_ble_state_code, g_ble_state_flags, 0U, 0U};
++    ble_u16(value + 3U, g_ble_state_seq);
++    portENTER_CRITICAL(&g_ble_mux);
++    memcpy(g_ble_state_value, value, sizeof(value));
++    portEXIT_CRITICAL(&g_ble_mux);
++}
++
++static void ble_track_state(const ble_link_t &link, const brd_record_info_t &record, uint32_t now_ms) {
++    uint8_t state = 0U;
++    uint8_t flags = 0U;
++    bool active = false;
++    ble_state_snapshot(record, state, flags, active);
++
++    bool changed = false;
++    if (!g_ble_state_initialized) {
++        g_ble_state_initialized = true;
++        g_ble_state_code = state;
++        g_ble_state_flags = flags;
++        changed = true;
++    } else if (state != g_ble_state_code || flags != g_ble_state_flags) {
++        g_ble_state_code = state;
++        g_ble_state_flags = flags;
++        g_ble_state_seq++;
++        changed = true;
++    }
++    if (!active) {
++        g_ble_have_live = false;
++    }
++
++    bool snapshot_requested = false;
++    portENTER_CRITICAL(&g_ble_mux);
++    snapshot_requested = g_ble_state_snapshot_requested;
++    g_ble_state_snapshot_requested = false;
++    portEXIT_CRITICAL(&g_ble_mux);
++
++    if (changed || snapshot_requested) {
++        ble_state_store_value();
++    }
++
++    if (!link.connected || !link.notify_subscribed) {
++        g_ble_state_event_pending = false;
++        g_ble_load_ready_pending = false;
++        return;
++    }
++
++    if (changed || snapshot_requested) {
++        g_ble_state_event_pending = true;
++        g_ble_load_ready_pending = (g_ble_state_code == BRD_STATE_LOADED_READY);
++        g_ble_state_last_attempt_ms = now_ms - BLE_LOAD_READY_INTERVAL_MS;
++    }
++}
++
++static bool ble_state_update(const ble_link_t &link, uint32_t now_ms) {
++    if (!link.connected || !link.notify_subscribed) {
++        return false;
++    }
++
++    bool ready_retry = g_ble_load_ready_pending && g_ble_state_code == BRD_STATE_LOADED_READY;
++    if (!g_ble_state_event_pending && !ready_retry) {
++        return false;
++    }
++
++    if ((uint32_t)(now_ms - g_ble_subscribe_ms) < BLE_SUBSCRIBE_SETTLE_MS) {
++        return false;
++    }
++    /* [V1.14] 狀態 Notify 失敗也只按固定週期重試，不能壟斷 BLE 主迴圈。 */
++    if ((uint32_t)(now_ms - g_ble_state_last_attempt_ms) < BLE_LOAD_READY_INTERVAL_MS) {
++        return false;
++    }
++
++    uint8_t packet[5];
++    portENTER_CRITICAL(&g_ble_mux);
++    memcpy(packet, g_ble_state_value, sizeof(packet));
++    portEXIT_CRITICAL(&g_ble_mux);
++
++    g_ble_state_last_attempt_ms = now_ms;
++    ble_link_t latest = ble_get_link();
++    if (!latest.connected || !latest.notify_subscribed || latest.session != link.session) {
++        return false;
++    }
++
++    bool sent = g_ble_notify->notify(packet, sizeof(packet), link.handle);
++    if (!sent) {
++        ble_count(g_ble_diag.state_notify_failures);
++        return true;
++    }
++
++    g_ble_state_event_pending = false;
++    return true;
++}
++
++static void ble_process_commands(const ble_link_t &link, const brd_record_info_t &record,
++                                 uint32_t now_ms) {
++    if (g_reliable_status.pending) {
++        return;
++    }
++    for (uint8_t i = 0U; i < BLE_COMMAND_QUEUE_SIZE - 1U; i++) {
++        ble_command_t command;
++        if (!ble_pop_command(command)) {
++            break;
++        }
++        if (command.session != link.session) {
++            ble_count(g_ble_diag.command_errors);
++            continue;
++        }
++        ble_command(command, record, now_ms);
++        if (g_reliable_status.pending) {
++            break;
++        }
++    }
++}
++
++static void ble_update_control(const brd_record_info_t &record) {
++    uint8_t value[20] = {};
++    brd_event_info_t events = brd_record_get_event_info();
++    value[0] = 3U; /* Reliable Protocol V3 */
++    value[1] = (uint8_t)g_ble_diag.tx_state;
++    value[2] = (record.ready ? 1U : 0U) | (events.truncated ? 2U : 0U);
++    value[3] = g_ble_diag.reliable_mode ? 1U : 0U;
++    ble_u16(value + 4U, record.ready ? ble_protocol_session(record) : 0U);
++    ble_u16(value + 6U, events.count);
++    ble_u32(value + 8U, events.crc32);
++    ble_u16(value + 12U, events.duration_ms);
++    brd_ble_diagnostics_t diag = brd_ble_get_diagnostics();
++    ble_u16(value + 14U, (uint16_t)(diag.command_errors > UINT16_MAX ? UINT16_MAX : diag.command_errors));
++    ble_u16(value + 16U, (uint16_t)(diag.notify_failures > UINT16_MAX ? UINT16_MAX : diag.notify_failures));
++    ble_u16(value + 18U, (uint16_t)(diag.ack_timeouts > UINT16_MAX ? UINT16_MAX : diag.ack_timeouts));
++    portENTER_CRITICAL(&g_ble_mux);
++    memcpy(g_ble_control_value, value, sizeof(value));
++    portEXIT_CRITICAL(&g_ble_mux);
++}
++
++static void ble_reliable_update(const ble_link_t &link, const brd_record_info_t &record,
++                                uint32_t now_ms) {
++    if (!link.notify_subscribed || (uint32_t)(now_ms - g_ble_subscribe_ms) < BLE_SUBSCRIBE_SETTLE_MS) {
++        return;
++    }
++
++    /* [V1.11 新增] A4 無論成功與否最多等待固定時間，逾時執行既定恢復動作。 */
++    if (g_reliable_status.pending &&
++        (uint32_t)(now_ms - g_reliable_status.start_ms) >= BLE_STATUS_TIMEOUT_MS) {
++        uint8_t after = g_reliable_status.after;
++        g_reliable_status = {};
++        ble_count(g_ble_diag.status_timeouts);
++        ble_apply_status_after(after, now_ms);
++    }
++
++    if (record.ready && g_ble_diag.tx_state == BRD_BLE_TX_IDLE && !g_reliable_status.pending) {
++        ble_start_transfer(now_ms, true);
++    }
++
++    bool transmitting = g_ble_diag.tx_state >= BRD_BLE_TX_START &&
++                        g_ble_diag.tx_state <= BRD_BLE_TX_END;
++    if (transmitting && !g_ble_ack_clock_started &&
++        (uint32_t)(now_ms - g_ble_tx_start_ms) >= BLE_SEND_TIMEOUT_MS) {
++        g_ble_diag.tx_state = BRD_BLE_TX_TIMEOUT;
++        ble_count(g_ble_diag.send_timeouts);
++    } else if (g_ble_ack_clock_started && g_ble_diag.tx_state != BRD_BLE_TX_DONE &&
++               g_ble_diag.tx_state != BRD_BLE_TX_TIMEOUT &&
++               (uint32_t)(now_ms - g_ble_ack_start_ms) >= BLE_ACK_TIMEOUT_MS) {
++        g_ble_diag.tx_state = BRD_BLE_TX_TIMEOUT;
++        ble_count(g_ble_diag.ack_timeouts);
++    }
++
++    if (g_ble_diag.tx_state == BRD_BLE_TX_WAIT_ACK &&
++        (uint32_t)(now_ms - g_ble_last_end_ms) >= BLE_ACK_RETRY_MS &&
++        !g_reliable_status.pending) {
++        ble_start_transfer(now_ms, false);
++        ble_count(g_ble_diag.retransmissions);
++    }
++
++    if ((uint32_t)(now_ms - g_ble_last_packet_ms) < BLE_PACKET_INTERVAL_MS) {
++        return;
++    }
++
++    brd_event_info_t events = brd_record_get_event_info();
++    brd_telemetry_t telemetry = brd_measurement_get_telemetry();
++    bool pending = record.ready && g_ble_diag.tx_state != BRD_BLE_TX_DONE;
++    uint8_t state = pending ? 4U : (uint8_t)telemetry.state;
++    uint8_t flags = (telemetry.loaded ? 1U : 0U) | (telemetry.active ? 2U : 0U) |
++                    (record.launch_valid ? 4U : 0U) | (pending ? 8U : 0U) |
++                    (brd_io_is_charging() ? 16U : 0U) |
++                    (g_ble_diag.tx_state == BRD_BLE_TX_WAIT_ACK ? 32U : 0U);
++    uint8_t packet[20] = {};
++    uint8_t kind = 0U;
++    size_t size = 0U;
++
++    if (g_reliable_status.pending) {
++        kind = 1U;
++        packet[0] = 0xA4U;
++        ble_u16(packet + 1U, g_reliable_status.session);
++        packet[3] = g_reliable_status.code;
++        ble_u16(packet + 4U, g_reliable_status.detail);
++        size = 6U;
++    } else if (telemetry.active &&
++               (!g_ble_have_live || (uint32_t)(now_ms - g_ble_last_live_ms) >= BLE_LIVE_INTERVAL_MS)) {
++        kind = 2U;
++        packet[0] = 0xB1U;
++        packet[1] = state;
++        packet[2] = flags;
++        ble_u16(packet + 3U, telemetry.current_rpm);
++        ble_u16(packet + 5U, telemetry.max_rpm);
++        ble_u16(packet + 7U, record.launch_rpm);
++        ble_u16(packet + 9U, events.duration_ms);
++        ble_u16(packet + 11U, events.count);
++        size = 13U;
++    } else if (record.launch_valid && !g_ble_launch_sent) {
++        kind = 3U;
++        packet[0] = 0xB2U;
++        ble_u16(packet + 1U, record.launch_rpm);
++        ble_u16(packet + 3U, record.max_at_launch);
++        ble_u16(packet + 5U, record.launch_time_ms);
++        ble_u16(packet + 7U, events.launch_sample_index);
++        size = 9U;
++    } else if (g_ble_diag.tx_state == BRD_BLE_TX_START) {
++        kind = 4U;
++        packet[0] = 0xA1U;
++        ble_u16(packet + 1U, events.count);
++        ble_u16(packet + 3U, 0U); /* event curve: 非固定週期 */
++        ble_u16(packet + 5U, events.duration_ms);
++        ble_u16(packet + 7U, record.max_rpm);
++        ble_u16(packet + 9U, record.launch_rpm);
++        ble_u16(packet + 11U, record.launch_time_ms);
++        ble_u16(packet + 13U, events.launch_sample_index);
++        packet[15] = (record.launch_valid ? 1U : 0U) |
++                     (events.truncated ? 0U : 2U) | 4U;
++        ble_u16(packet + 16U, events.max_time_ms);
++        ble_u16(packet + 18U, ble_protocol_session(record));
++        size = 20U;
++    } else if (g_ble_diag.tx_state == BRD_BLE_TX_DATA) {
++        uint16_t packet_index = g_reliable_retrying ?
++            g_reliable_retry_indexes[g_reliable_retry_cursor] : g_reliable_packet_index;
++        uint16_t start = (uint16_t)(packet_index * BLE_SAMPLES_PER_PACKET);
++        if (start >= events.count) {
++            g_ble_diag.tx_state = BRD_BLE_TX_END;
++            return;
++        }
++        kind = 5U;
++        packet[0] = 0xA2U;
++        ble_u16(packet + 2U, packet_index);
++        while (packet[1] < BLE_SAMPLES_PER_PACKET && start + packet[1] < events.count) {
++            brd_sample_t sample;
++            if (!brd_record_get_event_sample((uint16_t)(start + packet[1]), sample)) {
++                return;
++            }
++            ble_u16(packet + 4U + packet[1] * 4U, sample.time_ms);
++            ble_u16(packet + 6U + packet[1] * 4U, sample.rpm);
++            packet[1]++;
++        }
++        size = 4U + packet[1] * 4U;
++    } else if (g_ble_diag.tx_state == BRD_BLE_TX_END) {
++        kind = 6U;
++        packet[0] = 0xA3U;
++        ble_u16(packet + 1U, ble_protocol_session(record));
++        ble_u16(packet + 3U, (uint16_t)((events.count + BLE_SAMPLES_PER_PACKET - 1U) /
++                                        BLE_SAMPLES_PER_PACKET));
++        ble_u16(packet + 5U, events.count);
++        ble_u32(packet + 7U, events.crc32);
++        size = 11U;
++    }
++
++    if (size == 0U) {
++        return;
++    }
++    g_ble_last_packet_ms = now_ms;
++    if (!ble_notify_packet(link, packet, size)) {
++        return;
++    }
++
++    if (kind == 1U) {
++        uint8_t after = g_reliable_status.after;
++        g_reliable_status = {};
++        ble_apply_status_after(after, now_ms);
++    } else if (kind == 2U) {
++        g_ble_have_live = true;
++        g_ble_last_live_ms = now_ms;
++        g_ble_notify->setValue(packet, size);
++    } else if (kind == 3U) {
++        g_ble_launch_sent = true;
++    } else if (kind == 4U) {
++        g_reliable_packet_index = 0U;
++        g_reliable_retrying = false;
++        g_ble_diag.tx_state = BRD_BLE_TX_DATA;
++    } else if (kind == 5U) {
++        if (g_reliable_retrying) {
++            if (++g_reliable_retry_cursor >= g_reliable_retry_count) {
++                g_reliable_retrying = false;
++                g_ble_diag.tx_state = BRD_BLE_TX_END;
++            }
++        } else if (++g_reliable_packet_index >=
++                   (events.count + BLE_SAMPLES_PER_PACKET - 1U) / BLE_SAMPLES_PER_PACKET) {
++            g_ble_diag.tx_state = BRD_BLE_TX_END;
++        }
++    } else if (kind == 6U) {
++        g_ble_last_end_ms = now_ms;
++        g_ble_diag.tx_state = BRD_BLE_TX_WAIT_ACK;
++        if (!g_ble_ack_clock_started) {
++            g_ble_ack_clock_started = true;
++            g_ble_ack_start_ms = now_ms;
++        }
++    }
++}
++
++void brd_ble_update(void) {
++    if (!g_ble_diag.initialized) {
++        return;
++    }
++    uint32_t now_ms = millis();
++    ble_link_t link = ble_get_link();
++    brd_record_info_t record = brd_record_get_info();
++    g_ble_diag.connected = link.connected;
++    g_ble_diag.subscribed = link.notify_subscribed;
++    g_ble_diag.reliable_mode = true;
++
++    if (record.epoch != g_ble_epoch_seen) {
++        g_ble_epoch_seen = record.epoch;
++        ble_reset_transfer();
++        g_ble_have_live = false;
++        g_reliable_status = {};
++    }
++    if (link.session != g_ble_session_seen) {
++        g_ble_session_seen = link.session;
++        g_ble_subscribe_ms = now_ms;
++        g_ble_have_live = false;
++        g_reliable_status = {};
++        if (g_ble_diag.tx_state != BRD_BLE_TX_DONE) {
++            ble_reset_transfer();
++        }
++        g_ble_last_adv_ms = now_ms - BLE_INIT_RETRY_MS;
++    }
++
++    ble_process_commands(link, record, now_ms);
++    record = brd_record_get_info();
++    /* [V1.14] 狀態先更新；只有實際送出 0x81 時才佔用本次 Notify。 */
++    ble_track_state(link, record, now_ms);
++
++    if (!link.connected) {
++        if (!g_ble_advertising->isAdvertising() &&
++            (uint32_t)(now_ms - g_ble_last_adv_ms) >= BLE_INIT_RETRY_MS) {
++            g_ble_last_adv_ms = now_ms;
++            g_ble_advertising->start();
++        }
++        ble_update_control(record);
++        return;
++    }
++
++    if (ble_state_update(link, now_ms)) {
++        ble_update_control(brd_record_get_info());
++        return;
++    }
++
++    ble_reliable_update(link, record, now_ms);
++    ble_update_control(brd_record_get_info());
++}
++
++brd_ble_diagnostics_t brd_ble_get_diagnostics(void) {
++    brd_ble_diagnostics_t result = g_ble_diag;
++    portENTER_CRITICAL(&g_ble_mux);
++    uint32_t callback_errors = g_ble_callback_errors;
++    result.connected = g_ble_link.connected;
++    result.subscribed = g_ble_link.notify_subscribed;
++    portEXIT_CRITICAL(&g_ble_mux);
++    result.command_errors = UINT32_MAX - result.command_errors < callback_errors ?
++                            UINT32_MAX : result.command_errors + callback_errors;
++    return result;
++}
++
++const char *brd_ble_get_device_name(void) {
++    return g_ble_name;
++}
++
++bool brd_ble_stack_stopped(void) {
++    return !NimBLEDevice::isInitialized();
++}
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/verification/host/test_ble.cpp brd_v115_work/verification/host/test_ble.cpp
+--- brd_v114_orig/verification/host/test_ble.cpp	2026-09-14 05:36:10.000000000 +0000
++++ brd_v115_work/verification/host/test_ble.cpp	2026-09-14 06:00:24.539718083 +0000
+@@ -111,103 +111,75 @@
+ int main(int argc, char **argv) {
+     assert(argc == 2);
+     std::string name = argv[1];
+-    if (name == "load_ready_notify_until_ack") {
++    if (name == "live_periodic_wait_load") {
++        connect_peer();
++        ble_run_ms(750);
++        assert(packets(0x81U) == 0U);
++        assert(packets(0xB1U) >= 3U);
++        const auto &live = last_packet(0xB1U).bytes;
++        assert(live.size() == 13U);
++        assert(live[1] == BRD_STATE_WAIT_LOAD);
++        assert((live[2] & 1U) == 0U);
++    } else if (name == "live_periodic_loaded_ready") {
+         connect_peer();
+         loaded(test_us);
+         brd_ble_update();
+-        ble_run_ms(450);
+-        assert(packets(0x81U) >= 2U);
+-        const auto &ready = last_packet(0x81U).bytes;
+-        assert(ready.size() == 5U);
+-        assert(ready[1] == BRD_STATE_LOADED_READY);
+-        uint16_t seq = (uint16_t)(ready[3] | (ready[4] << 8));
+-        size_t before_ack = packets(0x81U);
+-        write_command({0xC5U, BRD_STATE_LOADED_READY, (uint8_t)seq, (uint8_t)(seq >> 8)});
+-        brd_ble_update();
+-        /* Duplicate C5 必須 idempotent，不計錯誤、不影響連線。 */
+-        write_command({0xC5U, BRD_STATE_LOADED_READY, (uint8_t)seq, (uint8_t)(seq >> 8)});
+-        brd_ble_update();
+-        ble_run_ms(1000);
+-        assert(packets(0x81U) == before_ack);
+-        assert(brd_ble_get_diagnostics().state_ack_errors == 0U);
+-        assert(brd_ble_get_diagnostics().connected);
+-    } else if (name == "load_ready_wrong_ack_keeps_resending") {
++        ble_run_ms(750);
++        assert(packets(0x81U) == 0U);
++        assert(packets(0xB1U) >= 3U);
++        const auto &live = last_packet(0xB1U).bytes;
++        assert(live[1] == BRD_STATE_LOADED_READY);
++        assert((live[2] & 1U) != 0U);
++    } else if (name == "live_periodic_no_c5") {
+         connect_peer();
+         loaded(test_us);
+         brd_ble_update();
+         ble_run_ms(250);
+-        const auto &ready = last_packet(0x81U).bytes;
+-        uint16_t seq = (uint16_t)(ready[3] | (ready[4] << 8));
+-        uint16_t wrong = (uint16_t)(seq + 1U);
+-        write_command({0xC5U, BRD_STATE_LOADED_READY, (uint8_t)wrong, (uint8_t)(wrong >> 8)});
+-        brd_ble_update();
+-        size_t before = packets(0x81U);
+-        ble_run_ms(700);
+-        assert(packets(0x81U) > before);
+-        assert(brd_ble_get_diagnostics().connected);
+-    } else if (name == "load_ready_no_ack_never_disconnects") {
+-        connect_peer();
+-        loaded(test_us);
++        size_t before = packets(0xB1U);
++        /* [V1.15] C5 已移除；即使舊 App 誤送 C5，也只能視為未知命令，不能停止週期 B1。 */
++        write_command({0xC5U, BRD_STATE_LOADED_READY, 0U, 0U});
+         brd_ble_update();
+-        ble_run_ms(5000);
++        ble_run_ms(500);
++        assert(packets(0xB1U) > before);
++        assert(packets(0x81U) == 0U);
+         assert(brd_ble_get_diagnostics().connected);
+-        assert(packets(0x81U) >= 20U);
+-    } else if (name == "load_ready_millis_wrap") {
++    } else if (name == "live_periodic_millis_wrap") {
+         test_us = ((1ULL << 32) - 300ULL) * 1000ULL;
+         connect_peer();
+         loaded(test_us);
+         brd_ble_update();
+         ble_run_ms(700);
+         assert(brd_ble_get_diagnostics().connected);
+-        assert(packets(0x81U) >= 3U);
+-    } else if (name == "state_event_notify") {
++        assert(packets(0xB1U) >= 3U);
++        assert(packets(0x81U) == 0U);
++    } else if (name == "live_periodic_state_change") {
+         connect_peer();
+-        ble_run_ms(150);
+-        assert(packets(0x81U) == 1U);
+-        assert(packets(0xB1U) == 0U);
+-        auto first = last_packet(0x81U).bytes;
+-        assert(first.size() == 5U && first[1] == BRD_STATE_WAIT_LOAD);
+-        uint16_t first_seq = (uint16_t)(first[3] | (first[4] << 8));
+-
+-        ble_run_ms(1000);
+-        assert(packets(0x81U) == 1U);
++        ble_run_ms(450);
++        assert(packets(0xB1U) >= 2U);
++        assert(last_packet(0xB1U).bytes[1] == BRD_STATE_WAIT_LOAD);
+ 
+         loaded(test_us);
+         brd_ble_update();
+-        ble_run_ms(20);
+-        auto ready = last_packet(0x81U).bytes;
+-        assert(ready[1] == BRD_STATE_LOADED_READY);
+-        assert((ready[2] & 1U) != 0U);
+-        uint16_t ready_seq = (uint16_t)(ready[3] | (ready[4] << 8));
+-        assert((uint16_t)(ready_seq - first_seq) == 1U);
+-
+-        size_t ready_start = packets(0x81U);
+         ble_run_ms(450);
+-        assert(packets(0x81U) >= ready_start + 2U);
+-        write_command({0xC5U, BRD_STATE_LOADED_READY,
+-                       (uint8_t)ready_seq, (uint8_t)(ready_seq >> 8)});
+-        brd_ble_update();
+-        size_t after_ack = packets(0x81U);
+-        ble_run_ms(500);
+-        assert(packets(0x81U) == after_ack);
++        assert(last_packet(0xB1U).bytes[1] == BRD_STATE_LOADED_READY);
+ 
+         uint64_t spin_base = test_us;
+         pulse_at(spin_base + 2000U);
+         pulse_at(spin_base + 4000U);
+         brd_ble_update();
+         ble_run_ms(450);
+-        assert(last_packet(0x81U).bytes[1] == BRD_STATE_SPINNING_LOADED);
+-        assert(packets(0xB1U) >= 2U);
+-    } else if (name == "state_notify_failure_never_disconnects") {
++        assert(last_packet(0xB1U).bytes[1] == BRD_STATE_SPINNING_LOADED);
++        assert(packets(0x81U) == 0U);
++    } else if (name == "live_notify_failure_never_disconnects") {
+         connect_peer();
+-        loaded(test_us);
+         mock_notify_failure = true;
+-        ble_run_ms(2300);
++        ble_run_ms(700);
+         assert(brd_ble_get_diagnostics().connected);
+-        assert(brd_ble_get_diagnostics().state_notify_failures > 0U);
++        assert(brd_ble_get_diagnostics().notify_failures > 0U);
+         mock_notify_failure = false;
+-        ble_run_ms(250);
+-        assert(packets(0x81U) >= 1U);
++        ble_run_ms(300);
++        assert(packets(0xB1U) >= 1U);
++        assert(packets(0x81U) == 0U);
+     } else if (name == "reliable_only_protocol") {
+         connect_peer();
+         // [V1.11 測試] 唯一協定固定為 Reliable，不需 C0 或讀 0004 切換模式。
+@@ -448,11 +420,11 @@
+         assert((chars[2]->properties & NIMBLE_PROPERTY::WRITE) == 0U);
+         assert(chars[3]->uuid == BRD_DIAGNOSTIC_CHAR_UUID);
+         auto revision = chars[2]->value.bytes;
+-        assert(std::string(revision.begin(), revision.end()) == "V1.14");
++        assert(std::string(revision.begin(), revision.end()) == "V1.15");
+         ble_run_ms(300); assert(mock_notifications.empty() && mock_indications.empty());
+-        subscribe_peer(true); ble_run_ms(110);
+-        assert(packets(0xB1U) == 0U);
+-        assert(packets(0x81U) == 1U);
++        subscribe_peer(true); ble_run_ms(310);
++        assert(packets(0xB1U) >= 1U);
++        assert(packets(0x81U) == 0U);
+     } else if (name == "legacy_packets") {
+         connect_peer(); complete_shot(0); ble_run_ms(800);
+         assert(packets(0xA1) == 1 && packets(0xA3) == 1 && packets(0xB2) == 1);
+@@ -467,22 +439,30 @@
+         }
+         std::ofstream crc("ble_crc.txt"); crc << brd_record_get_info().crc32 << '\n';
+     } else if (name == "live_cadence_and_change") {
+-        connect_peer(); ble_run_ms(750);
+-        assert(packets(0xB1U) == 0U);
+-        assert(packets(0x81U) == 1U);
+-        uint64_t base = test_us; loaded(base); brd_ble_update(); ble_run_ms(20);
+-        auto ready = last_packet(0x81U).bytes;
++        connect_peer();
++        ble_run_ms(750);
++        size_t wait_count = packets(0xB1U);
++        assert(wait_count >= 3U);
++        assert(last_packet(0xB1U).bytes[1] == BRD_STATE_WAIT_LOAD);
++
++        uint64_t base = test_us;
++        loaded(base);
++        brd_ble_update();
++        ble_run_ms(650);
++        size_t ready_count = packets(0xB1U);
++        assert(ready_count >= wait_count + 3U);
++        auto ready = last_packet(0xB1U).bytes;
+         assert(ready[1] == BRD_STATE_LOADED_READY);
+         assert((ready[2] & 1U) != 0U);
+-        uint16_t seq = (uint16_t)(ready[3] | (ready[4] << 8));
+-        write_command({0xC5U, BRD_STATE_LOADED_READY, (uint8_t)seq, (uint8_t)(seq >> 8)});
+-        brd_ble_update();
+-        size_t state_count = packets(0x81U);
+-        ble_run_ms(500);
+-        assert(packets(0x81U) == state_count && packets(0xB1U) == 0U);
+-        uint64_t spin = test_us; pulse_at(spin + 2000U); pulse_at(spin + 4000U);
+-        brd_ble_update(); ble_run_ms(650);
+-        assert(packets(0xB1U) >= 3U);
++
++        uint64_t spin = test_us;
++        pulse_at(spin + 2000U);
++        pulse_at(spin + 4000U);
++        brd_ble_update();
++        ble_run_ms(650);
++        assert(packets(0xB1U) >= ready_count + 3U);
++        assert(last_packet(0xB1U).bytes[1] == BRD_STATE_SPINNING_LOADED);
++        assert(packets(0x81U) == 0U);
+     } else if (name == "notify_failure_retries") {
+         connect_peer(); complete_shot(0);
+         mock_notify_failure = true; ble_run_ms(300);
+@@ -558,7 +538,7 @@
+         // [V1.10 修改] 0004 READ 現為版本；原 20-byte 診斷搬至 0005 READ。
+         g_ble_firmware->callback->onRead(g_ble_firmware, peer);
+         auto revision = g_ble_firmware->getValue().bytes;
+-        assert(std::string(revision.begin(), revision.end()) == "V1.14");
++        assert(std::string(revision.begin(), revision.end()) == "V1.15");
+         g_ble_diagnostic->callback->onRead(g_ble_diagnostic, peer);
+         assert(g_ble_diagnostic->getValue().size() == 20);
+     } else if (name == "init_failure_retry") {
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/verification/host/test_v012.cpp brd_v115_work/verification/host/test_v012.cpp
+--- brd_v114_orig/verification/host/test_v012.cpp	2026-09-14 05:32:58.000000000 +0000
++++ brd_v115_work/verification/host/test_v012.cpp	2026-09-14 06:01:40.630884798 +0000
+@@ -293,7 +293,7 @@
+         assert(brd_battery_is_adc_fault() && !brd_battery_measurement_allowed());
+     } else if (name == "oled_boot_version") {
+         setup();
+-        assert(std::string(PROJECT_VERSION) == "V1.14");
++        assert(std::string(PROJECT_VERSION) == "V1.15");
+         dump_frame("boot.pgm");
+     } else if (name == "deep_sleep_skips_boot") {
+         mock_reset_reason = ESP_RST_DEEPSLEEP;
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/verification/run_host_tests.py brd_v115_work/verification/run_host_tests.py
+--- brd_v114_orig/verification/run_host_tests.py	2026-09-14 05:32:58.000000000 +0000
++++ brd_v115_work/verification/run_host_tests.py	2026-09-14 06:00:24.539869171 +0000
+@@ -15,7 +15,7 @@
+ recovery_millis_wrap reboot_policy_unchanged main_adc_fault_resume main_low_restart
+  oled_adc_boot_recover oled_retry_hold gpio_pulls""".split()
+ 
+-BLE_CASES = """load_ready_notify_until_ack load_ready_wrong_ack_keeps_resending load_ready_no_ack_never_disconnects load_ready_millis_wrap state_event_notify state_notify_failure_never_disconnects reliable_only_protocol reliable_transfer reliable_send_timeout reliable_status_timeout
++BLE_CASES = """live_periodic_wait_load live_periodic_loaded_ready live_periodic_no_c5 live_periodic_millis_wrap live_periodic_state_change live_notify_failure_never_disconnects reliable_only_protocol reliable_transfer reliable_send_timeout reliable_status_timeout
+ reliable_retry_ack reliable_restart_abort reliable_new_load_cancels_ack reliable_reconnect_restart
+ timeout_result_blocks_sleep power_idle_sleep power_sleep_shutdown_failure power_idle_abort
+ oled_connection_icon oled_icon_hold oled_icon_warning offline_record event_curve_backlog
+diff -ruN '--exclude=CHANGES_FROM_*.patch' '--exclude=FILE_MANIFEST.txt' brd_v114_orig/verification/time_review/run_time_review.py brd_v115_work/verification/time_review/run_time_review.py
+--- brd_v114_orig/verification/time_review/run_time_review.py	2026-09-14 05:32:58.000000000 +0000
++++ brd_v115_work/verification/time_review/run_time_review.py	2026-09-14 06:02:06.545349170 +0000
+@@ -1,4 +1,4 @@
+-"""[V1.14 修改] 驗證目前韌體的時間、Timeout 與 rollover 邊界；需要 Python 3 與 g++。"""
++"""[V1.15 修改] 驗證目前韌體的時間、Timeout 與 rollover 邊界；需要 Python 3 與 g++。"""
+ from pathlib import Path
+ import argparse
+ import hashlib
+@@ -22,7 +22,7 @@
+     'ble_millis_wrap',
+     'reliable_retry_ack',
+     'reliable_reconnect_restart',
+-    'load_ready_millis_wrap',
++    'live_periodic_millis_wrap',
+ ]
+ 
+ 
+@@ -57,7 +57,7 @@
+                 subprocess.run([str(binary), case], check=True, cwd=work, env=environment)
+ 
+     assert fingerprint == {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in firmware_files}
+-    print(f'Complete: {len(MEASUREMENT_CASES) + len(BLE_CASES)} V1.14 time/rollover checks passed; firmware unchanged.')
++    print(f'Complete: {len(MEASUREMENT_CASES) + len(BLE_CASES)} V1.15 time/rollover checks passed; firmware unchanged.')
+ 
+ 
+ if __name__ == '__main__':

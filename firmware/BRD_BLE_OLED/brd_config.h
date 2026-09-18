@@ -1,7 +1,7 @@
 /*
-    檔案位置: BRD_OLED/brd_config.h
-    [V0.10 修改] 單機 OLED 轉速版本。硬體腳位沿用附件 V1.9。
-    [V0.10 刪減] BLE、休眠與曲線封包參數。
+    檔案位置: BRD_BLE_OLED/brd_config.h
+    [V0.12 修改] 以 BRD_OLED V0.12 建立 BLE + OLED 獨立專案。
+    [V1.15 修改] 移除待機 OLED OFF 與 Deep-sleep；裝置待機時維持正常運作。
     [V0.10 恢復] 電池 ADC 取樣與 OLED 電量、充電圖示。
     [V0.10 新增] 低電鎖定、沒電警示及恢復後重新啟動。
 */
@@ -20,15 +20,16 @@
 #endif
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector"
-#define PROJECT_SHORT_NAME                "BRD"
-#define PROJECT_VERSION                   "V0.12"
+#define PROJECT_SHORT_NAME                "BRD_BLE"
+#define PROJECT_VARIANT                   "BRD_BLE_OLED"
+/* [V1.16 修改] 版本標示更新為 V1.16，供 OLED 與 BLE Firmware Revision 共用。 */
+#define PROJECT_VERSION                   "V1.16"
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
-
 /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
 #define RPM_IR_GPIO                       3
 #define RPM_IR_INPUT_MODE                 INPUT
-#define RPM_IR_TRIGGER_EDGE               FALLING
+#define RPM_IR_TRIGGER_EDGE               CHANGE
 #define LOAD_IR_GPIO                      1
 #define LOAD_IR_INPUT_MODE                INPUT
 #define LOAD_IR_TRIGGER_EDGE              CHANGE
@@ -90,7 +91,11 @@
 #define LOAD_IR_DEBOUNCE_US               1000UL
 #define OLED_MAX_HOLD_MS                  2500UL
 
-/* [保留] 一個 FALLING edge 等於一圈，從第二個有效 edge 計算 RPM。 */
+/*
+    [V1.13 修改] RPM 使用 CHANGE 捕捉 Rising / Falling。
+    每一種極性都只和同極性的上一個 edge 比較，因此週期仍是完整一圈。
+    PULSES_PER_REV 維持 1，不直接以相鄰半圈 edge 換算 RPM。
+*/
 #define PULSES_PER_REV                    1UL
 #define RPM_ISR_QUEUE_SIZE               128U
 #define RPM_MIN_PERIOD_US                500UL
@@ -99,8 +104,8 @@
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
 #define POST_LAUNCH_NO_RPM_TIMEOUT_MS      1200UL
-/* [V0.12 修改] MAX 的 50% 改為 20%，仍以單筆有效 RPM 判斷。 */
-#define POST_LAUNCH_FINISH_PERCENT        20U
+/* [V1.11 修改] 發射後 RPM 下降至 MAX 的 35% 以下即停止採集。 */
+#define POST_LAUNCH_FINISH_PERCENT        35U
 
 /*
     [V0.10 修改] 直接使用 ESP-IDF I2C master，初始化禁止內部上拉。
@@ -118,6 +123,59 @@
 #define OLED_UPDATE_INTERVAL_MS          100UL
 #define OLED_BOOT_VERSION_DISPLAY_MS     1500UL
 #define OLED_RETRY_INTERVAL_MS           1000UL
+
+/*
+    [V1.15 修改] BRD Reliable BLE Protocol V4。
+    0002: Notify (B1/B2/A1/A2/A3/A4)
+    0003: Control WRITE (C1/C2/C3/C4)
+    0004: Firmware Revision READ
+    0005: Diagnostic READ
+    B1 LIVE 在 BLE 已連線且訂閱後每 200 ms 固定發送，State/Flags 為上位機唯一狀態來源。
+    不再使用 0x81、C5、state_seq 或 LOAD READY ACK；韌體不因通訊逾時主動斷線。
+    曲線使用實際有效 RPM 事件，第一筆固定為 t=0 / 0 RPM。
+*/
+#define BRD_SERVICE_UUID                  "7f510001-1b15-4d5f-9f4d-9b3c7a1d9a10"
+#define BRD_NOTIFY_CHAR_UUID              "7f510002-1b15-4d5f-9f4d-9b3c7a1d9a10"
+#define BRD_CONTROL_CHAR_UUID             "7f510003-1b15-4d5f-9f4d-9b3c7a1d9a10"
+#define BRD_FIRMWARE_REVISION_CHAR_UUID   "7f510004-1b15-4d5f-9f4d-9b3c7a1d9a10"
+#define BRD_DIAGNOSTIC_CHAR_UUID          "7f510005-1b15-4d5f-9f4d-9b3c7a1d9a10"
+/*
+    [V1.15 修改] BLE 廣播名稱固定使用 ESP32-C3 eFuse MAC 尾 4 碼。
+    格式: BRD_XXXX，例如 eFuse MAC 尾碼 0xA1B2 -> BRD_A1B2。
+    不再依賴 PROJECT_SHORT_NAME 產生 BLE 名稱，避免專案名稱變更影響裝置識別。
+*/
+#define BLE_DEVICE_NAME_PREFIX            "BRD"
+#define BLE_DEVICE_SUFFIX_MASK            0xFFFFULL
+#define BLE_DEVICE_NAME_MAX_LEN           16U
+/* [V1.16 修改] BLE TX Power 由 -6 dBm 提升為 0 dBm。 */
+#define BLE_TX_POWER_DBM                  0
+#define BLE_LIVE_INTERVAL_MS              200UL
+#define BLE_PACKET_INTERVAL_MS            8UL
+#define BLE_SUBSCRIBE_SETTLE_MS           100UL
+#define BLE_INIT_RETRY_MS                 1000UL
+#define BLE_ACK_TIMEOUT_MS                5000UL
+#define BLE_ACK_RETRY_MS                  1000UL
+#define BLE_SEND_TIMEOUT_MS               5000UL
+#define BLE_STATUS_TIMEOUT_MS             2000UL
+#define BLE_COMMAND_QUEUE_SIZE            8U
+#define BLE_SAMPLES_PER_PACKET            4U
+#define CURVE_MAX_DURATION_MS             60000UL
+#define CURVE_INVALID_INDEX               0xFFFFU
+#define BLE_EVENT_MAX_SAMPLES         16384U
+
+static_assert(CPU_FIXED_FREQ_MHZ >= 80U, "BLE requires an 80 MHz or faster CPU.");
+static_assert(BLE_SAMPLES_PER_PACKET >= 1U && BLE_SAMPLES_PER_PACKET <= 4U,
+              "BRD Web supports at most four samples per packet.");
+static_assert(CURVE_MAX_DURATION_MS <= 65535UL,
+              "Curve timestamps must fit uint16_t.");
+static_assert(BLE_EVENT_MAX_SAMPLES > 1U && BLE_EVENT_MAX_SAMPLES < CURVE_INVALID_INDEX,
+              "Reliable event buffer size is invalid.");
+static_assert(BLE_COMMAND_QUEUE_SIZE >= 2U && BLE_COMMAND_QUEUE_SIZE <= 32U,
+              "Invalid BLE command queue size.");
+static_assert(BLE_ACK_TIMEOUT_MS < 0x80000000UL && BLE_ACK_RETRY_MS < BLE_ACK_TIMEOUT_MS &&
+              BLE_SEND_TIMEOUT_MS < 0x80000000UL && BLE_STATUS_TIMEOUT_MS > 0UL &&
+              BLE_STATUS_TIMEOUT_MS < BLE_ACK_TIMEOUT_MS,
+              "Invalid BLE timeout.");
 
 /* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
 static_assert(BATTERY_ADC_RESOLUTION_BITS == 12U, "ESP32-C3 ADC requires 12-bit configuration.");
@@ -151,8 +209,8 @@ static_assert(BATTERY_LOW_LOOP_DELAY_MS > 0UL && BATTERY_LOW_LOOP_DELAY_MS <= 10
               "Invalid low battery loop delay.");
 static_assert(BATTERY_LOW_OLED_REFRESH_MS > 0UL && BATTERY_LOW_OLED_REFRESH_MS < 0x80000000UL,
               "Invalid low battery OLED refresh interval.");
-static_assert(RPM_IR_TRIGGER_EDGE == FALLING, "RPM must use FALLING edges.");
-static_assert(PULSES_PER_REV == 1UL, "Each FALLING edge must equal one revolution.");
+static_assert(RPM_IR_TRIGGER_EDGE == CHANGE, "RPM must capture both rising and falling edges.");
+static_assert(PULSES_PER_REV == 1UL, "Each same-polarity RPM period must equal one revolution.");
 static_assert(RPM_ISR_QUEUE_SIZE >= 2U && RPM_ISR_QUEUE_SIZE <= 256U,
               "RPM queue size must be between 2 and 256.");
 static_assert(RPM_VALID_MAX > 0UL && RPM_VALID_MAX <= 65535UL, "Invalid RPM limit.");

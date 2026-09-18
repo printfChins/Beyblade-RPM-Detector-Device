@@ -1,9 +1,11 @@
 /*
-    檔案位置: BRD_OLED/brd_measurement.cpp
+    檔案位置: BRD_BLE_OLED/brd_measurement.cpp
     [V0.12 修改] LOAD / RPM 事件依時間戳記合併處理，去抖使用事件時間。
     [V0.12 新增] 有界 LOAD 佇列、固定大小快照、溢位診斷與重新同步。
     [V0.12 刪減] LOAD 僅保存最後一次電位及 sequence 的處理方式。
-    [V0.12 修改] 發射後門檻使用 cfg 的 MAX 20%。
+    [V1.11 修改] 發射後門檻使用 cfg 的 MAX 35%。
+    [V1.13 修改] RPM 改為 CHANGE 雙邊沿捕捉；Rising / Falling 各自使用同極性完整一圈週期計算。
+    [V1.13 保留] MAX 使用原始完整一圈 RPM，不做平均、IIR 或半圈換算。
     [保留] 不加入相鄰 RPM 週期合理性檢查或候選峰值濾波。
     [保留] HOLD 2.5 秒、OLED 完整畫面回報、無脈衝 300 ms 結算。
     ISR 只記錄事件；所有狀態機與 OLED 仍在主 loop 執行。
@@ -12,6 +14,12 @@
 
 #include "brd_config.h"
 #include "brd_measurement.h"
+#include "brd_record.h"
+
+struct rpm_edge_t {
+    uint32_t time_us;
+    int level;
+};
 
 struct load_edge_t {
     uint32_t time_us;
@@ -19,7 +27,7 @@ struct load_edge_t {
 };
 
 static portMUX_TYPE g_input_mux = portMUX_INITIALIZER_UNLOCKED;
-static volatile uint32_t g_rpm_queue[RPM_ISR_QUEUE_SIZE];
+static volatile rpm_edge_t g_rpm_queue[RPM_ISR_QUEUE_SIZE];
 static volatile load_edge_t g_load_queue[LOAD_ISR_QUEUE_SIZE];
 static volatile uint16_t g_rpm_head = 0U;
 static volatile uint16_t g_rpm_tail = 0U;
@@ -31,7 +39,7 @@ static volatile bool g_input_capture = false;
 static volatile int g_isr_load_level = LOW;
 
 /* [V0.12 新增] 固定 RAM 快照，不使用 heap，也不把陣列放在主迴圈堆疊。 */
-static uint32_t g_rpm_batch[RPM_ISR_QUEUE_SIZE];
+static rpm_edge_t g_rpm_batch[RPM_ISR_QUEUE_SIZE];
 static load_edge_t g_load_batch[LOAD_ISR_QUEUE_SIZE];
 static brd_measurement_diagnostics_t g_diagnostics = {};
 static bool g_measurement_enabled = false;
@@ -42,9 +50,14 @@ static int g_load_raw = LOW;
 static int g_load_stable = LOW;
 static uint32_t g_load_candidate_us = 0UL;
 static bool g_load_candidate_had_spin = false;
-static bool g_period_valid = false;
+/* [V0.12 新增] 發射摘要保存原 LOW 邊沿時的數值，不使用去抖後的 RPM。 */
+static uint16_t g_load_candidate_rpm = 0U;
+static uint16_t g_load_candidate_max_rpm = 0U;
+static bool g_rising_period_valid = false;
+static bool g_falling_period_valid = false;
 static bool g_quiet_expired = true;
-static uint32_t g_last_edge_us = 0UL;
+static uint32_t g_last_rising_edge_us = 0UL;
+static uint32_t g_last_falling_edge_us = 0UL;
 static uint32_t g_last_activity_us = 0UL;
 static uint32_t g_launch_us = 0UL;
 static bool g_has_valid_rpm = false;
@@ -70,11 +83,13 @@ static bool time_before(uint32_t first, uint32_t second) {
 
 static void IRAM_ATTR rpm_ir_isr(void) {
     uint32_t edge_us = micros();
+    int level = (int)((GPIO.in.val >> RPM_IR_GPIO) & 1U);
     portENTER_CRITICAL_ISR(&g_input_mux);
     if (g_input_capture) {
         uint16_t next = (uint16_t)((g_rpm_head + 1U) % RPM_ISR_QUEUE_SIZE);
         if (next != g_rpm_tail) {
-            g_rpm_queue[g_rpm_head] = edge_us;
+            g_rpm_queue[g_rpm_head].time_us = edge_us;
+            g_rpm_queue[g_rpm_head].level = level;
             g_rpm_head = next;
         } else {
             g_rpm_overflow = true;
@@ -135,7 +150,10 @@ static void reset_measurement(bool loaded) {
         [V0.12 刪減] 此處不清 ISR 佇列，避免清掉較晚但已收到的有效事件。
         一般狀態持續捕捉，WAIT_LOAD 的 RPM 在事件處理時直接忽略。
     */
-    g_period_valid = false;
+    /* [V0.12 新增] 換次裝載 / 故障重置同時取消上一筆未 ACK 曲線。 */
+    brd_record_reset();
+    g_rising_period_valid = false;
+    g_falling_period_valid = false;
     g_quiet_expired = true;
     g_has_valid_rpm = false;
     g_current_rpm = 0U;
@@ -148,7 +166,7 @@ static void reset_measurement(bool loaded) {
     g_display_generation++;
 }
 
-static void finish_measurement(void) {
+static void finish_measurement(uint32_t event_us) {
     if (g_state != BRD_STATE_SPINNING_LAUNCHED) {
         return;
     }
@@ -157,6 +175,7 @@ static void finish_measurement(void) {
         return;
     }
 
+    uint16_t final_rpm = g_current_rpm;
     g_display_max = g_max_rpm;
     g_show_max = true;
     g_display_generation++;
@@ -165,65 +184,84 @@ static void finish_measurement(void) {
     g_max_lock_start_ms = millis();
     g_state = BRD_STATE_WAIT_LOAD;
     g_current_rpm = 0U;
-    g_period_valid = false;
+    g_rising_period_valid = false;
+    g_falling_period_valid = false;
     g_quiet_expired = true;
     disable_input_capture();
+    /* [V0.12 新增] 停止輸入後封存曲線；CRC 不占用 ISR。 */
+    brd_record_finish(event_us, final_rpm, g_max_rpm);
 }
 
-static void check_finish_threshold(void) {
+static void check_finish_threshold(uint32_t event_us) {
     if (g_state != BRD_STATE_SPINNING_LAUNCHED || !g_has_valid_rpm ||
         g_current_rpm == 0U || g_max_rpm == 0U) {
         return;
     }
     uint32_t threshold = ((uint32_t)g_max_rpm * POST_LAUNCH_FINISH_PERCENT + 99UL) / 100UL;
     if (g_current_rpm <= threshold) {
-        finish_measurement();
+        finish_measurement(event_us);
     }
 }
 
-static void process_rpm_edge(uint32_t edge_us) {
+static void process_rpm_edge(const rpm_edge_t &edge) {
     if (g_state == BRD_STATE_WAIT_LOAD) {
         return;
     }
     if (g_state == BRD_STATE_LOADED_READY) {
         g_state = BRD_STATE_SPINNING_LOADED;
+        /* [V1.11 保留] 首個邊沿建立曲線時間基準；record 層補入 t=0 / RPM=0。 */
+        brd_record_begin(edge.time_us);
     }
-    if (!g_period_valid) {
-        g_last_edge_us = edge_us;
-        g_last_activity_us = edge_us;
-        g_period_valid = true;
+
+    /*
+        [V1.13 新增]
+        白 / 黑各半圈只用來把更新時機錯開約 180 度。
+        Rising 只和上一個 Rising 比；Falling 只和上一個 Falling 比，
+        因此每個 RPM 都仍然來自完整 360 度週期，不直接用半圈時間換算。
+    */
+    bool &period_valid = edge.level == HIGH ? g_rising_period_valid : g_falling_period_valid;
+    uint32_t &last_same_edge_us = edge.level == HIGH ? g_last_rising_edge_us : g_last_falling_edge_us;
+
+    if (!period_valid) {
+        last_same_edge_us = edge.time_us;
+        g_last_activity_us = edge.time_us;
+        period_valid = true;
         g_quiet_expired = false;
         return;
     }
 
-    uint32_t period_us = (uint32_t)(edge_us - g_last_edge_us);
+    uint32_t period_us = (uint32_t)(edge.time_us - last_same_edge_us);
     if (period_us < RPM_MIN_PERIOD_US) {
         return;
     }
     if (period_us > RPM_MAX_PERIOD_US) {
-        g_last_edge_us = edge_us;
-        g_last_activity_us = edge_us;
+        last_same_edge_us = edge.time_us;
+        g_last_activity_us = edge.time_us;
         g_current_rpm = 0U;
         g_quiet_expired = false;
         return;
     }
+
     uint32_t rpm = 60000000UL / period_us / PULSES_PER_REV;
     if (rpm > RPM_VALID_MAX) {
         return;
     }
 
-    g_last_edge_us = edge_us;
-    g_last_activity_us = edge_us;
+    last_same_edge_us = edge.time_us;
+    g_last_activity_us = edge.time_us;
     g_quiet_expired = false;
     g_current_rpm = (uint16_t)rpm;
     g_has_valid_rpm = true;
-    if (g_current_rpm > g_max_rpm) {
+    bool new_max = g_current_rpm > g_max_rpm;
+    if (new_max) {
         g_max_rpm = g_current_rpm;
     }
-    check_finish_threshold();
+    /* [V1.13 修改] Rising / Falling 各自產生完整一圈 RPM，因此約每半圈記錄一筆。 */
+    brd_record_capture_event(edge.time_us, g_current_rpm, new_max);
+    check_finish_threshold(edge.time_us);
 }
 
-static void handle_load_change(void) {
+static void handle_load_change(uint32_t deadline_us) {
     g_load_stable = g_load_raw;
     increment_counter(g_diagnostics.load_stable_transitions);
     if (g_load_stable == LOAD_ACTIVE_LEVEL) {
@@ -237,10 +275,11 @@ static void handle_load_change(void) {
         g_launch_us = g_load_candidate_us;
         g_state = BRD_STATE_SPINNING_LAUNCHED;
         increment_counter(g_diagnostics.launch_events);
-        check_finish_threshold();
+        brd_record_launch(g_launch_us, g_load_candidate_rpm, g_load_candidate_max_rpm);
+        check_finish_threshold(deadline_us);
         /* [保留] 已靜止超過歸零期限後卸載，也能完成既有有效結果。 */
         if (g_quiet_expired && g_has_valid_rpm) {
-            finish_measurement();
+            finish_measurement(deadline_us);
         }
     } else if (g_state == BRD_STATE_LOADED_READY) {
         reset_measurement(false);
@@ -293,22 +332,26 @@ static void advance_input_time(uint32_t until_us, bool include_equal_timeouts) {
         }
 
         if (timer == INPUT_TIMER_NONE) {
+            brd_record_advance(until_us, g_current_rpm, include_equal_timeouts);
             return;
         }
+        brd_record_advance(deadline, g_current_rpm, false);
         if (timer == INPUT_TIMER_LOAD) {
-            handle_load_change();
+            handle_load_change(deadline);
         } else if (timer == INPUT_TIMER_ZERO) {
             g_current_rpm = 0U;
-            g_period_valid = false;
+            g_rising_period_valid = false;
+            g_falling_period_valid = false;
             g_quiet_expired = true;
             if (g_state == BRD_STATE_SPINNING_LAUNCHED && g_has_valid_rpm) {
-                finish_measurement();
+                finish_measurement(deadline);
             }
         } else if (timer == INPUT_TIMER_IDLE) {
             reset_measurement(true);
         } else {
-            finish_measurement();
+            finish_measurement(deadline);
         }
+        brd_record_advance(deadline, g_current_rpm, true);
     }
 }
 
@@ -322,7 +365,9 @@ static void snapshot_inputs(uint16_t &rpm_count, uint16_t &load_count, uint32_t 
     g_rpm_overflow = false;
     g_load_overflow = false;
     while (g_rpm_tail != g_rpm_head && rpm_count < RPM_ISR_QUEUE_SIZE) {
-        g_rpm_batch[rpm_count++] = g_rpm_queue[g_rpm_tail];
+        g_rpm_batch[rpm_count].time_us = g_rpm_queue[g_rpm_tail].time_us;
+        g_rpm_batch[rpm_count].level = g_rpm_queue[g_rpm_tail].level;
+        rpm_count++;
         g_rpm_tail = (uint16_t)((g_rpm_tail + 1U) % RPM_ISR_QUEUE_SIZE);
     }
     while (g_load_tail != g_load_head && load_count < LOAD_ISR_QUEUE_SIZE - 1U) {
@@ -397,7 +442,9 @@ void brd_measurement_update(void) {
     snapshot_inputs(rpm_count, load_count, now_us, rpm_overflow, load_overflow);
     if (rpm_overflow) {
         increment_counter(g_diagnostics.rpm_queue_overflows);
-        g_period_valid = false;
+        brd_record_mark_gap();
+        g_rising_period_valid = false;
+        g_falling_period_valid = false;
         g_current_rpm = 0U;
         rpm_count = 0U;
     }
@@ -417,8 +464,8 @@ void brd_measurement_update(void) {
     while ((rpm_index < rpm_count || load_index < load_count) && !g_max_lock) {
         bool use_rpm = rpm_index < rpm_count &&
             (load_index >= load_count ||
-             !time_before(g_load_batch[load_index].time_us, g_rpm_batch[rpm_index]));
-        uint32_t event_us = use_rpm ? g_rpm_batch[rpm_index] : g_load_batch[load_index].time_us;
+             !time_before(g_load_batch[load_index].time_us, g_rpm_batch[rpm_index].time_us));
+        uint32_t event_us = use_rpm ? g_rpm_batch[rpm_index].time_us : g_load_batch[load_index].time_us;
         advance_input_time(event_us, false);
         if (g_max_lock) {
             break;
@@ -430,7 +477,10 @@ void brd_measurement_update(void) {
             g_load_raw = edge.level;
             g_load_candidate_us = edge.time_us;
             g_load_candidate_had_spin = g_state == BRD_STATE_SPINNING_LOADED;
+            g_load_candidate_rpm = g_current_rpm;
+            g_load_candidate_max_rpm = g_max_rpm;
         }
+        brd_record_advance(event_us, g_current_rpm, true);
     }
     if (!g_max_lock) {
         advance_input_time(now_us, true);
@@ -449,6 +499,16 @@ brd_display_t brd_measurement_get_display(void) {
 
 brd_measurement_diagnostics_t brd_measurement_get_diagnostics(void) {
     return g_diagnostics;
+}
+
+brd_telemetry_t brd_measurement_get_telemetry(void) {
+    brd_telemetry_t value;
+    value.state = g_state;
+    value.loaded = g_load_stable == LOAD_ACTIVE_LEVEL;
+    value.active = g_state == BRD_STATE_SPINNING_LOADED || g_state == BRD_STATE_SPINNING_LAUNCHED;
+    value.current_rpm = g_current_rpm;
+    value.max_rpm = g_show_max ? g_display_max : g_max_rpm;
+    return value;
 }
 
 void brd_measurement_max_frame_presented(uint32_t generation) {

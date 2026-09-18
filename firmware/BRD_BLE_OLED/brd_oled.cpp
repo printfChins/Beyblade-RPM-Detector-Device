@@ -1,5 +1,5 @@
 /*
-    檔案位置: BRD_OLED/brd_oled.cpp
+    檔案位置: BRD_BLE_OLED/brd_oled.cpp
     [V0.10 修改] 顯示 LOAD 狀態、RPM / MAX 與開機版本。
     [V0.10 恢復] 右上角電池圖示與左側充電閃電圖示，沿用 V1.9 尺寸與位置。
     [V0.10 刪減] OLED 休眠與獨立 FreeRTOS Task。
@@ -17,6 +17,8 @@
 #include <cstdio>
 
 #include "brd_battery.h"
+// [V1.10 新增] 使用受保護的 BLE 連線快照，不以 Notify 訂閱代表連線。
+#include "brd_ble.h"
 #include "brd_config.h"
 #include "brd_io.h"
 #include "brd_measurement.h"
@@ -36,16 +38,22 @@ static brd_display_t g_frame_display = {};
 /* [V0.10 恢復] 每幅畫面保存一致的電量與充電狀態。 */
 static uint8_t g_frame_battery_percent = 0U;
 static bool g_frame_charging = false;
+// [V1.10 新增] 保存本幅畫面的連線狀態，連線或斷線時要求重畫。
+static bool g_frame_ble_connected = false;
 static bool g_frame_is_low_battery = false;
 /* [V0.12 新增] ADC 故障有獨立畫面，不冒充 0% 低電。 */
 static bool g_frame_is_adc_fault = false;
 static bool g_warning_frame_drawn = false;
+// [V1.10 新增] 追蹤 SSD1306 0xAE / 0xAF；只在主 loop 傳送 I2C。
+static bool g_idle_off_requested = false;
+static bool g_oled_display_off = false;
 static uint32_t g_last_warning_frame_ms = 0UL;
 
 static void oled_mark_failed(void) {
     g_oled_available = false;
     g_frame_active = false;
     g_warning_frame_drawn = false;
+    g_oled_display_off = false;
     g_last_retry_ms = millis();
 }
 
@@ -116,7 +124,11 @@ static bool oled_initialize(void) {
         0x2EU,
         0xAFU
     };
-    return oled_transmit(commands, sizeof(commands));
+    bool ready = oled_transmit(commands, sizeof(commands));
+    if (ready) {
+        g_oled_display_off = false;
+    }
+    return ready;
 }
 
 /* [保留] 5x7 字型與像素繪製沿用附件 V1.9，包含 B、X、V 與小數點。 */
@@ -428,12 +440,31 @@ static void oled_begin_adc_fault_frame(void) {
     g_frame_active = true;
 }
 
-static void oled_begin_frame(const brd_display_t &display, uint8_t battery_percent, bool charging) {
+// [V1.10 新增] 7x13 單色藍牙符號，右下角 x=119..125、y=17..29。
+// 五位 RPM / MAX 數字最右像素為 x=105，保留間距且不覆蓋電池列。
+static void oled_draw_bluetooth_icon(void) {
+    static const uint8_t rows[13] = {
+        0x08U, 0x0CU, 0x0AU, 0x49U, 0x2AU, 0x1CU, 0x08U,
+        0x1CU, 0x2AU, 0x49U, 0x0AU, 0x0CU, 0x08U
+    };
+    for (uint8_t row = 0U; row < 13U; row++) {
+        for (uint8_t column = 0U; column < 7U; column++) {
+            if ((rows[row] & (1U << (6U - column))) != 0U) {
+                oled_set_pixel((uint8_t)(119U + column), (uint8_t)(17U + row), true);
+            }
+        }
+    }
+}
+
+// [V1.10 修改] 連線狀態與量測資料一同繪入本幅畫面。
+static void oled_begin_frame(const brd_display_t &display, uint8_t battery_percent, bool charging,
+                             bool ble_connected = false) {
     char value_line[16];
 
     g_frame_display = display;
     g_frame_battery_percent = battery_percent;
     g_frame_charging = charging;
+    g_frame_ble_connected = ble_connected;
     g_frame_is_low_battery = false;
     g_frame_is_adc_fault = false;
     g_warning_frame_drawn = false;
@@ -446,6 +477,10 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     snprintf(value_line, sizeof(value_line), "%s %u",
              display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
     oled_draw_text(0U, 16U, value_line, 2U);
+    // [V1.10 新增] 已建立 GATT 連線即顯示；斷線後清除重畫即移除。
+    if (ble_connected) {
+        oled_draw_bluetooth_icon();
+    }
     /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */
     oled_draw_battery_icon(108U, 0U, battery_percent);
     if (charging) {
@@ -492,7 +527,7 @@ static bool oled_send_frame_step(void) {
     return true;
 }
 
-void brd_oled_begin(void) {
+void brd_oled_begin(bool show_boot_screen) {
     g_last_retry_ms = millis();
     g_oled_available = oled_initialize();
     if (!g_oled_available) {
@@ -506,8 +541,8 @@ void brd_oled_begin(void) {
     } else if (brd_battery_is_adc_fault()) {
         /* [V0.12 新增] ADC 初始化失敗時略過開機等待，立即顯示 ADC ERR。 */
         oled_begin_adc_fault_frame();
-    } else {
-        /* [保留] 開機時中斷尚未啟動，可以完整送出版本畫面。 */
+    } else if (show_boot_screen) {
+        /* [V1.11 修改] 只有真正 Power-on Reset 才播放版本畫面。 */
         oled_clear_buffer();
         oled_draw_centered_text(1U, PROJECT_SHORT_NAME, 1U);
         oled_draw_centered_text(16U, PROJECT_VERSION, 2U);
@@ -517,6 +552,13 @@ void brd_oled_begin(void) {
         g_frame_active = true;
         g_frame_is_low_battery = false;
         g_frame_is_adc_fault = false;
+    } else {
+        /* [V1.15 保留] 非真正上電 reset 跳過 Boot Logo，下一輪直接畫正常畫面。 */
+        g_frame_active = false;
+        g_frame_is_low_battery = false;
+        g_frame_is_adc_fault = false;
+        g_last_frame_start_ms = millis() - OLED_UPDATE_INTERVAL_MS;
+        return;
     }
 
     while (g_frame_active) {
@@ -559,6 +601,22 @@ void brd_oled_update(void) {
         return;
     }
 
+    // [V1.10 新增] 警示狀態不可維持關屏；喚醒後重畫整幅畫面。
+    bool should_off = g_idle_off_requested && !low_locked && !adc_fault;
+    if (should_off != g_oled_display_off) {
+        const uint8_t command[] = {0x00U, (uint8_t)(should_off ? 0xAEU : 0xAFU)};
+        if (!oled_transmit(command, sizeof(command))) {
+            oled_mark_failed();
+            return;
+        }
+        g_oled_display_off = should_off;
+        g_frame_active = false;
+        g_last_frame_start_ms = millis() - OLED_UPDATE_INTERVAL_MS;
+    }
+    if (g_oled_display_off) {
+        return;
+    }
+
     if (low_locked || adc_fault) {
         if (g_warning_frame_drawn &&
             (uint32_t)(millis() - g_last_warning_frame_ms) < BATTERY_LOW_OLED_REFRESH_MS) {
@@ -589,16 +647,18 @@ void brd_oled_update(void) {
         brd_display_t display = brd_measurement_get_display();
         uint8_t battery_percent = brd_battery_get_percent();
         bool charging = brd_io_is_charging();
+        bool ble_connected = brd_ble_get_diagnostics().connected;
         bool changed_state = display.generation != g_frame_display.generation ||
             display.loaded != g_frame_display.loaded || display.show_max != g_frame_display.show_max ||
             /* [V0.10 新增] 自鎖結束即要求重畫，即使 MAX 數值及電量都未改變。 */
             display.hold_active != g_frame_display.hold_active ||
-            battery_percent != g_frame_battery_percent || charging != g_frame_charging;
+            battery_percent != g_frame_battery_percent || charging != g_frame_charging ||
+            ble_connected != g_frame_ble_connected;
         if (!changed_state &&
             (uint32_t)(millis() - g_last_frame_start_ms) < OLED_UPDATE_INTERVAL_MS) {
             return;
         }
-        oled_begin_frame(display, battery_percent, charging);
+        oled_begin_frame(display, battery_percent, charging, ble_connected);
     }
 
     /* [V0.10 新增] 一般畫面每次只送一包，下一次 loop 先處理量測再送下一包。 */
@@ -610,4 +670,13 @@ void brd_oled_update(void) {
     if (!g_frame_active && g_frame_display.show_max) {
         brd_measurement_max_frame_presented(g_frame_display.generation);
     }
+}
+
+// [V1.10 新增] 只更新要求，不在不同任務同時存取 I2C。
+void brd_oled_set_idle_off(bool off) {
+    g_idle_off_requested = off;
+}
+
+bool brd_oled_idle_is_off(void) {
+    return g_oled_available && g_oled_display_off;
 }

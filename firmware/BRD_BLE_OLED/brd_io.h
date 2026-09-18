@@ -1,4 +1,4 @@
-/* 檔案位置: BRD_OLED/brd_io.h
+/* 檔案位置: BRD_BLE_OLED/brd_io.h
    [V0.10 修改] GPIO 初始化與充電 DET 讀取。 */
 #ifndef BRD_IO_H
 #define BRD_IO_H

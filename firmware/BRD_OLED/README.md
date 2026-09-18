@@ -1,198 +1,168 @@
-# BRD_OLED — V0.10
+# BRD_OLED V0.12
 
-本專案由使用者提供的 `BLE_RPM_V1.9(2).zip` 製作為 **V0.10 無藍牙版本**，保留 LOAD、RPM 量測、OLED 顯示，以及電量與充電圖示。本次以最新附件 `BRD_OLED(1).zip` 為基礎，新增發射後 MAX 自鎖期間的 `HOLD` 顯示。電量低於 5% 時停用鎖定，鎖定後恢復至 10% 或以上會重新開機。版本字串維持 `V0.10`。
+```cpp
+/*
+本版以 BRD_OLED V0.11 為基礎，依使用者指定範圍修改。
+[修改] 發射後的 RPM 結束門檻由 MAX 50% 改成 MAX 20%。
+[新增] 有界 LOAD 邊沿佇列、事件時間去抖與 RPM 事件排序。
+[新增] 單次 ADC 的錯誤碼、診斷狀態、有效資料逾時及持續達標恢復。
+[保留] 不新增相鄰 RPM 週期合理性檢查；重新開機仍清除低電鎖定。
+[修改] 版本、文件與交付 SHA-256 同步為 V0.12。
+*/
+```
 
-## 使用位置
+解壓縮後，將完整 `BRD_OLED/` 資料夾放入原專案的 `firmware/`。沿用原建置紀錄中的位置，主程式完整路徑為：
 
-解壓縮後，使用 Arduino IDE 開啟 `BRD_OLED/BRD_OLED.ino`。主檔名稱必須與資料夾名稱一致。
+`C:\UserCode\ESP32\Arduino\Beyblade-RPM-Detector-Device\firmware\BRD_OLED\BRD_OLED.ino`
 
-這是一個完整、獨立的新版本資料夾。各檔案均從第 1 行使用完整內容，不需要將片段貼入 V1.9。不要將 V1.9 的 `brd_ble.cpp` 或其他舊模組混放進此資料夾，因為 Arduino 會一起編譯同資料夾內的原始碼。
+```cpp
+/*
+貼放方式：各 .cpp / .h 均提供完整檔案，由第 1 行完整取代同名檔案。
+主程式已在 ZIP 中整合；若手動合併，依下方主程式修改位置表處理。
+Arduino IDE 開啟 BRD_OLED.ino，主檔名稱需與 BRD_OLED 資料夾一致。
 
-若放在 Windows 的 `C:\UserCode\BRD-Firmware\firmware`，主程式完整位置即為：
+[刪減] 交付包不含原 V0.11 的 build/、APP BIN、merged BIN、ELF 或 MAP。
+更新既有目錄時，請清除舊建置產物，重新編譯後再燒錄。
+不能將 V0.11 BIN 改名當作 V0.12，亦不能以 APP BIN 代替 0x000000 merged 映像。
+*/
+```
 
-`C:\UserCode\BRD-Firmware\firmware\BRD_OLED\BRD_OLED.ino`
+完整交付結構與用途：
 
-## 本次 HOLD 顯示修改位置
-
-完整專案的資料夾為 `BRD_OLED/`，版本字串維持 `V0.10`。若更新既有專案，以下三個完整檔案必須一起替換，均從第 1 行使用交付內容；主程式 `BRD_OLED.ino` 不需修改。
-
-| 檔案位置 | 本次變更 |
+| 壓縮檔內路徑 | 用途／本次變更 |
 | --- | --- |
-| `BRD_OLED/brd_measurement.h` | [新增] `brd_display_t.hold_active`，提供實際自鎖狀態 |
-| `BRD_OLED/brd_measurement.cpp` | [新增] 在畫面資料中填入 HOLD 狀態 |
-| `BRD_OLED/brd_oled.cpp` | [新增] H 字型、HOLD 文字與自鎖狀態變更後的畫面更新；[刪減] 自鎖期間只按 LOAD 顯示文字的舊判斷 |
+| `BRD_OLED/BRD_OLED.ino` | [修改] 啟動／暫停條件加入 ADC 有效性；[新增] 故障恢復後重新待測 |
+| `BRD_OLED/brd_config.h` | [修改] V0.12、MAX 20%；[新增] LOAD 佇列與 ADC 故障／恢復時間 |
+| `BRD_OLED/brd_measurement.cpp` | [修改] 按事件時間合併 LOAD、RPM 與到期事件；[新增] 有界佇列、溢位復原 |
+| `BRD_OLED/brd_measurement.h` | [新增] 量測診斷介面；[修改] begin 可重複呼叫 |
+| `BRD_OLED/brd_battery.cpp` | [修改] ESP-IDF 單次 ADC 與校正；[新增] 錯誤狀態、有效資料逾時、恢復計時 |
+| `BRD_OLED/brd_battery.h` | [新增] 電池診斷、ADC 故障及量測允許狀態介面 |
+| `BRD_OLED/brd_oled.cpp` | [新增] ADC ERR 畫面與 C 字型；[修改] 警示與一般畫面切換 |
+| `BRD_OLED/brd_oled.h` | OLED 既有介面；更新檔案位置註解 |
+| `BRD_OLED/brd_io.cpp`、`BRD_OLED/brd_io.h` | GPIO 功能不變；更新檔案位置註解 |
+| `BRD_OLED/README.md` | V0.12 操作、設定、介面及貼放位置 |
+| `BRD_OLED/CHANGELOG.md` | V0.12 新增／修改／刪減紀錄及既有版本歷史 |
+| `BRD_OLED/VALIDATION.md` | 本次實際完成的驗證與限制 |
+| `BRD_OLED/FILE_MANIFEST.txt` | 包含韌體、文件及 verification 的檔案 SHA-256 |
+| `verification/run_host_tests.py` | [新增] 主機回歸測試入口，需 Python 3 與支援 sanitizer 的 g++ |
+| `verification/host/test_v012.cpp` | [新增] 38 個測試案例，直接載入交付原始模組與主程式 |
+| `verification/host/Arduino.h`、`esp_err.h`、`esp_idf_version.h`、`esp_system.h` | [新增] 主機替代介面，全部位於 verification/host/ |
+| `verification/host/driver/gpio.h`、`driver/i2c_master.h` | [新增] GPIO／I2C 替代介面，全部位於 verification/host/ |
+| `verification/host/esp_adc/adc_oneshot.h`、`adc_cali.h`、`adc_cali_scheme.h` | [新增] ADC 替代介面，全部位於 verification/host/esp_adc/ |
+| `verification/host/hal/adc_types.h`、`soc/gpio_struct.h` | [新增] 主機型別與 GPIO 暫存器模型 |
 
-| 狀態 | 第一行 | 第二行 |
-| --- | --- | --- |
-| 發射後仍在量測 | `WAIT LOAD` | `RPM xxxx` |
-| 量測完成且正在自鎖 | `HOLD` | `MAX xxxx` |
-| 自鎖結束、尚未重新裝載 | `WAIT LOAD` | `MAX xxxx` |
-| 重新裝載且去抖完成 | `LOADED READY` | `RPM 0`，開始轉動後更新即時轉速 |
+`verification/` 與 `BRD_OLED/` 並列，不要把測試用標頭放進 Arduino 的程式或 libraries 目錄。
 
-- HOLD 對應既有 MAX 自鎖旗標，並非 MAX 仍可見的整段期間。
-- 自鎖時間沿用本次附件的 `OLED_MAX_HOLD_MS = 2500`，即 2.5 秒；仍從首幅完整 MAX 畫面送出時計時。OLED 失效時沿用原有備援計時。
-- 自鎖中忽略 LOAD，電量與充電圖示依原有機制更新；圖示重繪不延長自鎖。
-- 自鎖狀態改變後要求下一幅畫面更新，一般畫面仍分段傳送；螢幕文字實際切換會經過傳送時間。
-- 低電警示優先於 HOLD，沿用圓角電池、左側亮條與中央閃電圖示。
-- [刪減] 交付 ZIP 排除附件內修改前的 `build/`、BIN、ELF、MAP 等建置產物。請在 Arduino IDE 重新編譯及燒錄，以產生包含 HOLD 的韌體。
+主程式修改位置；行號對應本版 `BRD_OLED/BRD_OLED.ino`：
 
-## 先前低電功能的主程式新增位置
-
-檔案：`BRD_OLED/BRD_OLED.ino`。以下行號以 ZIP 內更新後的完整主程式為準。
-
-| 行號 | 新增內容 | 放置位置 |
+| 行號 | 位置 | 新增／刪減 |
 | ---: | --- | --- |
-| 16 | `#include <esp_system.h>` | [新增] 標頭區：引入軟體重啟介面 |
-| 29 | `brd_battery_begin();` | [保留] setup：GPIO 初始化之後、OLED 初始化之前先取樣 |
-| 35 | `brd_battery_update();` | [新增] setup：版本畫面結束後重新檢查電量 |
-| 36 | `if (brd_battery_is_low_locked())` | [新增] setup：低電時禁止啟動 RPM／LOAD 中斷 |
-| 45 | `brd_battery_update();` | [修改] loop：電量判斷移至量測處理之前 |
-| 47 | `if (brd_battery_is_low_locked())` | [新增] loop：低電鎖定優先於一般功能 |
-| 49 | `brd_measurement_stop();` | [新增] 低電分支：停用中斷並清除量測資料 |
-| 52 | `esp_restart();` | [新增] 低電分支：電量恢復至 10% 或以上時重啟 |
-| 54 | `brd_oled_update();` | [新增] 低電分支：只更新沒電警示，之後直接返回 |
+| 37 | setup，電池再次更新之後 | [修改] 改以 `!brd_battery_measurement_allowed()` 判斷暫停；[刪減] 僅檢查低電鎖定的條件 |
+| 49 | loop，電池更新之後 | [修改] 相同允許條件，涵蓋低電與 ADC 無有效資料 |
+| 52 | 暫停分支 | [保留呼叫] `brd_battery_restart_required()`；其內部已改成持續達標後才回傳 true |
+| 62 | 正常分支，`brd_measurement_update()` 前 | [新增] `brd_measurement_begin()`，僅在停用後恢復時重新建立量測；已啟用時不重置 |
 
-## 完整資料夾與檔案
+設定集中於 `BRD_OLED/brd_config.h`：
 
-所有檔案均直接放在 `BRD_OLED/`，沒有額外的原始碼子資料夾。
-
-| 相對檔案位置 | 用途與變更 |
-| --- | --- |
-| `BRD_OLED/BRD_OLED.ino` | [修改] 完整主程式；初始化與量測、電池、OLED 呼叫順序 |
-| `BRD_OLED/brd_config.h` | [修改] 版本、GPIO、RPM、電池 ADC、低電與恢復門檻、LOAD 去抖、MAX 自鎖與 OLED 重試參數 |
-| `BRD_OLED/brd_battery.cpp` | [修改] GPIO0 每秒單次 ADC、原版 SOC 表、低電鎖定與恢復判斷 |
-| `BRD_OLED/brd_battery.h` | [新增] 低電鎖定及重啟條件介面；保留電量讀取介面 |
-| `BRD_OLED/brd_io.cpp` | [修改] 充電 DET 使用上拉，其餘輸入腳無上下拉；GPIO8 關燈 |
-| `BRD_OLED/brd_io.h` | [修改] GPIO 初始化與充電 DET 讀取介面 |
-| `BRD_OLED/brd_measurement.cpp` | [新增] 提供 HOLD 顯示旗標；保留低電停用、單機量測、去抖、MAX 保持 |
-| `BRD_OLED/brd_measurement.h` | [新增] 畫面資料中的 hold_active；保留量測介面 |
-| `BRD_OLED/brd_oled.cpp` | [新增] HOLD 狀態顯示與 H 字型；保留圓角電池低電警示、電量、充電圖示與 I2C 重試 |
-| `BRD_OLED/brd_oled.h` | [修改] OLED 初始化與更新介面 |
-| `BRD_OLED/README.md` | [新增] 使用位置、功能與設定說明 |
-| `BRD_OLED/CHANGELOG.md` | [新增] 相對附件 V1.9 的修改、刪減清單 |
-| `BRD_OLED/VALIDATION.md` | [新增] 已執行的主機模擬檢查與驗證限制 |
-| `BRD_OLED/FILE_MANIFEST.txt` | [新增] 交付檔案清單與 SHA-256 |
-
-## GPIO
-
-| 功能 | GPIO | 韌體設定與行為 |
+| 參數 | V0.12 預設 | 行為 |
 | --- | ---: | --- |
-| RPM IR | 3 | INPUT；內部上拉、下拉皆關閉；FALLING 中斷，每下降緣代表一圈 |
-| LOAD IR | 1 | INPUT；內部上拉、下拉皆關閉；CHANGE 中斷；HIGH 已裝載、LOW 未裝載 |
-| 電池 ADC | 0 | ADC；內部上拉、下拉皆關閉；12-bit、11 dB、470k/470k 分壓 |
-| 充電偵測 | 10 | INPUT_PULLUP；內部上拉開啟、下拉關閉；LOW 顯示充電圖示，HIGH 隱藏 |
-| 原狀態 LED | 8 | OUTPUT；固定 HIGH 關燈 |
-| OLED SDA | 20 | I2C；初始化與復原皆不啟用內部上拉、下拉 |
-| OLED SCL | 21 | I2C；初始化與復原皆不啟用內部上拉、下拉 |
+| `PROJECT_VERSION` | V0.12 | 開機版本字串 |
+| `POST_LAUNCH_FINISH_PERCENT` | 20 | 發射後 RPM <= MAX 的 20% 即結算，仍是單筆有效 RPM 判斷 |
+| `LOAD_ISR_QUEUE_SIZE` | 32 | 環形佇列實際保存 31 個 LOAD 邊沿 |
+| `LOAD_IR_DEBOUNCE_US` | 1000 us | 依邊沿時間確認連續穩定狀態 |
+| `OLED_MAX_HOLD_MS` | 2500 ms | 首幅完整 MAX 畫面送出後的 HOLD 時間 |
+| `BATTERY_SAMPLE_INTERVAL_MS` | 1000 ms | 每個週期最多一次 ADC 轉換 |
+| `BATTERY_ADC_STALE_TIMEOUT_MS` | 3000 ms | 最後有效資料達此年齡，暫停量測並顯示 ADC ERR |
+| `BATTERY_RECOVER_STABLE_MS` | 3000 ms | 低電鎖定後，有效電量連續 >=10% 的確認時間 |
+| `BATTERY_RECOVER_MAX_GAP_MS` | 1500 ms | 由取樣間隔的 1.5 倍推得；超過此間隔即重算恢復時間 |
+| `BATTERY_LOW_STOP_PERCENT` | 5 | 有效讀值低於 5% 立即鎖定；恰好 5% 可運作 |
+| `BATTERY_RECOVER_PERCENT` | 10 | 低電恢復的電量門檻 |
+| `RPM_ZERO_TIMEOUT_MS` | 300 ms | 無有效脈衝後歸零；已發射且有有效 RPM 時結算 |
+| `POST_LAUNCH_NO_RPM_TIMEOUT_MS` | 1200 ms | 已發射但沒有有效 RPM 的等待上限 |
+| `PRELAUNCH_IDLE_RESET_MS` | 3000 ms | 裝載中停止旋轉後重新等待 |
+| `OLED_UPDATE_INTERVAL_MS` | 100 ms | 一般畫面啟動更新間隔；分段傳送 |
+| `CPU_FIXED_FREQ_MHZ` | 80 MHz | 沿用原設定 |
 
-GPIO3、GPIO1、GPIO0 在 `brd_io.cpp` 以 `INPUT` 設定，並呼叫 `gpio_set_pull_mode(..., GPIO_FLOATING)`；GPIO0 隨後由電池模組初始化 ADC，維持無內部上下拉。GPIO10 充電 DET 依使用者修正要求例外使用 `INPUT_PULLUP` 與 `GPIO_PULLUP_ONLY`，符合原電路 LOW 充電、滿電高阻的配置。其模式參數為 `brd_config.h` 的 `CHRG_DET_INPUT_MODE`；充電狀態提供給 OLED 的閃電圖示。
+```cpp
+/*
+LOAD 事件處理：
 
-I2C 使用原生 ESP-IDF master driver，明確指定 `enable_internal_pullup = false`，避免 `Wire.begin()` 初始化流程啟用內部上拉。此設定涵蓋本專案使用的訊號腳；不重設 Flash、USB 或其他未使用的晶片腳位。
+ISR 保存 time_us 與 level。主 loop 以固定大小快照取得兩個佇列，
+將 LOAD / RPM 邊沿與去抖期限、歸零及結算期限依時間順序處理。
+不使用 heap；快照也不放在主迴圈堆疊。
 
-SDA/SCL 仍需要電路或 OLED 模組上的外部上拉電阻；本版關閉的是 MCU 內部上拉、下拉。GPIO1/3 的有效 HIGH/LOW 由外部電路提供。
+例如主 loop 延遲期間 LOW 已維持 2 ms，再回 HIGH，
+現在仍會辨識該次 LOW，而非只保留最後 HIGH。
+短於 1 ms 的來回變化仍由去抖排除；恰好 1 ms 的狀態會成立。
+相同時間戳記的 RPM 優先於 LOAD 邊沿；同時刻的 RPM 先於歸零期限處理。
 
-## 操作與顯示
+LOAD 佇列溢位：缺失的裝載歷史不能推測，進行中的量測作廢，
+重新讀取實際 LOAD 並完成一次去抖。已結算的 MAX 可保留到下次有效裝載。
+RPM 佇列溢位：丟棄不完整批次並重新建立週期，不以缺失脈衝計算假性低 RPM。
+兩者均累計診斷次數。HOLD 與停用期間不保存新的歷史事件。
+*/
+```
 
-1. 上電先讀取電量。低於 5% 時直接進入沒電警示；其餘情況在成功初始化 OLED 後顯示 `BRD` 與 `V0.10`，維持 1500 ms，再次檢查電量後才啟動量測。
-2. 未裝載時第一行顯示 `WAIT LOAD`，第二行顯示 `RPM 0`。
-3. LOAD 連續穩定 HIGH 通過去抖後，第一行顯示 `LOADED READY`，清除上次 MAX。
-4. 第一個 RPM 下降緣建立時間基準；第二個有效下降緣開始依 `60000000 / period_us` 計算 RPM。
-5. 裝載期間顯示即時 RPM。LOAD 穩定變 LOW 後進入發射後量測，顯示 `WAIT LOAD` 與即時 RPM。
-6. 發射後 RPM 降至本輪 MAX 的 50% 或以下即結束；如果脈衝停止，300 ms timeout 後結束。至少一筆有效 RPM 即可保留 MAX；空發射不建立假數值。
-7. 完成後第二行顯示 `MAX xxxx`。本版沿用 V1.9 的 `MAX` 標籤與字體大小，數值單位為 RPM，最高顯示範圍為 60000。
-8. 自鎖期間第一行顯示 `HOLD`，第二行保留 `MAX xxxx`；MAX 完整畫面送出後依目前設定保持 2.5 秒，期間不處理 LOAD。解鎖後重新讀取實際 LOAD 並重新計算去抖。若仍未裝載，MAX 持續保持；若已裝載，去抖通過後清零。
+ADC 與低電狀態對照：
 
-上述流程為正常模式；低電鎖定可以立即中止任一量測步驟或 MAX 自鎖。裝載中停止轉動時，300 ms 後即時 RPM 歸零；未發射且停止滿三秒後，回到等待本次旋轉。CPU 固定 80 MHz，沒有自動關閉 OLED 或 Deep-sleep。
-
-## 低電警示與恢復重啟
-
-| 當前狀態 | 取樣後的整數電量 | 行為 |
+| 狀態 | 電量資料／畫面 | 量測與恢復 |
 | --- | --- | --- |
-| 上電／正常運作 | 小於 5% | 鎖定一般功能，停用 GPIO3 RPM 與 GPIO1 LOAD 中斷，清除事件佇列、即時 RPM、MAX 與自鎖 |
-| 尚未觸發低電鎖定 | 5% 或以上 | 允許正常運作；恰好 5% 不觸發 |
-| 已低電鎖定 | 小於 10% | 持續顯示沒電圖示；回升到 5%～9% 仍不恢復量測 |
-| 已低電鎖定 | 10% 或以上 | 呼叫 `esp_restart()` 重新啟動設備，再依開機電量檢查啟動量測 |
+| 開機尚未取得有效 ADC | `ADC ERR` | 不啟動量測；每秒重試。有效 >=5% 後自動待測 |
+| 有最後有效資料，暫時讀取失敗且資料尚未滿 3 秒 | 保留最後有效電量，錯誤由診斷介面取得 | 可繼續量測；不以錯誤資料觸發低電 |
+| 最後有效資料達 3 秒未更新 | `ADC ERR`；診斷仍保留最後有效值 | 清除量測結果並停用 RPM／LOAD 中斷；有效資料恢復後重新待測 |
+| 有效電量 <5% | 原大型低電圖示 | 立即進入低電鎖定，優先於 HOLD |
+| 已低電鎖定，電量 5%～9% | 原大型低電圖示 | 持續鎖定，恢復計時歸零 |
+| 已低電鎖定，每筆有效電量 >=10% 且持續滿 3 秒 | 原大型低電圖示，隨後重新開機 | 呼叫 `esp_restart()` |
+| 恢復期間讀取失敗、電量 <10% 或取樣間隔 >1500 ms | 原大型低電圖示 | 恢復計時歸零 |
+| 已低電鎖定，又發生 ADC 故障 | 原大型低電圖示優先，故障可從診斷介面讀取 | 不能以失敗或過期資料觸發重啟 |
 
-- 每 1 秒單次取樣；一旦該次取樣換算出低於 5%，當輪 loop 先停用量測，再更新警示。判斷間隔由 `BATTERY_SAMPLE_INTERVAL_MS` 控制。
-- OLED 清除原畫面，中央只顯示圓角電池、左側短條與閃電；單色 OLED 將參考圖紅條呈現為亮色像素。警示優先於未送完的一般畫面及 HOLD 自鎖期間。
-- 鎖定期間不執行 RPM、LOAD、MAX 或一般電量／充電圖示更新；只保留恢復判斷所需的 ADC、OLED 警示及必要的系統排程。這是韌體停用，沒有控制外部電源切斷。
-- 上電就低於 5% 時不播放版本畫面、不掛載量測中斷。正常開機畫面等待結束後也重新檢查電量，避免其間電量下降仍啟動量測。
-- OLED 故障不影響低電停用或達到 10% 後的重啟。顯示器復原後依目前鎖定狀態重畫警示。
-- 恢復條件以 ADC 換算的電量為準，不以插入充電器或 GPIO10 的充電狀態作為立即解除條件。軟體鎖定狀態保存於本次上電期間。
+```cpp
+/*
+恢復時間以成功樣本確認：預設每秒一次，從第一筆 >=10% 的有效樣本起算，
+需要在 0、1、2、3 秒取得四筆有效且達標的樣本，才算持續滿 3 秒。
+未取樣的時間不會單獨使恢復條件成立。
 
-門檻比較使用 SOC 表插值及四捨五入後的整數百分比，與一般電池圖示使用相同資料；不是獨立的固定電壓比較器。
+ADC 為原生 oneshot 單次 raw 讀取，再使用 curve fitting 校正為 mV。
+校正、分壓與 SOC 換算沒有增加 ADC 轉換次數。
+ADC_ATTEN_DB_12 使用原 ADC_11db 相同的硬體衰減檔位。
+資料只有在讀取、校正和數值檢查全部成功時才更新。
+ESP_OK 且有效 0 mV 仍視為低電，不能把真實低電當成讀取失敗。
 
-## 電量與充電圖示
+硬體雜訊若產生一筆 API 回報成功的錯誤電壓，仍可能影響電量判斷。
+本版未加入取樣平均或 IIR，也未宣稱可以辨認所有類比雜訊。
+重新開機仍清除低電鎖定；本版未新增跨重啟保存。
+*/
+```
 
-- 電池圖示恢復至 OLED 右上角 `(108, 0)`，17x9 像素本體與 3x5 端子；內部填滿寬度依原版 Li-Po 電量估算值變化。
-- 充電時於電池左側 `(100, 1)` 顯示原版 5x7 閃電圖示；停止充電時清除圖示。充電中仍顯示實際估算電量，不固定填滿電池。
-- 電量與充電圖示在 `WAIT LOAD`、`LOADED READY`、即時 RPM 與 MAX 畫面均可顯示，位置與原版 V1.9 相同。
-- 上電先取得第一筆 ADC；正常與低電模式均每 1 秒只呼叫一次 `analogReadMilliVolts(GPIO0)`，使用 470k/470k 分壓換算電池電壓，再依 V1.9 的 SOC 表插值。
-- 保留原版不使用 dummy conversion、取樣平均或 IIR 濾波的設定。校正倍率預設 `1000 / 1000`，可於 `brd_config.h` 調整。
-- 正常模式的電量更新與充電狀態切換會要求下一幅畫面更新；已開始的畫面仍完整送完，避免混合兩個狀態。低電警示例外，會優先取代一般畫面。
-- MAX 自鎖期間仍更新電量與充電圖示；這些重繪不會清除 MAX 或重新計算自鎖起點。
+診斷介面位於完整 `brd_battery.h`、`brd_measurement.h`；由主 loop 呼叫，不在 ISR 使用。沒有新增 Serial 或占用 GPIO20／21 的 UART 初始化。
 
-### 沿用的鋰電池電量曲線
+| 介面／欄位 | 說明 |
+| --- | --- |
+| `brd_battery_get_diagnostics()` | 回傳電池診斷快照 |
+| `status` | NOT_SAMPLED、OK、INIT_ERROR、READ_ERROR、CALIBRATION_ERROR 或 DATA_ERROR |
+| `last_attempt_error` | 最近一次嘗試的 `esp_err_t`；成功為 ESP_OK |
+| `last_failure_error`、`last_failure_ms` | 最近一次失敗的錯誤碼與時間；成功後仍保留 |
+| `last_attempt_ms`、`last_success_ms` | 最近嘗試與最近成功的時間 |
+| `success_count`、`failure_count`、`consecutive_failures` | 成功、失敗及連續失敗次數；計數器飽和不回繞 |
+| `last_valid_raw`、`last_valid_adc_mv` | 最後有效 raw 與 ADC 校正電壓 |
+| `last_sample_valid`、`has_valid_sample` | 最近樣本是否有效、是否曾取得有效樣本 |
+| `adc_fault_active` | 從未有效或有效資料逾時；故障保持到下一次有效樣本 |
+| `recovery_pending`、`recovery_elapsed_ms` | 恢復候選是否仍有效、已由有效樣本確認的持續時間 |
+| `brd_measurement_get_diagnostics()` | 回傳量測診斷快照 |
+| `load_queue_overflows`、`rpm_queue_overflows` | 佇列溢位批次數 |
+| `load_stable_transitions`、`launch_events` | 已通過去抖的 LOAD 變化次數、辨識的發射事件次數 |
 
-以下為 `brd_battery.cpp` 內的電壓估算表；相鄰點之間線性插值並四捨五入，範圍限制為 0%～100%。這是原專案的估算曲線，沒有更換為新電芯的實測曲線。
+GPIO 與功能：
 
-| 電池電壓（mV） | 電量（%） |
-| ---: | ---: |
-| 3300 | 0 |
-| 3500 | 5 |
-| 3600 | 10 |
-| 3700 | 20 |
-| 3750 | 30 |
-| 3800 | 40 |
-| 3850 | 50 |
-| 3900 | 60 |
-| 3950 | 70 |
-| 4000 | 80 |
-| 4050 | 85 |
-| 4100 | 90 |
-| 4150 | 95 |
-| 4200 | 100 |
-
-## 可調參數
-
-所有參數位於 `BRD_OLED/brd_config.h`，LOAD 去抖與 MAX 自鎖放在同一區塊。
-
-| 參數 | 預設值 | 單位與用途 |
+| 功能 | GPIO | 設定 |
 | --- | ---: | --- |
-| `LOAD_IR_DEBOUNCE_US` | 1000 | us；最新 LOAD 邊沿後連續穩定時間 |
-| `OLED_MAX_HOLD_MS` | 2500 | ms；MAX 完整畫面送出後最短自鎖時間，設定需至少 2000 |
-| `OLED_RETRY_INTERVAL_MS` | 1000 | ms；OLED 初始化或 I2C 傳送失敗後的重試間隔 |
-| `OLED_I2C_TIMEOUT_MS` | 10 | ms；單次 I2C 傳送等待上限參數 |
-| `OLED_UPDATE_INTERVAL_MS` | 100 | ms；一般畫面更新間隔 |
-| `OLED_BOOT_VERSION_DISPLAY_MS` | 1500 | ms；上電版本畫面保持時間 |
-| `BATTERY_SAMPLE_INTERVAL_MS` | 1000 | ms；正常與低電模式的單次 ADC 取樣間隔 |
-| `BATTERY_LOW_STOP_PERCENT` | 5 | %；低於此值觸發停用鎖定 |
-| `BATTERY_RECOVER_PERCENT` | 10 | %；鎖定後達到此值或以上重新開機 |
-| `BATTERY_LOW_LOOP_DELAY_MS` | 20 | ms；低電分支每輪讓出 CPU 的等待時間 |
-| `BATTERY_LOW_OLED_REFRESH_MS` | 1000 | ms；沒電圖示成功送出後的重繪間隔 |
-| `RPM_ZERO_TIMEOUT_MS` | 300 | ms；無有效脈衝後即時轉速歸零及發射後結束 |
-| `PRELAUNCH_IDLE_RESET_MS` | 3000 | ms；裝載中未發射且停止時重新等待旋轉 |
-| `POST_LAUNCH_NO_RPM_TIMEOUT_MS` | 1200 | ms；沒有形成有效 RPM 的空發射等待上限 |
+| RPM IR | 3 | INPUT、FALLING，每下降緣一圈，無內部上下拉 |
+| LOAD IR | 1 | INPUT、CHANGE，HIGH 裝載，無內部上下拉 |
+| 電池 ADC | 0 | 12-bit，470k／470k 分壓，無內部上下拉 |
+| 充電 DET | 10 | INPUT_PULLUP，LOW 表示充電 |
+| LED | 8 | 沿用原程式，固定 HIGH 關燈 |
+| OLED SDA／SCL | 20／21 | SSD1306 128x32、0x3C、400 kHz，使用外部上拉 |
 
-OLED 一般畫面分成數個 I2C 傳送，每個 loop 最多送一個一般畫面封包，讓主迴圈能先處理 RPM 與 LOAD。畫面初始化或故障復原會包含 probe、初始化指令；不在量測中重播開機等待畫面。
+Arduino IDE 使用 `ESP32C3 Dev Module`、80 MHz、4 MB Flash、DIO。原專案建置紀錄的 Arduino-ESP32 套件為 3.3.11；本版 API 需求仍是 ESP-IDF 5.3 或更新版本。本次沒有 ESP32-C3 工具鏈與開發板，交付為完整原始碼，需在原 Arduino 環境重新編譯與燒錄；主機驗證結果見 `VALIDATION.md`。
 
-低電警示在量測中斷已停用後一次送完整幅畫面，之後每秒重繪。每個 I2C 封包仍有等待上限，任一包失敗即返回，交由原有重試流程恢復。
-
-OLED 失敗時每秒嘗試 I2C 復原及 SSD1306 重新初始化；沒有控制 OLED 電源或 RESET 的額外 GPIO，因此此機制不是硬體斷電重啟。正常模式下 OLED 持續失敗時，量測繼續執行；MAX 自鎖以量測完成時間作為解鎖備援。若 OLED 稍後恢復且結果仍存在，首幅完整 MAX 畫面送出後依 `OLED_MAX_HOLD_MS` 重新計時。低電模式下量測持續停用，不因顯示器故障而恢復。
-
-## Arduino 設定
-
-- 開發板：`ESP32C3 Dev Module`。
-- ESP32 board package：使用支援 ESP-IDF 5.3 或更新版本的 Arduino-ESP32；原附件建置紀錄為 3.3.11，本專案以原附件的環境為使用基準。
-- CPU Frequency：80 MHz；程式亦呼叫 `setCpuFrequencyMhz(80)`。
-- Flash Size：沿用原附件 4 MB。
-- Flash Mode：沿用原附件 DIO。
-- 不需要安裝 NimBLE-Arduino、Adafruit SSD1306 或其他外部 OLED 函式庫。
-- 本版使用 Arduino / ESP-IDF 的 C++ 介面，因此保留 `.ino`、`.cpp`、`.h` 結構。
-- ZIP 僅包含完整原始碼與文件，不包含舊版或未驗證的 BIN；請用 Arduino IDE 編譯後上傳。
-
-## API 依據
-
-- [Espressif ESP32-C3 I2C 文件](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32c3/api-reference/peripherals/i2c.html)：I2C bus/device 初始化、內部上拉開關、probe、transmit 與 bus reset。
-- [Arduino-ESP32 I2C HAL 原始碼](https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/esp32-hal-i2c.c)：框架 I2C 初始化的內部上拉設定。
-- [Espressif ESP32-C3 系統 API 文件](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/system/misc_system_api.html)：`esp_system.h` 與 `esp_restart()` 軟體重啟。
+API 依據：[ESP32-C3 ADC oneshot](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32c3/api-reference/peripherals/adc_oneshot.html)、[ADC calibration](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32c3/api-reference/peripherals/adc_calibration.html)、[ESP-IDF v5.3 calibration 結構與宣告](https://github.com/espressif/esp-idf/blob/v5.3/components/esp_adc/include/esp_adc/adc_cali_scheme.h)。
