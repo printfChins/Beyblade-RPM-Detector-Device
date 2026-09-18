@@ -13,11 +13,4 @@ https://github.com/printfChins/Web-Flash-Download-Tool/tree/main
 Use the BRD Web interface here:
 
 https://printfchins.github.io/BRD-Web/
-
-## Related Repository
-
-Web application source code:
-
-https://github.com/printfChins/Beyblade-RPM-Detector-Web
-
 ---
