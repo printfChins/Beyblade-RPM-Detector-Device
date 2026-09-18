@@ -6,7 +6,7 @@ Open-source firmware.
 
 ## Flash Download Tool
 
-https://printfchins.github.io/Web-Flash-Download-Tool/
+https://github.com/printfChins/Web-Flash-Download-Tool/tree/main
 
 ## Web Interface
 
