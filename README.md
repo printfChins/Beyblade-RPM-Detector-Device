@@ -12,6 +12,9 @@ https://printfchins.github.io/Web-Flash-Download-Tool/
 
 Use the BRD Web interface here:
 
+NEW!!!
+https://printfchins.github.io/BRD-Web/
+
 https://printfchins.github.io/Beyblade-RPM-Detector-Web/
 
 ## Related Repository
