@@ -1,0 +1,473 @@
+--- a/BRD_BBP/brd_bbp.cpp
++++ b/BRD_BBP/brd_bbp.cpp
+@@ -435,9 +435,10 @@
+         g_session.reset_capture();
+     }
+ }
+-void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us) {
+-    if (g_storage_loaded) {
+-        g_session.period(period_us, event_us);
++// [R3 修改] 將本次參考邊沿的曲線寫入選擇傳遞給 Session。
++void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us, bool record_profile) {
++    if (g_storage_loaded) {
++        g_session.period(period_us, event_us, record_profile);
+     }
+ }
+ // [R2 修改] 傳遞發射標記，Session 不清除裝載後的拉轉曲線。
+--- a/BRD_BBP/brd_bbp.h
++++ b/BRD_BBP/brd_bbp.h
+@@ -18,8 +18,9 @@
+ bool brd_bbp_is_connected(void);
+ brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void);
+ void brd_bbp_capture_reset(void);
+-void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us);
+-// [R2 修改] 標記發射確認時間；曲線已在第一筆有效 RPM 開始。
++// [R3 修改] 非參考邊沿只更新代表 MAX，不增加曲線點數。
++void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us, bool record_profile = true);
++// [R3 修改] 只標記發射；曲線從裝載後第一筆有效參考週期開始，不在發射時清除。
+ void brd_bbp_capture_launch(uint32_t launch_us);
+ void brd_bbp_capture_finish(void);
+ void brd_bbp_capture_abort(void);
+--- a/BRD_BBP/brd_bbp_session.cpp
++++ b/BRD_BBP/brd_bbp_session.cpp
+@@ -19,7 +19,7 @@
+     representative_sp_ = 0;
+     started_ = launched_ = pending_ = blocked_ = false;
+ }
+-void Session::period(uint32_t period_us, uint32_t event_us) {
++void Session::period(uint32_t period_us, uint32_t event_us, bool record_profile) {
+     if (blocked_ || pending_ || period_us < 1000U || period_us > 1000000U) {
+         return;
+     }
+@@ -33,9 +33,11 @@
+         first_period_us_ = event_us;
+         started_ = true;
+     }
+-    /* [R2 修改] 量測層只在裝載後轉速有效時呼叫，立即保存每次數值。
+-       [R2 刪減] 不再等待 launched，也不排除跨越發射確認點的整圈。 */
+-    profile_.add_period_us(period_us);
++    /* [R3 修改] 曲線只保存本次參考邊沿的整圈週期，一圈一筆。
++       [保留] 裝載後取得有效參考週期即起錄，發射不清空前段資料。 */
++    if (record_profile) {
++        profile_.add_period_us(period_us);
++    }
+ }
+ void Session::launched(uint32_t launch_us) {
+     if (!blocked_ && !pending_ && !launched_) {
+--- a/BRD_BBP/brd_bbp_session.h
++++ b/BRD_BBP/brd_bbp_session.h
+@@ -9,7 +9,8 @@
+     Session();
+     void restore(const State &state);
+     void reset_capture();
+-    void period(uint32_t period_us, uint32_t event_us);
++    // [R3 修改] 所有有效讀值更新 MAX；record_profile 決定是否加入單圈曲線。
++    void period(uint32_t period_us, uint32_t event_us, bool record_profile = true);
+     // [R2 修改] 只標記發射事件，不清除已記錄的拉轉資料。
+     void launched(uint32_t launch_us);
+     void finish();
+--- a/BRD_BBP/brd_measurement.cpp
++++ b/BRD_BBP/brd_measurement.cpp
+@@ -6,7 +6,8 @@
+     [V0.12 修改] 發射後門檻使用 cfg 的 MAX 20%。
+     [保留] 不加入相鄰 RPM 週期合理性檢查或候選峰值濾波。
+     [保留] HOLD 2.5 秒、OLED 完整畫面回報、無脈衝 300 ms 結算。
+-    [R2 修改] ISR 保存時間及電位，兩種邊沿分別量測整圈，每圈更新兩次。
++    [R2 修改] ISR 保存時間及電位，兩種邊沿分別量測整圈，每圈更新兩次 RPM。
++    [R3 新增] 曲線以裝載後首個 RPM 邊沿為固定參考，每圈保存一筆。
+     ISR 只記錄事件；所有狀態機與 OLED 仍在主 loop 執行。
+ */
+ #include <soc/gpio_struct.h>
+@@ -46,6 +47,8 @@
+ static bool g_load_candidate_had_spin = false;
+ /* [R2 新增] LOW 為下降沿，HIGH 為上升沿；分開保存整圈時間基準。 */
+ static bool g_period_valid[2] = {false, false};
++/* [R3 新增] -1 表示尚未選定；首個觸發的 HIGH/LOW 決定本次曲線參考。 */
++static int g_curve_reference_level = -1;
+ static bool g_quiet_expired = true;
+ static uint32_t g_last_edge_us[2] = {0UL, 0UL};
+ static uint32_t g_last_activity_us = 0UL;
+@@ -143,6 +146,7 @@
+         一般狀態持續捕捉，WAIT_LOAD 的 RPM 在事件處理時直接忽略。
+     */
+     g_period_valid[LOW] = g_period_valid[HIGH] = false;
++    g_curve_reference_level = -1;
+     g_quiet_expired = true;
+     g_has_valid_rpm = false;
+     g_current_rpm = 0U;
+@@ -199,6 +203,10 @@
+     }
+     const uint32_t edge_us = edge.time_us;
+     const uint8_t polarity = static_cast<uint8_t>(edge.level);
++    if (g_curve_reference_level < 0) {
++        /* [R3 新增] 以首個實際觸發選擇，不使用初始電位或首筆有效 RPM。 */
++        g_curve_reference_level = edge.level;
++    }
+     if (!g_period_valid[polarity]) {
+         /* [R2 新增] 每類第一個邊沿只建立基準，尚未有整圈數值。 */
+         g_last_edge_us[polarity] = edge_us;
+@@ -230,8 +238,9 @@
+     g_quiet_expired = false;
+     g_current_rpm = static_cast<uint16_t>(rpm);
+     g_has_valid_rpm = true;
+-    /* [R2 修改] 裝載後第一筆有效 RPM 即開始記錄；每圈產生兩筆整圈週期。 */
+-    brd_bbp_capture_period(period_us, edge_us);
++    /* [R3 修改] 兩類邊沿都更新代表 MAX，只有選定參考邊沿加入曲線。
++       [R3 刪減] 不再將另一類邊沿的重疊整圈週期也寫入 Profile。 */
++    brd_bbp_capture_period(period_us, edge_us, edge.level == g_curve_reference_level);
+     if (g_current_rpm > g_max_rpm) {
+         g_max_rpm = g_current_rpm;
+     }
+--- a/BRD_BBP/brd_oled.cpp
++++ b/BRD_BBP/brd_oled.cpp
+@@ -453,14 +453,19 @@
+     snprintf(value_line, sizeof(value_line), "%s %u",
+              display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
+     oled_draw_text(0U, 16U, value_line, 2U);
+-    /* [BRD_BBP 新增] 右下角 BLE 圖示，保留最多五位數 RPM/MAX 空間。 */
++    /* [R3 修改] 藍牙圖示由 7x7 區域放大為 14x14，移至 (114,16)。
++       每個點放大為 2x2，保留五位 RPM/MAX 與第一行 HOLD/電池空間。 */
+     if (g_frame_ble_connected) {
+         const uint8_t bluetooth[7] = {0x22, 0x14, 0x08, 0x7F, 0x49, 0x36, 0x00};
+         for (uint8_t x = 0U; x < 7U; x++) {
+             for (uint8_t y = 0U; y < 7U; y++) {
+                 if ((bluetooth[x] & (1U << y)) != 0U) {
+-                    oled_set_pixel(static_cast<uint8_t>(120U + x),
+-                                   static_cast<uint8_t>(24U + y), true);
++                    for (uint8_t sx = 0U; sx < 2U; sx++) {
++                        for (uint8_t sy = 0U; sy < 2U; sy++) {
++                            oled_set_pixel(static_cast<uint8_t>(114U + x * 2U + sx),
++                                           static_cast<uint8_t>(16U + y * 2U + sy), true);
++                        }
++                    }
+                 }
+             }
+         }
+--- a/BRD_BBP/tests/test_dual_edge.cpp
++++ b/BRD_BBP/tests/test_dual_edge.cpp
+@@ -1,5 +1,5 @@
+ /* 檔案位置: BRD_BBP/tests/test_dual_edge.cpp
+-   [R2 新增] 真實 ISR/量測/Session 路徑：同類邊沿整圈計時，每圈兩筆。
++   [R3 修改] 雙邊沿更新 RPM，曲線以裝載後首個邊沿為固定參考，每圈一筆。
+    預期值以手算週期給定，不使用待測函式建立預期結果。 */
+ #include <cstdint>
+ #include <cstdio>
+@@ -18,7 +18,7 @@
+ bool brd_bbp_is_connected() { return false; }
+ brd_bbp_diagnostics_t brd_bbp_get_diagnostics() { return {}; }
+ void brd_bbp_capture_reset() { host_session.reset_capture(); }
+-void brd_bbp_capture_period(uint32_t p, uint32_t e) { host_session.period(p, e); }
++void brd_bbp_capture_period(uint32_t p, uint32_t e, bool record) { host_session.period(p, e, record); }
+ void brd_bbp_capture_launch(uint32_t us) { host_session.launched(us); }
+ void brd_bbp_capture_finish() { host_session.finish(); }
+ void brd_bbp_capture_abort() { host_session.abort(); }
+@@ -56,7 +56,7 @@
+         at(us);
+     }
+ }
+-static void fresh(uint32_t base = 0) {
++static void fresh(uint32_t base = 0, int initial_rpm_level = LOW) {
+     brd_measurement_stop();
+     brd_bbp::State empty;
+     brd_bbp::clear(empty);
+@@ -64,6 +64,7 @@
+     clock_base = host_micros = base;
+     host_millis = 0;
+     GPIO.in.val = 0;
++    set_pin(RPM_IR_GPIO, initial_rpm_level);
+     brd_measurement_begin();
+ }
+ static void complete(uint32_t release_us, uint32_t last_edge_us, uint32_t publish_us) {
+@@ -93,8 +94,8 @@
+     edge(LOW, 28250);
+     CHECK(brd_measurement_get_display().value == 7500);
+     complete(29000, 28250, 618000);
+-    const uint16_t expected[] = {750, 1000, 750, 1000};
+-    expect_curve(expected, 4); // 發射前四筆全部保留。
++    const uint16_t expected[] = {750, 750};
++    expect_curve(expected, 2); // 正緣先到，只保存正緣整圈；發射前資料保留。
+     CHECK(host_session.state().records[0] == 10000);
+ }
+ 
+@@ -107,8 +108,8 @@
+     edge(LOW, 16050);
+     CHECK(brd_measurement_get_display().value == 15000);
+     complete(17000, 16050, 616000);
+-    const uint16_t expected[] = {500, 500};
+-    expect_curve(expected, 2);
++    const uint16_t expected[] = {500};
++    expect_curve(expected, 1);
+ }
+ 
+ static void test_unloaded_edges_do_not_seed_next_shot() {
+@@ -124,43 +125,48 @@
+     edge(HIGH, 18000);
+     edge(LOW, 18100);
+     complete(19000, 18100, 618000);
++    const uint16_t expected[] = {750};
++    expect_curve(expected, 1);
++}
++
++static void test_zero_timeout_resets_both_period_bases() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12100);
++    edge(HIGH, 18000);
++    edge(LOW, 18100);
++    at(318101);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 400000);
++    edge(LOW, 400100);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 406000);
++    edge(LOW, 406100);
++    CHECK(brd_measurement_get_display().value == 10000);
++    complete(407000, 406100, 800000);
+     const uint16_t expected[] = {750, 750};
+     expect_curve(expected, 2);
+ }
+ 
+-static void test_zero_timeout_resets_both_period_bases() {
+-    fresh();
+-    load(HIGH, 10000);
+-    edge(HIGH, 12000);
+-    edge(LOW, 12100);
+-    edge(HIGH, 18000);
+-    edge(LOW, 18100);
+-    at(318101);
+-    CHECK(brd_measurement_get_display().value == 0);
+-    edge(HIGH, 400000);
+-    edge(LOW, 400100);
+-    CHECK(brd_measurement_get_display().value == 0);
+-    edge(HIGH, 406000);
+-    edge(LOW, 406100);
+-    CHECK(brd_measurement_get_display().value == 10000);
+-    complete(407000, 406100, 800000);
+-    const uint16_t expected[] = {750, 750, 750, 750};
+-    expect_curve(expected, 4);
+-}
+-
+-static void test_first_32_dual_edge_values_are_frozen() {
+-    fresh();
+-    load(HIGH, 10000);
+-    for (unsigned i = 0; i < 20; ++i) {
+-        edge(HIGH, 12000U + i * 6000U);
+-        edge(LOW, 12200U + i * 6000U);
+-    }
+-    edge(HIGH, 129000); // 後段變成 3000 us，更新 MAX 但不能重寫前 32 點。
+-    edge(LOW, 129200);
+-    complete(130000, 129200, 700000);
++static void test_first_32_revolutions_are_frozen() {
++    fresh();
++    load(HIGH, 10000);
++    uint32_t time_us = 12000;
++    for (unsigned i = 0; i < 34; ++i) {
++        if (i != 0) {
++            time_us += i <= 16 ? 6000U : (i <= 32 ? 8000U : 12000U);
++        }
++        edge(HIGH, time_us);
++        edge(LOW, time_us + 200U);
++    }
++    edge(HIGH, 251000); // 第 34 圈變成 3000 us，更新 MAX 但不能重寫前 32 圈。
++    edge(LOW, 251200);
++    complete(252000, 251200, 700000);
+     CHECK(host_session.state().total == 1 && host_session.state().records[0] == 20000);
+-    for (auto raw : host_session.state().curve) {
+-        CHECK(raw == 750);
++    for (unsigned i = 0; i < 32; ++i) {
++        // 前 16 圈 6000 us，後 16 圈 8000 us；重複收雙邊沿會漏掉後半段。
++        CHECK(host_session.state().curve[i] == (i < 16 ? 750 : 1000));
+     }
+ }
+ 
+@@ -173,8 +179,8 @@
+     edge(LOW, 18100, false);
+     at(19000); // GPIO 已是 LOW；必須使用 ISR 保存的每筆電位。
+     complete(20000, 18100, 618000);
+-    const uint16_t expected[] = {750, 750};
+-    expect_curve(expected, 2);
++    const uint16_t expected[] = {750};
++    expect_curve(expected, 1);
+ }
+ 
+ static void test_dual_edge_periods_across_micros_wrap() {
+@@ -185,8 +191,8 @@
+     edge(HIGH, 0x00000770U); // 6000 us，上升沿跨回繞。
+     edge(LOW, 0x000007f0U); // 6000 us，下降沿跨回繞。
+     complete(0x00001000U, 0x000007f0U, 0x000b0000U);
+-    const uint16_t expected[] = {750, 750};
+-    expect_curve(expected, 2);
++    const uint16_t expected[] = {750};
++    expect_curve(expected, 1);
+ }
+ 
+ static void test_short_same_polarity_glitches_do_not_move_period_base() {
+@@ -201,8 +207,8 @@
+     edge(HIGH, 20000);
+     edge(LOW, 20050);
+     complete(21000, 20050, 616000);
+-    const uint16_t expected[] = {500, 500, 500, 500};
+-    expect_curve(expected, 4);
++    const uint16_t expected[] = {500, 500};
++    expect_curve(expected, 2);
+ }
+ 
+ static void test_reload_clears_both_polarity_bases() {
+@@ -224,8 +230,8 @@
+     complete(3217000, 3216100, 3816000);
+     CHECK(host_session.state().total == 2);
+     CHECK(host_session.state().records[1] == 15000);
+-    CHECK(host_session.state().curve[0] == 500 && host_session.state().curve[1] == 500);
+-    CHECK(host_session.state().curve[2] == 0);
++    CHECK(host_session.state().curve[0] == 500);
++    CHECK(host_session.state().curve[1] == 0);
+ }
+ 
+ static void test_dual_edge_overflow_reset_and_reload() {
+@@ -258,8 +264,92 @@
+     edge(HIGH, 3218000);
+     edge(LOW, 3218100);
+     complete(3219000, 3218100, 3818000);
++    const uint16_t expected[] = {750};
++    expect_curve(expected, 1);
++}
++
++static void test_falling_first_selects_falling_revolutions() {
++    fresh(0, HIGH); // 初始電位不等於參考邊沿；首個實際觸發是下降沿。
++    load(HIGH, 10000);
++    edge(LOW, 12000);
++    edge(HIGH, 12250);
++    edge(LOW, 18000);
++    CHECK(brd_measurement_get_display().value == 10000);
++    edge(HIGH, 20250);
++    CHECK(brd_measurement_get_display().value == 7500);
++    edge(LOW, 24000);
++    edge(HIGH, 28250);
++    complete(29000, 28250, 618000);
+     const uint16_t expected[] = {750, 750};
+     expect_curve(expected, 2);
++}
++
++static void test_nonreference_edge_still_updates_representative_max() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 14250);
++    edge(HIGH, 20000); // 參考正緣 8000 us，7500 RPM。
++    edge(LOW, 20250);  // 非參考負緣 6000 us，10000 RPM。
++    CHECK(brd_measurement_get_display().value == 10000);
++    complete(21000, 20250, 620000);
++    const uint16_t expected[] = {1000};
++    expect_curve(expected, 1);
++    CHECK(host_session.state().records[0] == 10000);
++}
++
++static void test_first_trigger_is_reference_not_first_valid_rpm() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000); // 首個觸發選正緣。
++    edge(LOW, 12050);
++    edge(HIGH, 12500); // 過快，不能形成有效正緣轉速。
++    edge(LOW, 13550);  // 第一筆有效 RPM 來自負緣，也不能改參考。
++    edge(HIGH, 16000);
++    edge(LOW, 16050);
++    complete(17000, 16050, 613550);
++    const uint16_t expected[] = {500};
++    expect_curve(expected, 1);
++    CHECK(host_session.state().records[0] == 40000);
++}
++
++static void test_reload_can_select_opposite_reference() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12250);
++    edge(HIGH, 18000);
++    edge(LOW, 20250);
++    complete(21000, 20250, 618000);
++    at(3200000);
++    edge(HIGH, 3202000); // 未裝載事件不得選擇下一發參考。
++    load(HIGH, 3210000);
++    edge(LOW, 3212000);
++    edge(HIGH, 3212250);
++    edge(LOW, 3218000);
++    edge(HIGH, 3220250);
++    complete(3221000, 3220250, 3818000);
++    CHECK(host_session.state().total == 2);
++    CHECK(host_session.state().curve[0] == 750);
++    CHECK(host_session.state().curve[1] == 0);
++}
++
++static void test_timeout_keeps_reference_until_capture_reset() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12100);
++    edge(HIGH, 18000);
++    edge(LOW, 18100);
++    edge(HIGH, 24000); // 最後狀態為 HIGH，暫停後先來 LOW。
++    at(324001);
++    edge(LOW, 400000);
++    edge(HIGH, 400250);
++    edge(LOW, 406000);
++    edge(HIGH, 408250); // 同一發仍是正緣參考，8000 us。
++    complete(409000, 408250, 800000);
++    const uint16_t expected[] = {750, 750, 1000};
++    expect_curve(expected, 3);
+ }
+ 
+ int main() {
+@@ -267,11 +357,16 @@
+     test_narrow_pulse_not_half_period_rpm();
+     test_unloaded_edges_do_not_seed_next_shot();
+     test_zero_timeout_resets_both_period_bases();
+-    test_first_32_dual_edge_values_are_frozen();
++    test_first_32_revolutions_are_frozen();
+     test_event_polarity_survives_queued_batch();
+     test_dual_edge_periods_across_micros_wrap();
+     test_short_same_polarity_glitches_do_not_move_period_base();
+     test_reload_clears_both_polarity_bases();
+     test_dual_edge_overflow_reset_and_reload();
++    test_falling_first_selects_falling_revolutions();
++    test_nonreference_edge_still_updates_representative_max();
++    test_first_trigger_is_reference_not_first_valid_rpm();
++    test_reload_can_select_opposite_reference();
++    test_timeout_keeps_reference_until_capture_reset();
+     return failures ? 1 : 0;
+ }
+--- a/BRD_BBP/tests/test_measurement.cpp
++++ b/BRD_BBP/tests/test_measurement.cpp
+@@ -9,7 +9,7 @@
+ #include "../brd_bbp_session.cpp"
+ static brd_bbp::Session host_session;
+ bool brd_bbp_begin(){return true;} void brd_bbp_stop(){} bool brd_bbp_prepare_restart(){return true;} void brd_bbp_update(bool){} bool brd_bbp_is_connected(){return false;} brd_bbp_diagnostics_t brd_bbp_get_diagnostics(){return {};}
+-void brd_bbp_capture_reset(){host_session.reset_capture();} void brd_bbp_capture_period(uint32_t p,uint32_t e){host_session.period(p,e);} void brd_bbp_capture_launch(uint32_t confirmed_us){host_session.launched(confirmed_us);} void brd_bbp_capture_finish(){host_session.finish();} void brd_bbp_capture_abort(){host_session.abort();}
++void brd_bbp_capture_reset(){host_session.reset_capture();} void brd_bbp_capture_period(uint32_t p,uint32_t e,bool record){host_session.period(p,e,record);} void brd_bbp_capture_launch(uint32_t confirmed_us){host_session.launched(confirmed_us);} void brd_bbp_capture_finish(){host_session.finish();} void brd_bbp_capture_abort(){host_session.abort();}
+ #include "../brd_measurement.cpp"
+ static int failures;
+ #define CHECK(x) do{if(!(x)){std::fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);++failures;}}while(0)
+--- a/BRD_BBP/tests/test_subscriber.cpp
++++ b/BRD_BBP/tests/test_subscriber.cpp
+@@ -41,6 +41,8 @@
+     brd_bbp_capture_reset();
+     brd_bbp_capture_period(6000, first_us);
+     brd_bbp_capture_launch(first_us);
++    // [R3 新增] 經正式 BLE wrapper 的非參考邊沿只更新 MAX，不佔曲線格。
++    brd_bbp_capture_period(4000, first_us + 500, false);
+     brd_bbp_capture_period(12000, first_us + 12000);
+     brd_bbp_capture_finish();
+ }
+@@ -64,9 +66,12 @@
+     CHECK(host_ble::notifications[first + 7][16] == checksum);
+     const auto &metadata = host_ble::notifications[first + 6];
+     CHECK((metadata[9] | (metadata[10] << 8)) == total);
++    CHECK((metadata[7] | (metadata[8] << 8)) == 15000);
+     /* [新增] 裝載後 6000 us / 8 = 750；主動通知仍使用 raw period 格式。 */
+     const auto &profile = host_ble::notifications[first + 8];
+     CHECK((profile[1] | (profile[2] << 8)) == 750);
++    CHECK((profile[3] | (profile[4] << 8)) == 1500);
++    CHECK(profile[5] == 0 && profile[6] == 0);
+ }
+ 
+ int main() {

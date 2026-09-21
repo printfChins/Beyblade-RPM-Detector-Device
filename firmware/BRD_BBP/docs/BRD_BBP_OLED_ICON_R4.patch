@@ -1,0 +1,51 @@
+--- a/BRD_BBP/brd_oled.cpp
++++ b/BRD_BBP/brd_oled.cpp
+@@ -434,6 +434,22 @@
+     g_frame_active = true;
+ }
+ 
++/* [R4 新增] 使用 BRD_BLE_OLED(3).zip 的原生 7x13 藍牙點陣。
++   點陣及位置沿用附件：x119..125、y17..29，保留五位數 RPM/MAX 間距。 */
++static void oled_draw_bluetooth_icon(void) {
++    static const uint8_t rows[13] = {
++        0x08U, 0x0CU, 0x0AU, 0x49U, 0x2AU, 0x1CU, 0x08U,
++        0x1CU, 0x2AU, 0x49U, 0x0AU, 0x0CU, 0x08U
++    };
++    for (uint8_t row = 0U; row < 13U; row++) {
++        for (uint8_t column = 0U; column < 7U; column++) {
++            if ((rows[row] & (1U << (6U - column))) != 0U) {
++                oled_set_pixel((uint8_t)(119U + column), (uint8_t)(17U + row), true);
++            }
++        }
++    }
++}
++
+ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_percent, bool charging) {
+     char value_line[16];
+ 
+@@ -453,22 +469,10 @@
+     snprintf(value_line, sizeof(value_line), "%s %u",
+              display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
+     oled_draw_text(0U, 16U, value_line, 2U);
+-    /* [R3 修改] 藍牙圖示由 7x7 區域放大為 14x14，移至 (114,16)。
+-       每個點放大為 2x2，保留五位 RPM/MAX 與第一行 HOLD/電池空間。 */
++    /* [R4 修改] 已連線時繪製附件的原生符號，斷線重畫時自然清除。
++       [R4 刪減] 移除 R3 的 7x7 點陣與 2x2 像素放大迴圈。 */
+     if (g_frame_ble_connected) {
+-        const uint8_t bluetooth[7] = {0x22, 0x14, 0x08, 0x7F, 0x49, 0x36, 0x00};
+-        for (uint8_t x = 0U; x < 7U; x++) {
+-            for (uint8_t y = 0U; y < 7U; y++) {
+-                if ((bluetooth[x] & (1U << y)) != 0U) {
+-                    for (uint8_t sx = 0U; sx < 2U; sx++) {
+-                        for (uint8_t sy = 0U; sy < 2U; sy++) {
+-                            oled_set_pixel(static_cast<uint8_t>(114U + x * 2U + sx),
+-                                           static_cast<uint8_t>(16U + y * 2U + sy), true);
+-                        }
+-                    }
+-                }
+-            }
+-        }
++        oled_draw_bluetooth_icon();
+     }
+     /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */
+     oled_draw_battery_icon(108U, 0U, battery_percent);

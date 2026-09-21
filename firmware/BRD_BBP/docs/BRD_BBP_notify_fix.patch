@@ -1,0 +1,160 @@
+--- a/BRD_BBP/brd_bbp.cpp
++++ b/BRD_BBP/brd_bbp.cpp
+@@ -2,6 +2,8 @@
+     檔案位置: BRD_BBP/brd_bbp.cpp
+     [BRD_BBP 新增] 完整新檔，NimBLE-Arduino 2.5.1。
+     callback 只入列；主 loop 建立一致快照，逐頁通知。ISR 不寫 BLE 或 NVS。
++    [BRD_BBP 修正 新增] 支援只訂閱通知的上位機，補上訂閱、LOAD 與結果事件。
++    [刪減] 預設不再依賴上位機一定會寫入 0x51 / 0x74。
+ */
+ #include <Arduino.h>
+ #include <NimBLEDevice.h>
+@@ -13,6 +15,7 @@
+ #include "brd_bbp.h"
+ #include "brd_bbp_session.h"
+ #include "brd_config.h"
++#include "brd_measurement.h"
+ 
+ struct bbp_command_t {
+     uint32_t generation;
+@@ -45,6 +48,11 @@
+ static uint8_t g_tx_pages[brd_bbp::PAGE_COUNT][brd_bbp::PACKET_SIZE];
+ static uint8_t g_tx_count = 0U, g_tx_index = 0U;
+ static uint32_t g_tx_generation = 0U, g_last_tx_ms = 0U, g_page_started_ms = 0U;
++/* [修正 新增] 主動事件只由 loop 排程，與命令回覆共用同一組傳輸快照。 */
++static uint32_t g_link_generation_seen = UINT32_MAX;
++static uint32_t g_subscribe_ms = 0U;
++static bool g_auto_a0_pending = false, g_auto_dump_pending = false;
++static bool g_last_loaded = false;
+ 
+ static void increment_diagnostic(uint32_t &counter) {
+     portENTER_CRITICAL(&g_link_mux);
+@@ -265,6 +273,8 @@
+     g_link.connected = g_link.subscribed = g_link.overflow = false;
+     portEXIT_CRITICAL(&g_link_mux);
+     g_tx_count = g_tx_index = 0U;
++    g_auto_a0_pending = g_auto_dump_pending = false;
++    g_link_generation_seen = UINT32_MAX;
+     if (g_command_queue != nullptr) {
+         xQueueReset(g_command_queue);
+     }
+@@ -275,18 +285,61 @@
+     g_server = nullptr;
+     g_characteristic = nullptr;
+ }
++/*
++    [修正 新增] 命令與主動通知使用同一個封包建立入口。
++    相容模式只以 LOAD 表示 A0 狀態，純輪詢模式保留文件的電量及轉動旗標。
++*/
++static void prepare_response(uint8_t command, const bbp_link_t &link, uint32_t now_ms) {
++    uint8_t percent = brd_battery_get_percent();
++    uint8_t raw = static_cast<uint8_t>((static_cast<uint16_t>(percent) * 250U + 50U) / 100U);
++    uint8_t flags = BBP_COMPAT_AUTONOTIFY ? (g_last_loaded ? 0x04U : 0U) :
++        g_session.flags(percent, BBP_BATTERY_WARNING_PERCENT, BBP_BATTERY_CRITICAL_PERCENT);
++    g_tx_count = g_session.command(command, raw, g_uid, flags, g_tx_pages);
++    g_tx_index = 0U;
++    g_tx_generation = link.generation;
++    g_page_started_ms = now_ms;
++    if (command == 0x51U) {
++        g_auto_a0_pending = false;
++    } else if (command == 0x74U) {
++        g_auto_dump_pending = false;
++    } else if (command == 0x75U) {
++        /* [修正 新增] 清除不能讓待送的舊結果在下一輪再次出現。 */
++        g_auto_dump_pending = false;
++    }
++}
+ void brd_bbp_update(bool storage_allowed) {
+     if (!g_storage_loaded) {
+         return;
+     }
+     uint32_t now_ms = millis();
+     /* [新增] 沒有連線仍完成本地紀錄，發布不依賴手機輪詢。 */
++    uint32_t previous_total = g_session.state().total;
+     g_session.update(micros(), BBP_PUBLISH_MIN_DELAY_US);
++    bool published = previous_total != g_session.state().total;
+     save_storage(now_ms, storage_allowed);
+     if (!g_started) {
+         return;
+     }
+     bbp_link_t link = link_snapshot();
++    if (BBP_COMPAT_AUTONOTIFY) {
++        bool loaded = brd_measurement_get_display().loaded;
++        if (link.generation != g_link_generation_seen) {
++            g_link_generation_seen = link.generation;
++            g_subscribe_ms = now_ms;
++            g_auto_a0_pending = link.connected && link.subscribed;
++            g_auto_dump_pending = false;
++            g_last_loaded = loaded;
++        }
++        if (link.connected && link.subscribed) {
++            if (loaded != g_last_loaded) {
++                g_auto_a0_pending = true;
++            }
++            if (published) {
++                g_auto_dump_pending = true;
++            }
++        }
++        g_last_loaded = loaded;
++    }
+     if (g_tx_count != 0U &&
+         (!link.connected || !link.subscribed || link.generation != g_tx_generation)) {
+         g_tx_count = g_tx_index = 0U;
+@@ -313,18 +366,26 @@
+             if (!link.connected || request.generation != link.generation || request.handle != link.handle) {
+                 return;
+             }
+-            uint8_t percent = brd_battery_get_percent();
+-            uint8_t raw = static_cast<uint8_t>((static_cast<uint16_t>(percent) * 250U + 50U) / 100U);
+-            uint8_t flags = g_session.flags(percent, BBP_BATTERY_WARNING_PERCENT,
+-                                            BBP_BATTERY_CRITICAL_PERCENT);
+-            g_tx_count = g_session.command(request.command, raw, g_uid, flags, g_tx_pages);
+-            g_tx_index = 0U;
+-            g_tx_generation = link.generation;
+-            g_page_started_ms = now_ms;
++            prepare_response(request.command, link, now_ms);
+             if (request.command == 0x75U) {
+                 g_last_storage_attempt_ms = now_ms - BBP_RETRY_INTERVAL_MS;
+                 save_storage(now_ms, storage_allowed);
+             }
++        }
++    }
++    /*
++        [修正 新增] 無命令也能建立通知；12 頁未送完時不插入 A0 或新資料。
++        訂閱後等待 100 ms，避免上位機的接收處理尚未準備好。
++    */
++    if (BBP_COMPAT_AUTONOTIFY && link.connected && link.subscribed &&
++        static_cast<uint32_t>(now_ms - g_subscribe_ms) < BBP_SUBSCRIBE_SETTLE_MS) {
++        return;
++    }
++    if (BBP_COMPAT_AUTONOTIFY && g_tx_count == 0U && link.connected && link.subscribed) {
++        if (g_auto_a0_pending) {
++            prepare_response(0x51U, link, now_ms);
++        } else if (g_auto_dump_pending) {
++            prepare_response(0x74U, link, now_ms);
+         }
+     }
+     if (g_tx_count == 0U ||
+--- a/BRD_BBP/brd_config.h
++++ b/BRD_BBP/brd_config.h
+@@ -34,6 +34,20 @@
+ #define BBP_NOTIFY_INTERVAL_MS            10UL
+ #define BBP_NOTIFY_TIMEOUT_MS             1500UL
+ #define BBP_RETRY_INTERVAL_MS             1000UL
++/*
++    [BRD_BBP 修正 新增] 預設對應使用者確認可用的 V0.1 主動通知流程。
++    1: 訂閱後、LOAD 改變送 A0，發射紀錄完成送 B0~B7 / 70~73。
++       A0 bit2 表示去抖後的 LOAD，與該可用版本一致。
++    0: 嚴格依 battlepass-emulation.md，僅回覆 0x51 / 0x74；
++       bit2 仍表示有效轉動至結果發布前，不表示靜態 LOAD。
++    [刪減] 不再把純輪詢設為所有上位機共用的唯一流程。
++*/
++#ifndef BBP_COMPAT_AUTONOTIFY
++#define BBP_COMPAT_AUTONOTIFY              1
++#endif
++#define BBP_SUBSCRIBE_SETTLE_MS            100UL
++static_assert(BBP_COMPAT_AUTONOTIFY == 0 || BBP_COMPAT_AUTONOTIFY == 1,
++              "BBP compatibility mode must be 0 or 1.");
+ /* [新增] 有效轉動起的發布下限；量測尚未結束時仍繼續等待。 */
+ #define BBP_PUBLISH_MIN_DELAY_US          600000UL
+ /* [新增] BRD 鋰電池 SOC 門檻，非聲稱已確認原廠 AAA 門檻。 */

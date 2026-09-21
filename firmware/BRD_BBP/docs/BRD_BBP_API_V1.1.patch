@@ -1,0 +1,657 @@
+--- a/brd_bbp.cpp
++++ b/brd_bbp.cpp
+@@ -440,9 +440,10 @@
+         g_session.period(period_us, event_us);
+     }
+ }
+-void brd_bbp_capture_launch(void) {
+-    if (g_storage_loaded) {
+-        g_session.launched();
++// [API V1.1 修改] 發射確認時間由量測狀態機提供。
++void brd_bbp_capture_launch(uint32_t capture_start_us) {
++    if (g_storage_loaded) {
++        g_session.launched(capture_start_us);
+     }
+ }
+ void brd_bbp_capture_finish(void) {
+--- a/brd_bbp.h
++++ b/brd_bbp.h
+@@ -19,7 +19,8 @@
+ brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void);
+ void brd_bbp_capture_reset(void);
+ void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us);
+-void brd_bbp_capture_launch(void);
++// [API V1.1 修改] 傳遞量測事件的發射確認時間，不使用 BLE 發送時間。
++void brd_bbp_capture_launch(uint32_t capture_start_us);
+ void brd_bbp_capture_finish(void);
+ void brd_bbp_capture_abort(void);
+ #endif
+--- a/brd_bbp_protocol.cpp
++++ b/brd_bbp_protocol.cpp
+@@ -44,61 +44,36 @@
+ 
+ void Profile::reset() {
+     memset(values_, 0, sizeof values_);
+-    memset(recent_, 0, sizeof recent_);
+     minimum_ = 0;
+     size_ = 0;
+-    recent_count_ = 0;
+-    recent_next_ = 0;
+-    capture_ = false;
+-    full_ = false;
+ }
+ 
+ void Profile::add_period_us(uint32_t period_us) {
+-    if (period_us < 1000)
++    /* [API V1.1 修改] 只保留前 32 個有效週期。
++       [刪減] 後續更高峰重新建立曲線視窗及 recent_ 緩衝。 */
++    if (period_us < 1000U || size_ >= CURVE_SIZE) {
+         return;
+-    uint32_t rounded = period_us / 8u + (period_us % 8u >= 4u ? 1u : 0u);
+-    if (rounded > 65535u)
+-        rounded = 65535u;
++    }
++    uint32_t rounded = period_us / 8U + (period_us % 8U >= 4U ? 1U : 0U);
++    if (rounded > 65535U) {
++        rounded = 65535U;
++    }
+     const uint16_t raw = static_cast<uint16_t>(rounded);
+-    const bool new_peak = minimum_ == 0 || raw < minimum_;
+-
+-    if (!full_) {
+-        values_[size_++] = raw;
+-        if (size_ == CURVE_SIZE)
+-            full_ = true;
+-    } else if (new_peak) {
+-        memset(values_, 0, sizeof values_);
+-        for (uint8_t i = 0; i < recent_count_; ++i) {
+-            const uint8_t index = static_cast<uint8_t>((recent_next_ + 8 - recent_count_ + i) % 8);
+-            values_[i] = recent_[index];
+-        }
+-        values_[recent_count_] = raw;
+-        size_ = static_cast<uint8_t>(recent_count_ + 1);
+-        capture_ = true;
+-    } else if (capture_ && size_ < CURVE_SIZE) {
+-        values_[size_++] = raw;
+-    }
+-
+-    if (new_peak)
++    values_[size_++] = raw;
++    if (minimum_ == 0U || raw < minimum_) {
+         minimum_ = raw;
+-    recent_[recent_next_] = raw;
+-    recent_next_ = static_cast<uint8_t>((recent_next_ + 1) % 8);
+-    if (recent_count_ < 8)
+-        ++recent_count_;
+-}
+-
+-uint16_t Profile::peak_rpm() const
+-{
++    }
++}
++
++uint16_t Profile::peak_rpm() const {
+     return minimum_ == 0 ? 0 : static_cast<uint16_t>(7500000u / minimum_);
+ }
+ 
+-const uint16_t *Profile::values() const
+-{
++const uint16_t *Profile::values() const {
+     return values_;
+ }
+ 
+-uint8_t Profile::size() const
+-{
++uint8_t Profile::size() const {
+     return size_;
+ }
+ 
+@@ -106,17 +81,18 @@
+     memset(&state, 0, sizeof state);
+ }
+ 
+-bool append(State &state, const Profile &profile) {
+-    if (profile.size() == 0)
+-        return false;
+-    const uint16_t peak = profile.peak_rpm();
+-    state.records[state.next] = peak;
++bool append(State &state, const Profile &profile, uint16_t representative_sp) {
++    /* [API V1.1 修改] History 使用整次量測代表值；沒有發射後週期時仍保留 Shot。 */
++    if (representative_sp == 0U || representative_sp > 60000U) {
++        return false;
++    }
++    state.records[state.next] = representative_sp;
+     state.next = static_cast<uint8_t>((state.next + 1) % HISTORY_SIZE);
+     if (state.count < HISTORY_SIZE)
+         ++state.count;
+     ++state.total;
+-    if (peak > state.lifetime_max)
+-        state.lifetime_max = peak;
++    if (representative_sp > state.lifetime_max)
++        state.lifetime_max = representative_sp;
+     memset(state.curve, 0, sizeof state.curve);
+     memcpy(state.curve, profile.values(), profile.size() * sizeof state.curve[0]);
+     return true;
+@@ -221,11 +197,9 @@
+     if (candidate.count == 0) {
+         if (candidate.lifetime_max != 0 || record_max != 0 || minimum != 0)
+             return false;
+-    } else {
+-        const uint8_t latest = static_cast<uint8_t>((candidate.next + HISTORY_SIZE - 1) % HISTORY_SIZE);
+-        if (minimum == 0 || 7500000u / minimum != candidate.records[latest])
+-            return false;
+-    }
++    }
++    /* [API V1.1 刪減] 不再要求最後一筆 History 等於 Profile 峰值。
++       [新增] 有效 Shot 可有全零曲線；CRC、範圍、ring 與零尾端檢查仍保留。 */
+     out = candidate;
+     return true;
+ }
+--- a/brd_bbp_protocol.h
++++ b/brd_bbp_protocol.h
+@@ -35,17 +35,13 @@
+ 
+ private:
+     uint16_t values_[CURVE_SIZE];
+-    uint16_t recent_[8];
+     uint16_t minimum_;
+     uint8_t size_;
+-    uint8_t recent_count_;
+-    uint8_t recent_next_;
+-    bool capture_;
+-    bool full_;
+ };
+ 
+ void clear(State &state);
+-bool append(State &state, const Profile &profile);
++// [API V1.1 修改] 代表 SP 與發射後 Profile 分開保存，允許空曲線。
++bool append(State &state, const Profile &profile, uint16_t representative_sp);
+ void build_header(const State &state, uint8_t flags, uint8_t battery_raw,
+                   const uint8_t uid[6], uint8_t out[PACKET_SIZE]);
+ void build_dump(const State &state, uint8_t out[PAGE_COUNT][PACKET_SIZE]);
+--- a/brd_bbp_session.cpp
++++ b/brd_bbp_session.cpp
+@@ -2,8 +2,9 @@
+    [BRD_BBP 新增] 先凍結完整曲線，再一起發布紀錄、次數與最高值。 */
+ #include "brd_bbp_session.h"
+ namespace brd_bbp {
+-Session::Session() : first_period_us_(0), started_(false), launched_(false),
+-                     pending_(false), blocked_(false), dirty_(false) {
++Session::Session() : first_period_us_(0), capture_start_us_(0), representative_sp_(0),
++                     started_(false), launched_(false), pending_(false),
++                     blocked_(false), dirty_(false) {
+     clear(state_);
+ }
+ void Session::restore(const State &state) {
+@@ -14,25 +15,41 @@
+ void Session::reset_capture() {
+     profile_.reset();
+     first_period_us_ = 0;
++    capture_start_us_ = 0;
++    representative_sp_ = 0;
+     started_ = launched_ = pending_ = blocked_ = false;
+ }
+ void Session::period(uint32_t period_us, uint32_t event_us) {
+-    if (blocked_ || pending_) {
++    if (blocked_ || pending_ || period_us < 1000U || period_us > 1000000U) {
+         return;
+     }
+-    profile_.add_period_us(period_us);
+-    if (!started_ && profile_.size() != 0U) {
++    /* [API V1.1 新增] 整次量測 MAX 作為 BRD 的代表 SP 測試映射。
++       Profile 未開始或已滿 32 點時，仍繼續更新代表值。 */
++    const uint16_t rpm = static_cast<uint16_t>(60000000U / period_us);
++    if (rpm > representative_sp_) {
++        representative_sp_ = rpm;
++    }
++    if (!started_) {
+         first_period_us_ = event_us;
+         started_ = true;
+     }
++    /* [API V1.1 修改] 只保存發射確認後的完整週期，排除跨越起點的週期。
++       unsigned 差值同時處理 micros() 回繞；量測間隔遠小於 2^31 us。 */
++    const uint32_t period_start_us = event_us - period_us;
++    if (launched_ && static_cast<uint32_t>(period_start_us - capture_start_us_) < 0x80000000U) {
++        profile_.add_period_us(period_us);
++    }
+ }
+-void Session::launched() {
+-    if (!blocked_) {
++void Session::launched(uint32_t capture_start_us) {
++    if (!blocked_ && !pending_ && !launched_) {
++        /* [API V1.1 修改] Launch 後才開始收 Profile，重複事件不清除已收資料。 */
++        profile_.reset();
++        capture_start_us_ = capture_start_us;
+         launched_ = true;
+     }
+ }
+ void Session::finish() {
+-    if (!blocked_ && launched_ && started_ && profile_.peak_rpm() != 0U) {
++    if (!blocked_ && launched_ && started_ && representative_sp_ != 0U) {
+         pending_ = true;
+     } else {
+         abort();
+@@ -47,7 +64,7 @@
+     if (!pending_ || static_cast<uint32_t>(now_us - first_period_us_) < minimum_delay_us) {
+         return;
+     }
+-    if (append(state_, profile_)) {
++    if (append(state_, profile_, representative_sp_)) {
+         dirty_ = true;
+     }
+     abort();
+--- a/brd_bbp_session.h
++++ b/brd_bbp_session.h
+@@ -10,7 +10,8 @@
+     void restore(const State &state);
+     void reset_capture();
+     void period(uint32_t period_us, uint32_t event_us);
+-    void launched();
++    // [API V1.1 修改] 傳入 LOAD 去抖確認時間，作為曲線起點界線。
++    void launched(uint32_t capture_start_us);
+     void finish();
+     void abort();
+     void update(uint32_t now_us, uint32_t minimum_delay_us);
+@@ -24,6 +25,8 @@
+     State state_;
+     Profile profile_;
+     uint32_t first_period_us_;
++    uint32_t capture_start_us_;
++    uint16_t representative_sp_;
+     bool started_, launched_, pending_, blocked_, dirty_;
+ };
+ }
+--- a/brd_measurement.cpp
++++ b/brd_measurement.cpp
+@@ -230,7 +230,8 @@
+     check_finish_threshold();
+ }
+ 
+-static void handle_load_change(void) {
++// [API V1.1 修改] confirmed_us 是 LOAD 去抖到期時間。
++static void handle_load_change(uint32_t confirmed_us) {
+     g_load_stable = g_load_raw;
+     increment_counter(g_diagnostics.load_stable_transitions);
+     if (g_load_stable == LOAD_ACTIVE_LEVEL) {
+@@ -244,7 +245,7 @@
+         g_launch_us = g_load_candidate_us;
+         g_state = BRD_STATE_SPINNING_LAUNCHED;
+         /* [BRD_BBP 新增] 經去抖確認且曾轉動，才承認發射。 */
+-        brd_bbp_capture_launch();
++        brd_bbp_capture_launch(confirmed_us);
+         increment_counter(g_diagnostics.launch_events);
+         check_finish_threshold();
+         /* [保留] 已靜止超過歸零期限後卸載，也能完成既有有效結果。 */
+@@ -305,7 +306,7 @@
+             return;
+         }
+         if (timer == INPUT_TIMER_LOAD) {
+-            handle_load_change();
++            handle_load_change(deadline);
+         } else if (timer == INPUT_TIMER_ZERO) {
+             g_current_rpm = 0U;
+             g_period_valid = false;
+--- a/tests/run_host_tests.py
++++ b/tests/run_host_tests.py
+@@ -4,7 +4,7 @@
+ import pathlib,subprocess,tempfile,sys
+ root=pathlib.Path(__file__).resolve().parents[1]
+ # [修正 新增] 只訂閱的上位機也是必要回歸情境。
+-tests={"protocol":["tests/test_protocol.cpp","brd_bbp_protocol.cpp"],"session":["tests/test_session.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"measurement":["tests/test_measurement.cpp"],"transport":["tests/test_transport.cpp"],"subscriber":["tests/test_subscriber.cpp"]}
++tests={"conformance":["tests/test_conformance.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"protocol":["tests/test_protocol.cpp","brd_bbp_protocol.cpp"],"session":["tests/test_session.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"measurement":["tests/test_measurement.cpp"],"transport":["tests/test_transport.cpp"],"subscriber":["tests/test_subscriber.cpp"]}
+ flags=["g++","-std=c++17","-Wall","-Wextra","-Werror","-fsanitize=address,undefined","-DCONFIG_IDF_TARGET_ESP32C3","-Itests/host_stubs","-I."]
+ with tempfile.TemporaryDirectory(prefix="brd-host-") as d:
+  for name,sources in tests.items():
+--- a/tests/test_conformance.cpp
++++ b/tests/test_conformance.cpp
+@@ -0,0 +1,112 @@
++/* 檔案位置: BRD_BBP/tests/test_conformance.cpp
++   [API V1.1 新增] 規格第 31、54、57、72 節的行為回歸測試。 */
++#include "../brd_bbp_session.h"
++#include <cstdio>
++#include <cstring>
++
++static int failures;
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); ++failures; } } while (0)
++
++static void launch(brd_bbp::Session &session, uint32_t timestamp) {
++    session.launched(timestamp);
++}
++
++static void test_first_32_survive_late_peak() {
++    brd_bbp::Profile profile;
++    for (uint32_t i = 0; i < 40; ++i) {
++        profile.add_period_us((1000U + i) * 8U);
++    }
++    profile.add_period_us(4000);
++    CHECK(profile.size() == 32);
++    for (uint8_t i = 0; i < 32; ++i) {
++        CHECK(profile.values()[i] == 1000U + i);
++    }
++    CHECK(profile.peak_rpm() == 7500);
++}
++
++static void test_launch_boundary_and_independent_history() {
++    brd_bbp::Session session;
++    session.period(4000, 10000); // 發射前峰值 15000，不進 Profile。
++    launch(session, 12000);
++    session.period(8000, 18000); // 10000..18000 跨越發射確認點，排除。
++    session.period(12000, 30000);
++    session.period(16000, 46000);
++    session.finish();
++    session.update(610000, 600000);
++    CHECK(session.state().total == 1);
++    CHECK(session.state().records[0] == 15000);
++    CHECK(session.state().curve[0] == 1500);
++    CHECK(session.state().curve[1] == 2000);
++    CHECK(session.state().curve[2] == 0);
++}
++
++static void test_no_post_launch_pulses() {
++    brd_bbp::Session session;
++    session.period(6000, 10000);
++    launch(session, 12000);
++    session.finish();
++    session.update(610000, 600000);
++    CHECK(session.state().total == 1 && session.state().records[0] == 10000);
++    for (uint8_t i = 0; i < 32; ++i) {
++        CHECK(session.state().curve[i] == 0);
++    }
++}
++
++static void test_late_peak_updates_only_history() {
++    brd_bbp::Session session;
++    uint32_t event = 100000;
++    launch(session, event);
++    for (unsigned i = 0; i < 32; ++i) {
++        event += 8000;
++        session.period(8000, event);
++    }
++    event += 4000;
++    session.period(4000, event);
++    session.finish();
++    session.update(708000, 600000);
++    CHECK(session.state().records[0] == 15000);
++    for (uint8_t i = 0; i < 32; ++i) {
++        CHECK(session.state().curve[i] == 1000);
++    }
++}
++
++static void test_storage_independent_and_empty_curve() {
++    brd_bbp::State state, restored;
++    brd_bbp::clear(state);
++    state.total = state.count = state.next = 1;
++    state.records[0] = state.lifetime_max = 15000;
++    state.curve[0] = 1500;
++    uint8_t blob[brd_bbp::STORAGE_SIZE];
++    brd_bbp::encode_storage(state, blob);
++    CHECK(brd_bbp::decode_storage(blob, sizeof blob, restored));
++    state.curve[0] = 0;
++    brd_bbp::encode_storage(state, blob);
++    CHECK(brd_bbp::decode_storage(blob, sizeof blob, restored));
++    CHECK(std::memcmp(&state, &restored, sizeof state) == 0);
++}
++
++static void test_launch_boundary_across_micros_wrap() {
++    brd_bbp::Session session;
++    session.period(4000, 0xfffff000U);
++    launch(session, 0xffffff00U);
++    session.period(8192, 0x00001000U); // 前一圈起點在確認點前。
++    session.period(8192, 0x00003000U);
++    session.finish();
++    session.update(0x000a0000U, 600000);
++    CHECK(session.state().total == 1);
++    CHECK(session.state().records[0] == 15000);
++    CHECK(session.state().curve[0] == 1024 && session.state().curve[1] == 0);
++}
++
++int main() {
++    test_first_32_survive_late_peak();
++    test_launch_boundary_and_independent_history();
++    test_no_post_launch_pulses();
++    test_late_peak_updates_only_history();
++    test_storage_independent_and_empty_curve();
++    test_launch_boundary_across_micros_wrap();
++    if (failures != 0) {
++        std::fprintf(stderr, "%d conformance checks failed\n", failures);
++    }
++    return failures == 0 ? 0 : 1;
++}
+--- a/tests/test_measurement.cpp
++++ b/tests/test_measurement.cpp
+@@ -9,7 +9,7 @@
+ #include "../brd_bbp_session.cpp"
+ static brd_bbp::Session host_session;
+ bool brd_bbp_begin(){return true;} void brd_bbp_stop(){} bool brd_bbp_prepare_restart(){return true;} void brd_bbp_update(bool){} bool brd_bbp_is_connected(){return false;} brd_bbp_diagnostics_t brd_bbp_get_diagnostics(){return {};}
+-void brd_bbp_capture_reset(){host_session.reset_capture();} void brd_bbp_capture_period(uint32_t p,uint32_t e){host_session.period(p,e);} void brd_bbp_capture_launch(){host_session.launched();} void brd_bbp_capture_finish(){host_session.finish();} void brd_bbp_capture_abort(){host_session.abort();}
++void brd_bbp_capture_reset(){host_session.reset_capture();} void brd_bbp_capture_period(uint32_t p,uint32_t e){host_session.period(p,e);} void brd_bbp_capture_launch(uint32_t confirmed_us){host_session.launched(confirmed_us);} void brd_bbp_capture_finish(){host_session.finish();} void brd_bbp_capture_abort(){host_session.abort();}
+ #include "../brd_measurement.cpp"
+ static int failures;
+ #define CHECK(x) do{if(!(x)){std::fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);++failures;}}while(0)
+@@ -22,8 +22,13 @@
+  load(1,10000);rpm(12000);rpm(18000);rpm(24000);at(24000);CHECK(host_session.flags(50,20,5)&4);
+  load(0,25000);rpm(30000);rpm(60000);at(60000); // 2000rpm <=20% of 10000
+  host_session.update(618000,600000);CHECK(host_session.state().total==1);
++ // [API V1.1 新增] 發射確認在 26000 us；24000..30000 跨界不保存。
++ CHECK(host_session.state().records[0]==10000);
++ CHECK(host_session.state().curve[0]==3750 && host_session.state().curve[1]==0);
+  brd_measurement_max_frame_presented(brd_measurement_get_display().generation);at(3200000);
+  load(1,3210000);rpm(3220000);rpm(3226000);at(3226000);load(0,3230000);at(3536001);host_session.update(3826000,600000);CHECK(host_session.state().total==2);
++ // [API V1.1 新增] 發射後沒有新週期，保留 History 並送零曲線。
++ for(unsigned i=0;i<32;i++) CHECK(host_session.state().curve[i]==0);
+  brd_measurement_stop();CHECK(brd_measurement_storage_allowed());
+  brd_measurement_begin();load(1,4000000);for(unsigned i=0;i<RPM_ISR_QUEUE_SIZE+2;i++)rpm(4010000+i*6000);at(4800000);CHECK(brd_measurement_get_diagnostics().rpm_queue_overflows==1);host_session.update(5000000,600000);CHECK(host_session.state().total==2);
+  brd_measurement_stop();host_session.update(6000000,600000);CHECK(host_session.state().total==2);
+--- a/tests/test_protocol.cpp
++++ b/tests/test_protocol.cpp
+@@ -69,32 +69,18 @@
+     CHECK(profile.peak_rpm() == 10000);
+ }
+ 
+-static void test_profile_late_peak_window()
+-{
+-    brd_bbp::Profile profile;
+-    for (uint16_t raw = 1000; raw < 1040; ++raw)
+-        profile.add_period_us(static_cast<uint32_t>(raw) * 8u);
++static void test_profile_first_32_frozen() {
++    brd_bbp::Profile profile;
++    for (uint16_t raw = 1000; raw < 1040; ++raw) {
++        profile.add_period_us(static_cast<uint32_t>(raw) * 8U);
++    }
++    profile.add_period_us(4000);
++    profile.add_period_us(3200);
+     CHECK(profile.size() == 32);
+-    for (uint8_t i = 0; i < 32; ++i)
++    for (uint8_t i = 0; i < 32; ++i) {
+         CHECK(profile.values()[i] == static_cast<uint16_t>(1000 + i));
+-
+-    profile.add_period_us(4000);
+-    profile.add_period_us(4800);
+-    profile.add_period_us(4000);
+-    CHECK(profile.values()[0] == 1032);
+-    CHECK(profile.values()[7] == 1039);
+-    CHECK(profile.values()[8] == 500);
+-    CHECK(profile.values()[9] == 600);
+-    CHECK(profile.values()[10] == 500);
+-    for (uint8_t i = 11; i < 32; ++i)
+-        CHECK(profile.values()[i] == 0);
+-    CHECK(profile.peak_rpm() == 15000);
+-
+-    profile.add_period_us(3200);
+-    CHECK(profile.values()[7] == 500);
+-    CHECK(profile.values()[8] == 400);
+-    CHECK(profile.size() == 9);
+-    CHECK(profile.peak_rpm() == 18750);
++    }
++    CHECK(profile.peak_rpm() == 7500);
+ }
+ 
+ static void fill_state(brd_bbp::State &state, unsigned count)
+@@ -102,7 +88,7 @@
+     brd_bbp::clear(state);
+     for (unsigned i = 1; i <= count; ++i) {
+         brd_bbp::Profile profile = profile_with_raw(static_cast<uint16_t>(7500u - i));
+-        CHECK(brd_bbp::append(state, profile));
++        CHECK(brd_bbp::append(state, profile, profile.peak_rpm()));
+     }
+ }
+ 
+@@ -146,7 +132,7 @@
+     brd_bbp::Profile profile;
+     for (uint16_t i = 0; i < 32; ++i)
+         profile.add_period_us(static_cast<uint32_t>(1000 + i) * 8u);
+-    CHECK(brd_bbp::append(state, profile));
++    CHECK(brd_bbp::append(state, profile, profile.peak_rpm()));
+     uint8_t pages[12][17];
+     brd_bbp::build_dump(state, pages);
+     CHECK(le16(&pages[6][9]) == 0);
+@@ -162,7 +148,7 @@
+     const uint8_t zero[sizeof state] = {};
+     CHECK(memcmp(&state, zero, sizeof state) == 0);
+     brd_bbp::Profile empty;
+-    CHECK(!brd_bbp::append(state, empty));
++    CHECK(!brd_bbp::append(state, empty, 0));
+     CHECK(memcmp(&state, zero, sizeof state) == 0);
+ }
+ 
+@@ -209,7 +195,7 @@
+         if (kind == 6) { bad[12] = 1; rewrite_crc(bad); }
+         if (kind == 7) { bad[13] = 0x61; bad[14] = 0xea; rewrite_crc(bad); }
+         if (kind == 8) { bad[9] = 0; bad[10] = 0; rewrite_crc(bad); }
+-        if (kind == 9) { bad[113] = 125; bad[114] = 0; rewrite_crc(bad); }
++        if (kind == 9) { bad[113] = 124; bad[114] = 0; rewrite_crc(bad); }
+         brd_bbp::State output;
+         memset(&output, 0xcc, sizeof output);
+         brd_bbp::State before = output;
+@@ -232,7 +218,7 @@
+     brd_bbp::Profile profile;
+     profile.add_period_us(8000);
+     profile.add_period_us(8008);
+-    CHECK(brd_bbp::append(state, profile));
++    CHECK(brd_bbp::append(state, profile, profile.peak_rpm()));
+     brd_bbp::encode_storage(state, storage);
+     storage[115] = 0; storage[116] = 0;
+     storage[117] = 0xe8; storage[118] = 3;
+@@ -244,7 +230,7 @@
+ {
+     test_header_fixture();
+     test_profile_units_and_rounding();
+-    test_profile_late_peak_window();
++    test_profile_first_32_frozen();
+     test_ring_boundaries_and_dump();
+     test_dump_curve_and_total_wrap();
+     test_clear_and_empty_append();
+--- a/tests/test_session.cpp
++++ b/tests/test_session.cpp
+@@ -1,21 +1,54 @@
+ /* 檔案位置: BRD_BBP/tests/test_session.cpp
+-   [BRD_BBP 新增] 宿主驗證，不參與Arduino韌體編譯。 */
++   [API V1.1 修改] 發射後曲線、整次代表 SP、發布延遲與命令回歸。 */
+ #include "../brd_bbp_session.h"
+ #include <cstdio>
+ #include <cstring>
++
+ static int failures;
+-#define CHECK(x) do{if(!(x)){std::fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);++failures;}}while(0)
+-static void shot(brd_bbp::Session &s,uint32_t first,uint32_t now){s.period(8000,first);s.period(6000,first+6000);s.launched();s.finish();s.update(now,600000);}
+-int main(){
+- brd_bbp::Session s; const uint8_t uid[6]={1,2,3,4,5,6}; uint8_t p[12][17]{};
+- s.period(8000,100); s.period(6000,6100); CHECK(s.flags(50,20,5)&4); s.launched();s.finish();
+- s.update(600099,600000); CHECK(s.state().total==0); s.update(600100,600000);
+- CHECK(s.state().total==1 && s.state().lifetime_max==10000 && s.state().curve[0]==1000 && s.state().curve[1]==750);
+- auto before=s.state(); CHECK(s.command(0x61,1,uid,0,p)==0); CHECK(std::memcmp(&before,&s.state(),sizeof before)==0);
+- CHECK(s.command(0x51,7,uid,0,p)==1 && p[0][0]==0xa0); CHECK(s.command(0x74,7,uid,0,p)==12 && p[0][0]==0xb0 && p[11][0]==0x73);
+- shot(s,700000,1300000); CHECK(s.state().total==1); // finish blocks remaining pulses until reset
+- s.command(0x75,0,uid,0,p); CHECK(s.state().total==0); s.period(6000,1400000);s.launched();s.finish();s.update(2100000,600000);CHECK(s.state().total==0);
+- s.reset_capture();shot(s,2200000,2800000);CHECK(s.state().total==1);
+- brd_bbp::Session w; shot(w,0xffff0000u,0x000827c0u); CHECK(w.state().total==1);
+- return failures?1:0;
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); ++failures; } } while (0)
++
++static void shot(brd_bbp::Session &session, uint32_t first, uint32_t now) {
++    session.period(6000, first);
++    session.launched(first);
++    session.period(8000, first + 8000U);
++    session.finish();
++    session.update(now, 600000);
+ }
++
++int main() {
++    brd_bbp::Session session;
++    const uint8_t uid[6] = {1, 2, 3, 4, 5, 6};
++    uint8_t pages[12][17] = {};
++    session.period(6000, 10000);
++    CHECK(session.flags(50, 20, 5) & 4);
++    session.launched(10000);
++    session.period(8000, 18000);
++    session.finish();
++    session.period(4000, 22000); // 完成後不再變更。
++    session.update(609999, 600000);
++    CHECK(session.state().total == 0);
++    session.update(610000, 600000);
++    CHECK(session.state().total == 1 && session.state().lifetime_max == 10000);
++    CHECK(session.state().curve[0] == 1000 && session.state().curve[1] == 0);
++
++    const auto before = session.state();
++    CHECK(session.command(0x61, 1, uid, 0, pages) == 0);
++    CHECK(std::memcmp(&before, &session.state(), sizeof before) == 0);
++    CHECK(session.command(0x51, 7, uid, 0, pages) == 1 && pages[0][0] == 0xa0);
++    CHECK(session.command(0x74, 7, uid, 0, pages) == 12);
++    CHECK(pages[0][0] == 0xb0 && pages[11][0] == 0x73);
++    shot(session, 700000, 1300000);
++    CHECK(session.state().total == 1); // reset 前不重複加入紀錄。
++
++    session.command(0x75, 0, uid, 0, pages);
++    CHECK(session.state().total == 0);
++    shot(session, 1400000, 2100000);
++    CHECK(session.state().total == 0);
++    session.reset_capture();
++    shot(session, 2200000, 2800000);
++    CHECK(session.state().total == 1);
++    brd_bbp::Session wrapped;
++    shot(wrapped, 0xffff0000U, 0x000827c0U);
++    CHECK(wrapped.state().total == 1);
++    return failures == 0 ? 0 : 1;
++}
+--- a/tests/test_subscriber.cpp
++++ b/tests/test_subscriber.cpp
+@@ -40,7 +40,7 @@
+ static void complete_shot(uint32_t first_us) {
+     brd_bbp_capture_reset();
+     brd_bbp_capture_period(6000, first_us);
+-    brd_bbp_capture_launch();
++    brd_bbp_capture_launch(first_us);
+     brd_bbp_capture_period(12000, first_us + 12000);
+     brd_bbp_capture_finish();
+ }
+@@ -64,9 +64,9 @@
+     CHECK(host_ble::notifications[first + 7][16] == checksum);
+     const auto &metadata = host_ble::notifications[first + 6];
+     CHECK((metadata[9] | (metadata[10] << 8)) == total);
+-    /* [新增] 6000 us / 8 = 750；主動通知仍使用 raw period 格式。 */
++    /* [新增] 發射後 12000 us / 8 = 1500；主動通知仍使用 raw period 格式。 */
+     const auto &profile = host_ble::notifications[first + 8];
+-    CHECK((profile[1] | (profile[2] << 8)) == 750);
++    CHECK((profile[1] | (profile[2] << 8)) == 1500);
+ }
+ 
+ int main() {
+--- a/tests/test_transport.cpp
++++ b/tests/test_transport.cpp
+@@ -17,13 +17,13 @@
+ static int failures;
+ #define CHECK(x) do{if(!(x)){std::fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);++failures;}}while(0)
+ static void reset_all(){brd_bbp_stop();g_storage_loaded=false;g_start_attempted=false;g_last_storage_attempt_ms=0;g_session=brd_bbp::Session();g_diagnostics={};host_nvs::begin_failures=0;host_nvs::short_read=false;host_nvs::put_fail=false;host_nvs::puts=0;host_ble::notifications.clear();host_ble::notify_results.clear();host_ble::notify_index=0;host_ble::init_calls=0;host_millis=host_micros=0;}
+-static void make_history(){brd_bbp::State s;brd_bbp::clear(s);brd_bbp::Profile p;p.add_period_us(6000);brd_bbp::append(s,p);uint8_t b[brd_bbp::STORAGE_SIZE];brd_bbp::encode_storage(s,b);host_nvs::blob.assign(b,b+sizeof b);}
++static void make_history(){brd_bbp::State s;brd_bbp::clear(s);brd_bbp::Profile p;p.add_period_us(6000);brd_bbp::append(s,p,10000);uint8_t b[brd_bbp::STORAGE_SIZE];brd_bbp::encode_storage(s,b);host_nvs::blob.assign(b,b+sizeof b);}
+ static void connect(){NimBLEDevice::server.hostConnect(7);NimBLEDevice::server.s.c.hostSubscribe(7,1);}
+ static void cmd(uint8_t c){NimBLEDevice::server.s.c.hostWrite(std::string(1,char(c)),7);}
+ static void tick(uint32_t ms){host_millis=ms;host_micros=ms*1000;brd_bbp_update(true);}
+ int main(){
+- reset_all();make_history();auto original=host_nvs::blob;host_nvs::begin_failures=1;CHECK(!brd_bbp_begin());brd_bbp_capture_reset();brd_bbp_capture_period(6000,0);brd_bbp_capture_launch();brd_bbp_capture_finish();tick(700);CHECK(host_nvs::blob==original&&host_nvs::puts==0);host_millis=1000;CHECK(brd_bbp_begin());CHECK(g_session.state().total==1);
+- brd_bbp_capture_reset();brd_bbp_capture_period(6000,1000000);brd_bbp_capture_launch();brd_bbp_capture_finish();tick(1600);CHECK(g_session.state().total==2);
++ reset_all();make_history();auto original=host_nvs::blob;host_nvs::begin_failures=1;CHECK(!brd_bbp_begin());brd_bbp_capture_reset();brd_bbp_capture_period(6000,0);brd_bbp_capture_launch(host_micros);brd_bbp_capture_finish();tick(700);CHECK(host_nvs::blob==original&&host_nvs::puts==0);host_millis=1000;CHECK(brd_bbp_begin());CHECK(g_session.state().total==1);
++ brd_bbp_capture_reset();brd_bbp_capture_period(6000,1000000);brd_bbp_capture_launch(host_micros);brd_bbp_capture_finish();tick(1600);CHECK(g_session.state().total==2);
+  reset_all();make_history();host_nvs::short_read=true;CHECK(!brd_bbp_begin());CHECK(!g_storage_loaded&&host_nvs::puts==0);host_nvs::short_read=false;host_nvs::blob[20]^=1;host_millis=1000;CHECK(!brd_bbp_begin());CHECK(!g_storage_loaded&&host_nvs::puts==0);
+  reset_all();make_history();CHECK(brd_bbp_begin());connect();host_nvs::put_fail=true;cmd(0x75);brd_bbp_update(false);CHECK(g_session.state().total==0&&g_session.dirty());CHECK(!brd_bbp_prepare_restart());host_nvs::put_fail=false;host_millis+=1000;CHECK(brd_bbp_prepare_restart());brd_bbp::State empty;CHECK(brd_bbp::decode_storage(host_nvs::blob.data(),host_nvs::blob.size(),empty)&&empty.total==0);
+  cmd(0x51);tick(host_millis+10);CHECK(host_ble::notifications.size()==1);if(!host_ble::notifications.empty())CHECK(host_ble::notifications.back()[0]==0xa0);cmd(0x74);for(int i=0;i<12;i++)tick(host_millis+10);CHECK(host_ble::notifications.size()==13);if(host_ble::notifications.size()>=13)for(int i=0;i<12;i++)CHECK(host_ble::notifications[1+i][0]==uint8_t(i<8?0xb0+i:0x70+i-8));

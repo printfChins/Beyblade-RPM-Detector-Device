@@ -1,0 +1,761 @@
+--- a/BRD_BBP/brd_bbp.cpp
++++ b/BRD_BBP/brd_bbp.cpp
+@@ -440,10 +440,10 @@
+         g_session.period(period_us, event_us);
+     }
+ }
+-// [API V1.1 修改] 發射確認時間由量測狀態機提供。
+-void brd_bbp_capture_launch(uint32_t capture_start_us) {
+-    if (g_storage_loaded) {
+-        g_session.launched(capture_start_us);
++// [R2 修改] 傳遞發射標記，Session 不清除裝載後的拉轉曲線。
++void brd_bbp_capture_launch(uint32_t launch_us) {
++    if (g_storage_loaded) {
++        g_session.launched(launch_us);
+     }
+ }
+ void brd_bbp_capture_finish(void) {
+--- a/BRD_BBP/brd_bbp.h
++++ b/BRD_BBP/brd_bbp.h
+@@ -19,8 +19,8 @@
+ brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void);
+ void brd_bbp_capture_reset(void);
+ void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us);
+-// [API V1.1 修改] 傳遞量測事件的發射確認時間，不使用 BLE 發送時間。
+-void brd_bbp_capture_launch(uint32_t capture_start_us);
++// [R2 修改] 標記發射確認時間；曲線已在第一筆有效 RPM 開始。
++void brd_bbp_capture_launch(uint32_t launch_us);
+ void brd_bbp_capture_finish(void);
+ void brd_bbp_capture_abort(void);
+ #endif
+--- a/BRD_BBP/brd_bbp_session.cpp
++++ b/BRD_BBP/brd_bbp_session.cpp
+@@ -2,7 +2,7 @@
+    [BRD_BBP 新增] 先凍結完整曲線，再一起發布紀錄、次數與最高值。 */
+ #include "brd_bbp_session.h"
+ namespace brd_bbp {
+-Session::Session() : first_period_us_(0), capture_start_us_(0), representative_sp_(0),
++Session::Session() : first_period_us_(0), launch_us_(0), representative_sp_(0),
+                      started_(false), launched_(false), pending_(false),
+                      blocked_(false), dirty_(false) {
+     clear(state_);
+@@ -15,7 +15,7 @@
+ void Session::reset_capture() {
+     profile_.reset();
+     first_period_us_ = 0;
+-    capture_start_us_ = 0;
++    launch_us_ = 0;
+     representative_sp_ = 0;
+     started_ = launched_ = pending_ = blocked_ = false;
+ }
+@@ -33,18 +33,14 @@
+         first_period_us_ = event_us;
+         started_ = true;
+     }
+-    /* [API V1.1 修改] 只保存發射確認後的完整週期，排除跨越起點的週期。
+-       unsigned 差值同時處理 micros() 回繞；量測間隔遠小於 2^31 us。 */
+-    const uint32_t period_start_us = event_us - period_us;
+-    if (launched_ && static_cast<uint32_t>(period_start_us - capture_start_us_) < 0x80000000U) {
+-        profile_.add_period_us(period_us);
+-    }
++    /* [R2 修改] 量測層只在裝載後轉速有效時呼叫，立即保存每次數值。
++       [R2 刪減] 不再等待 launched，也不排除跨越發射確認點的整圈。 */
++    profile_.add_period_us(period_us);
+ }
+-void Session::launched(uint32_t capture_start_us) {
++void Session::launched(uint32_t launch_us) {
+     if (!blocked_ && !pending_ && !launched_) {
+-        /* [API V1.1 修改] Launch 後才開始收 Profile，重複事件不清除已收資料。 */
+-        profile_.reset();
+-        capture_start_us_ = capture_start_us;
++        /* [R2 修改] 發射只作標記；保留發射前的曲線及獨立代表值。 */
++        launch_us_ = launch_us;
+         launched_ = true;
+     }
+ }
+--- a/BRD_BBP/brd_bbp_session.h
++++ b/BRD_BBP/brd_bbp_session.h
+@@ -10,8 +10,8 @@
+     void restore(const State &state);
+     void reset_capture();
+     void period(uint32_t period_us, uint32_t event_us);
+-    // [API V1.1 修改] 傳入 LOAD 去抖確認時間，作為曲線起點界線。
+-    void launched(uint32_t capture_start_us);
++    // [R2 修改] 只標記發射事件，不清除已記錄的拉轉資料。
++    void launched(uint32_t launch_us);
+     void finish();
+     void abort();
+     void update(uint32_t now_us, uint32_t minimum_delay_us);
+@@ -25,7 +25,7 @@
+     State state_;
+     Profile profile_;
+     uint32_t first_period_us_;
+-    uint32_t capture_start_us_;
++    uint32_t launch_us_;
+     uint16_t representative_sp_;
+     bool started_, launched_, pending_, blocked_, dirty_;
+ };
+--- a/BRD_BBP/brd_config.h
++++ b/BRD_BBP/brd_config.h
+@@ -67,7 +67,8 @@
+ /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
+ #define RPM_IR_GPIO                       3
+ #define RPM_IR_INPUT_MODE                 INPUT
+-#define RPM_IR_TRIGGER_EDGE               FALLING
++/* [R2 修改] 雙邊沿更新；每一種邊沿各以相鄰同類邊沿計算整圈。 */
++#define RPM_IR_TRIGGER_EDGE               CHANGE
+ #define LOAD_IR_GPIO                      1
+ #define LOAD_IR_INPUT_MODE                INPUT
+ #define LOAD_IR_TRIGGER_EDGE              CHANGE
+@@ -129,9 +130,10 @@
+ #define LOAD_IR_DEBOUNCE_US               1000UL
+ #define OLED_MAX_HOLD_MS                  2500UL
+ 
+-/* [保留] 一個 FALLING edge 等於一圈，從第二個有效 edge 計算 RPM。 */
++/* [R2 修改] 每種邊沿每圈一次；上升到上升、下降到下降，不把半圈乘二。 */
+ #define PULSES_PER_REV                    1UL
+-#define RPM_ISR_QUEUE_SIZE               128U
++/* [R2 修改] 每圈事件數加倍，擴充佇列維持原本可緩衝圈數。 */
++#define RPM_ISR_QUEUE_SIZE               256U
+ #define RPM_MIN_PERIOD_US                500UL
+ #define RPM_MAX_PERIOD_US                1000000UL
+ #define RPM_VALID_MAX                    60000UL
+@@ -190,8 +192,8 @@
+               "Invalid low battery loop delay.");
+ static_assert(BATTERY_LOW_OLED_REFRESH_MS > 0UL && BATTERY_LOW_OLED_REFRESH_MS < 0x80000000UL,
+               "Invalid low battery OLED refresh interval.");
+-static_assert(RPM_IR_TRIGGER_EDGE == FALLING, "RPM must use FALLING edges.");
+-static_assert(PULSES_PER_REV == 1UL, "Each FALLING edge must equal one revolution.");
++static_assert(RPM_IR_TRIGGER_EDGE == CHANGE, "RPM must capture both edge polarities.");
++static_assert(PULSES_PER_REV == 1UL, "Each same-polarity interval must equal one revolution.");
+ static_assert(RPM_ISR_QUEUE_SIZE >= 2U && RPM_ISR_QUEUE_SIZE <= 256U,
+               "RPM queue size must be between 2 and 256.");
+ static_assert(RPM_VALID_MAX > 0UL && RPM_VALID_MAX <= 65535UL, "Invalid RPM limit.");
+--- a/BRD_BBP/brd_measurement.cpp
++++ b/BRD_BBP/brd_measurement.cpp
+@@ -6,6 +6,7 @@
+     [V0.12 修改] 發射後門檻使用 cfg 的 MAX 20%。
+     [保留] 不加入相鄰 RPM 週期合理性檢查或候選峰值濾波。
+     [保留] HOLD 2.5 秒、OLED 完整畫面回報、無脈衝 300 ms 結算。
++    [R2 修改] ISR 保存時間及電位，兩種邊沿分別量測整圈，每圈更新兩次。
+     ISR 只記錄事件；所有狀態機與 OLED 仍在主 loop 執行。
+ */
+ #include <soc/gpio_struct.h>
+@@ -14,14 +15,14 @@
+ #include "brd_bbp.h"
+ #include "brd_measurement.h"
+ 
+-struct load_edge_t {
++struct input_edge_t {
+     uint32_t time_us;
+     int level;
+ };
+ 
+ static portMUX_TYPE g_input_mux = portMUX_INITIALIZER_UNLOCKED;
+-static volatile uint32_t g_rpm_queue[RPM_ISR_QUEUE_SIZE];
+-static volatile load_edge_t g_load_queue[LOAD_ISR_QUEUE_SIZE];
++static volatile input_edge_t g_rpm_queue[RPM_ISR_QUEUE_SIZE];
++static volatile input_edge_t g_load_queue[LOAD_ISR_QUEUE_SIZE];
+ static volatile uint16_t g_rpm_head = 0U;
+ static volatile uint16_t g_rpm_tail = 0U;
+ static volatile uint16_t g_load_head = 0U;
+@@ -32,8 +33,8 @@
+ static volatile int g_isr_load_level = LOW;
+ 
+ /* [V0.12 新增] 固定 RAM 快照，不使用 heap，也不把陣列放在主迴圈堆疊。 */
+-static uint32_t g_rpm_batch[RPM_ISR_QUEUE_SIZE];
+-static load_edge_t g_load_batch[LOAD_ISR_QUEUE_SIZE];
++static input_edge_t g_rpm_batch[RPM_ISR_QUEUE_SIZE];
++static input_edge_t g_load_batch[LOAD_ISR_QUEUE_SIZE];
+ static brd_measurement_diagnostics_t g_diagnostics = {};
+ static bool g_measurement_enabled = false;
+ static bool g_measurement_stopped = false;
+@@ -43,9 +44,10 @@
+ static int g_load_stable = LOW;
+ static uint32_t g_load_candidate_us = 0UL;
+ static bool g_load_candidate_had_spin = false;
+-static bool g_period_valid = false;
++/* [R2 新增] LOW 為下降沿，HIGH 為上升沿；分開保存整圈時間基準。 */
++static bool g_period_valid[2] = {false, false};
+ static bool g_quiet_expired = true;
+-static uint32_t g_last_edge_us = 0UL;
++static uint32_t g_last_edge_us[2] = {0UL, 0UL};
+ static uint32_t g_last_activity_us = 0UL;
+ static uint32_t g_launch_us = 0UL;
+ static bool g_has_valid_rpm = false;
+@@ -71,11 +73,13 @@
+ 
+ static void IRAM_ATTR rpm_ir_isr(void) {
+     uint32_t edge_us = micros();
++    int level = (int)((GPIO.in.val >> RPM_IR_GPIO) & 1U);
+     portENTER_CRITICAL_ISR(&g_input_mux);
+     if (g_input_capture) {
+         uint16_t next = (uint16_t)((g_rpm_head + 1U) % RPM_ISR_QUEUE_SIZE);
+         if (next != g_rpm_tail) {
+-            g_rpm_queue[g_rpm_head] = edge_us;
++            g_rpm_queue[g_rpm_head].time_us = edge_us;
++            g_rpm_queue[g_rpm_head].level = level;
+             g_rpm_head = next;
+         } else {
+             g_rpm_overflow = true;
+@@ -138,7 +142,7 @@
+         [V0.12 刪減] 此處不清 ISR 佇列，避免清掉較晚但已收到的有效事件。
+         一般狀態持續捕捉，WAIT_LOAD 的 RPM 在事件處理時直接忽略。
+     */
+-    g_period_valid = false;
++    g_period_valid[LOW] = g_period_valid[HIGH] = false;
+     g_quiet_expired = true;
+     g_has_valid_rpm = false;
+     g_current_rpm = 0U;
+@@ -170,7 +174,7 @@
+     g_max_lock_start_ms = millis();
+     g_state = BRD_STATE_WAIT_LOAD;
+     g_current_rpm = 0U;
+-    g_period_valid = false;
++    g_period_valid[LOW] = g_period_valid[HIGH] = false;
+     g_quiet_expired = true;
+     disable_input_capture();
+ }
+@@ -186,27 +190,31 @@
+     }
+ }
+ 
+-static void process_rpm_edge(uint32_t edge_us) {
++static void process_rpm_edge(const input_edge_t &edge) {
+     if (g_state == BRD_STATE_WAIT_LOAD) {
+         return;
+     }
+     if (g_state == BRD_STATE_LOADED_READY) {
+         g_state = BRD_STATE_SPINNING_LOADED;
+     }
+-    if (!g_period_valid) {
+-        g_last_edge_us = edge_us;
++    const uint32_t edge_us = edge.time_us;
++    const uint8_t polarity = static_cast<uint8_t>(edge.level);
++    if (!g_period_valid[polarity]) {
++        /* [R2 新增] 每類第一個邊沿只建立基準，尚未有整圈數值。 */
++        g_last_edge_us[polarity] = edge_us;
+         g_last_activity_us = edge_us;
+-        g_period_valid = true;
++        g_period_valid[polarity] = true;
+         g_quiet_expired = false;
+         return;
+     }
+ 
+-    uint32_t period_us = (uint32_t)(edge_us - g_last_edge_us);
++    /* [R2 修改] 上升到上升、下降到下降，完全不使用相鄰異類邊沿的脈寬。 */
++    uint32_t period_us = static_cast<uint32_t>(edge_us - g_last_edge_us[polarity]);
+     if (period_us < RPM_MIN_PERIOD_US) {
+         return;
+     }
+     if (period_us > RPM_MAX_PERIOD_US) {
+-        g_last_edge_us = edge_us;
++        g_last_edge_us[polarity] = edge_us;
+         g_last_activity_us = edge_us;
+         g_current_rpm = 0U;
+         g_quiet_expired = false;
+@@ -217,12 +225,12 @@
+         return;
+     }
+ 
+-    g_last_edge_us = edge_us;
++    g_last_edge_us[polarity] = edge_us;
+     g_last_activity_us = edge_us;
+     g_quiet_expired = false;
+-    g_current_rpm = (uint16_t)rpm;
++    g_current_rpm = static_cast<uint16_t>(rpm);
+     g_has_valid_rpm = true;
+-    /* [BRD_BBP 新增] 真實每圈間隔，不能用50ms或OLED畫面更新率取樣。 */
++    /* [R2 修改] 裝載後第一筆有效 RPM 即開始記錄；每圈產生兩筆整圈週期。 */
+     brd_bbp_capture_period(period_us, edge_us);
+     if (g_current_rpm > g_max_rpm) {
+         g_max_rpm = g_current_rpm;
+@@ -309,7 +317,7 @@
+             handle_load_change(deadline);
+         } else if (timer == INPUT_TIMER_ZERO) {
+             g_current_rpm = 0U;
+-            g_period_valid = false;
++            g_period_valid[LOW] = g_period_valid[HIGH] = false;
+             g_quiet_expired = true;
+             if (g_state == BRD_STATE_SPINNING_LAUNCHED && g_has_valid_rpm) {
+                 finish_measurement();
+@@ -332,7 +340,9 @@
+     g_rpm_overflow = false;
+     g_load_overflow = false;
+     while (g_rpm_tail != g_rpm_head && rpm_count < RPM_ISR_QUEUE_SIZE) {
+-        g_rpm_batch[rpm_count++] = g_rpm_queue[g_rpm_tail];
++        g_rpm_batch[rpm_count].time_us = g_rpm_queue[g_rpm_tail].time_us;
++        g_rpm_batch[rpm_count].level = g_rpm_queue[g_rpm_tail].level;
++        rpm_count++;
+         g_rpm_tail = (uint16_t)((g_rpm_tail + 1U) % RPM_ISR_QUEUE_SIZE);
+     }
+     while (g_load_tail != g_load_head && load_count < LOAD_ISR_QUEUE_SIZE - 1U) {
+@@ -411,7 +421,7 @@
+         increment_counter(g_diagnostics.rpm_queue_overflows);
+         /* [BRD_BBP 新增] 已缺圈，不能發布非連續曲線。 */
+         brd_bbp_capture_abort();
+-        g_period_valid = false;
++        g_period_valid[LOW] = g_period_valid[HIGH] = false;
+         g_current_rpm = 0U;
+         rpm_count = 0U;
+     }
+@@ -431,8 +441,8 @@
+     while ((rpm_index < rpm_count || load_index < load_count) && !g_max_lock) {
+         bool use_rpm = rpm_index < rpm_count &&
+             (load_index >= load_count ||
+-             !time_before(g_load_batch[load_index].time_us, g_rpm_batch[rpm_index]));
+-        uint32_t event_us = use_rpm ? g_rpm_batch[rpm_index] : g_load_batch[load_index].time_us;
++             !time_before(g_load_batch[load_index].time_us, g_rpm_batch[rpm_index].time_us));
++        uint32_t event_us = use_rpm ? g_rpm_batch[rpm_index].time_us : g_load_batch[load_index].time_us;
+         advance_input_time(event_us, false);
+         if (g_max_lock) {
+             break;
+@@ -440,7 +450,7 @@
+         if (use_rpm) {
+             process_rpm_edge(g_rpm_batch[rpm_index++]);
+         } else {
+-            const load_edge_t &edge = g_load_batch[load_index++];
++            const input_edge_t &edge = g_load_batch[load_index++];
+             g_load_raw = edge.level;
+             g_load_candidate_us = edge.time_us;
+             g_load_candidate_had_spin = g_state == BRD_STATE_SPINNING_LOADED;
+--- a/BRD_BBP/tests/host_stubs/Arduino.h
++++ b/BRD_BBP/tests/host_stubs/Arduino.h
+@@ -22,5 +22,6 @@
+ inline uint32_t micros(){ return host_micros; }
+ inline uint32_t millis(){ return host_millis; }
+ inline int digitalPinToInterrupt(int p){ return p; }
+-inline void attachInterrupt(int p, void (*f)(), int){ host_interrupts[p]=f; }
++inline int host_interrupt_modes[32] = {};
++inline void attachInterrupt(int p, void (*f)(), int mode){ host_interrupts[p]=f; host_interrupt_modes[p]=mode; }
+ inline void detachInterrupt(int p){ host_interrupts[p]=nullptr; }
+--- a/BRD_BBP/tests/run_host_tests.py
++++ b/BRD_BBP/tests/run_host_tests.py
+@@ -4,7 +4,7 @@
+ import pathlib,subprocess,tempfile,sys
+ root=pathlib.Path(__file__).resolve().parents[1]
+ # [修正 新增] 只訂閱的上位機也是必要回歸情境。
+-tests={"conformance":["tests/test_conformance.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"protocol":["tests/test_protocol.cpp","brd_bbp_protocol.cpp"],"session":["tests/test_session.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"measurement":["tests/test_measurement.cpp"],"transport":["tests/test_transport.cpp"],"subscriber":["tests/test_subscriber.cpp"]}
++tests={"dual_edge":["tests/test_dual_edge.cpp"],"conformance":["tests/test_conformance.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"protocol":["tests/test_protocol.cpp","brd_bbp_protocol.cpp"],"session":["tests/test_session.cpp","brd_bbp_protocol.cpp","brd_bbp_session.cpp"],"measurement":["tests/test_measurement.cpp"],"transport":["tests/test_transport.cpp"],"subscriber":["tests/test_subscriber.cpp"]}
+ flags=["g++","-std=c++17","-Wall","-Wextra","-Werror","-fsanitize=address,undefined","-DCONFIG_IDF_TARGET_ESP32C3","-Itests/host_stubs","-I."]
+ with tempfile.TemporaryDirectory(prefix="brd-host-") as d:
+  for name,sources in tests.items():
+--- a/BRD_BBP/tests/test_conformance.cpp
++++ b/BRD_BBP/tests/test_conformance.cpp
+@@ -1,5 +1,5 @@
+ /* 檔案位置: BRD_BBP/tests/test_conformance.cpp
+-   [API V1.1 新增] 規格第 31、54、57、72 節的行為回歸測試。 */
++   [R2 修改] 依最新需求驗證裝載後記錄、前 32 點及獨立 History。 */
+ #include "../brd_bbp_session.h"
+ #include <cstdio>
+ #include <cstring>
+@@ -24,30 +24,33 @@
+     CHECK(profile.peak_rpm() == 7500);
+ }
+ 
+-static void test_launch_boundary_and_independent_history() {
++static void test_loaded_profile_survives_launch() {
+     brd_bbp::Session session;
+-    session.period(4000, 10000); // 發射前峰值 15000，不進 Profile。
++    session.period(4000, 10000); // 裝載後首筆有效值，即使在發射前也要保存。
+     launch(session, 12000);
+-    session.period(8000, 18000); // 10000..18000 跨越發射確認點，排除。
++    session.period(8000, 18000); // 整圈跨越發射點仍保留，Launch 不重置。
+     session.period(12000, 30000);
+     session.period(16000, 46000);
+     session.finish();
+     session.update(610000, 600000);
+     CHECK(session.state().total == 1);
+     CHECK(session.state().records[0] == 15000);
+-    CHECK(session.state().curve[0] == 1500);
+-    CHECK(session.state().curve[1] == 2000);
+-    CHECK(session.state().curve[2] == 0);
++    CHECK(session.state().curve[0] == 500);
++    CHECK(session.state().curve[1] == 1000);
++    CHECK(session.state().curve[2] == 1500);
++    CHECK(session.state().curve[3] == 2000);
++    CHECK(session.state().curve[4] == 0);
+ }
+ 
+-static void test_no_post_launch_pulses() {
++static void test_no_post_launch_pulses_keeps_loaded_profile() {
+     brd_bbp::Session session;
+     session.period(6000, 10000);
+     launch(session, 12000);
+     session.finish();
+     session.update(610000, 600000);
+     CHECK(session.state().total == 1 && session.state().records[0] == 10000);
+-    for (uint8_t i = 0; i < 32; ++i) {
++    CHECK(session.state().curve[0] == 750);
++    for (uint8_t i = 1; i < 32; ++i) {
+         CHECK(session.state().curve[i] == 0);
+     }
+ }
+@@ -85,26 +88,27 @@
+     CHECK(std::memcmp(&state, &restored, sizeof state) == 0);
+ }
+ 
+-static void test_launch_boundary_across_micros_wrap() {
++static void test_capture_survives_launch_and_micros_wrap() {
+     brd_bbp::Session session;
+     session.period(4000, 0xfffff000U);
+     launch(session, 0xffffff00U);
+-    session.period(8192, 0x00001000U); // 前一圈起點在確認點前。
++    session.period(8192, 0x00001000U); // 跨越發射點的週期仍記錄。
+     session.period(8192, 0x00003000U);
+     session.finish();
+     session.update(0x000a0000U, 600000);
+     CHECK(session.state().total == 1);
+     CHECK(session.state().records[0] == 15000);
+-    CHECK(session.state().curve[0] == 1024 && session.state().curve[1] == 0);
++    CHECK(session.state().curve[0] == 500 && session.state().curve[1] == 1024);
++    CHECK(session.state().curve[2] == 1024 && session.state().curve[3] == 0);
+ }
+ 
+ int main() {
+     test_first_32_survive_late_peak();
+-    test_launch_boundary_and_independent_history();
+-    test_no_post_launch_pulses();
++    test_loaded_profile_survives_launch();
++    test_no_post_launch_pulses_keeps_loaded_profile();
+     test_late_peak_updates_only_history();
+     test_storage_independent_and_empty_curve();
+-    test_launch_boundary_across_micros_wrap();
++    test_capture_survives_launch_and_micros_wrap();
+     if (failures != 0) {
+         std::fprintf(stderr, "%d conformance checks failed\n", failures);
+     }
+--- /dev/null
++++ b/BRD_BBP/tests/test_dual_edge.cpp
+@@ -0,0 +1,277 @@
++/* 檔案位置: BRD_BBP/tests/test_dual_edge.cpp
++   [R2 新增] 真實 ISR/量測/Session 路徑：同類邊沿整圈計時，每圈兩筆。
++   預期值以手算週期給定，不使用待測函式建立預期結果。 */
++#include <cstdint>
++#include <cstdio>
++#include "host_stubs/soc/gpio_struct.h"
++#include "../brd_bbp.h"
++uint32_t host_micros = 0, host_millis = 0;
++void (*host_interrupts[32])() = {};
++host_gpio_t GPIO{};
++#include "../brd_bbp_protocol.cpp"
++#include "../brd_bbp_session.cpp"
++static brd_bbp::Session host_session;
++bool brd_bbp_begin() { return true; }
++void brd_bbp_stop() {}
++bool brd_bbp_prepare_restart() { return true; }
++void brd_bbp_update(bool) {}
++bool brd_bbp_is_connected() { return false; }
++brd_bbp_diagnostics_t brd_bbp_get_diagnostics() { return {}; }
++void brd_bbp_capture_reset() { host_session.reset_capture(); }
++void brd_bbp_capture_period(uint32_t p, uint32_t e) { host_session.period(p, e); }
++void brd_bbp_capture_launch(uint32_t us) { host_session.launched(us); }
++void brd_bbp_capture_finish() { host_session.finish(); }
++void brd_bbp_capture_abort() { host_session.abort(); }
++#include "../brd_measurement.cpp"
++static int failures;
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); ++failures; } } while (0)
++
++static uint32_t clock_base;
++static void at(uint32_t us) {
++    host_micros = us;
++    host_millis = static_cast<uint32_t>(us - clock_base) / 1000U;
++    brd_measurement_update();
++}
++static void set_pin(unsigned pin, int level) {
++    const uint32_t mask = 1U << pin;
++    GPIO.in.val = level ? GPIO.in.val | mask : GPIO.in.val & ~mask;
++}
++static void load(int level, uint32_t us) {
++    set_pin(LOAD_IR_GPIO, level);
++    host_micros = us;
++    host_interrupts[LOAD_IR_GPIO]();
++    at(us + 1000U);
++}
++static void edge(int level, uint32_t us, bool process = true) {
++    int previous = (GPIO.in.val >> RPM_IR_GPIO) & 1U;
++    set_pin(RPM_IR_GPIO, level);
++    host_micros = us;
++    // 依正式程式註冊的中斷模式送入硬體事件，FALLING 設定不會收到上升沿。
++    if (previous != level && host_interrupts[RPM_IR_GPIO] != nullptr &&
++        (host_interrupt_modes[RPM_IR_GPIO] == CHANGE ||
++         (host_interrupt_modes[RPM_IR_GPIO] == FALLING && level == LOW))) {
++        host_interrupts[RPM_IR_GPIO]();
++    }
++    if (process) {
++        at(us);
++    }
++}
++static void fresh(uint32_t base = 0) {
++    brd_measurement_stop();
++    brd_bbp::State empty;
++    brd_bbp::clear(empty);
++    host_session.restore(empty);
++    clock_base = host_micros = base;
++    host_millis = 0;
++    GPIO.in.val = 0;
++    brd_measurement_begin();
++}
++static void complete(uint32_t release_us, uint32_t last_edge_us, uint32_t publish_us) {
++    load(LOW, release_us);
++    at(last_edge_us + 300001U);
++    host_session.update(publish_us, 600000U);
++}
++static void expect_curve(const uint16_t *values, unsigned size) {
++    CHECK(host_session.state().total == 1);
++    for (unsigned i = 0; i < 32; ++i) {
++        CHECK(host_session.state().curve[i] == (i < size ? values[i] : 0U));
++    }
++}
++
++static void test_same_polarity_periods_and_prelaunch_capture() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12250);
++    CHECK(brd_measurement_get_display().value == 0); // 只有半圈，不能算 RPM。
++    edge(HIGH, 18000);
++    CHECK(brd_measurement_get_display().value == 10000); // 上升到上升 6000 us。
++    edge(LOW, 20250);
++    CHECK(brd_measurement_get_display().value == 7500); // 下降到下降 8000 us。
++    edge(HIGH, 24000);
++    CHECK(brd_measurement_get_display().value == 10000);
++    edge(LOW, 28250);
++    CHECK(brd_measurement_get_display().value == 7500);
++    complete(29000, 28250, 618000);
++    const uint16_t expected[] = {750, 1000, 750, 1000};
++    expect_curve(expected, 4); // 發射前四筆全部保留。
++    CHECK(host_session.state().records[0] == 10000);
++}
++
++static void test_narrow_pulse_not_half_period_rpm() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12050); // 50 us 脈寬不能套用整圈的最小週期過濾。
++    edge(HIGH, 16000);
++    edge(LOW, 16050);
++    CHECK(brd_measurement_get_display().value == 15000);
++    complete(17000, 16050, 616000);
++    const uint16_t expected[] = {500, 500};
++    expect_curve(expected, 2);
++}
++
++static void test_unloaded_edges_do_not_seed_next_shot() {
++    fresh();
++    edge(HIGH, 1000);
++    edge(LOW, 1100);
++    edge(HIGH, 7000);
++    edge(LOW, 7100);
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12100);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 18000);
++    edge(LOW, 18100);
++    complete(19000, 18100, 618000);
++    const uint16_t expected[] = {750, 750};
++    expect_curve(expected, 2);
++}
++
++static void test_zero_timeout_resets_both_period_bases() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12100);
++    edge(HIGH, 18000);
++    edge(LOW, 18100);
++    at(318101);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 400000);
++    edge(LOW, 400100);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 406000);
++    edge(LOW, 406100);
++    CHECK(brd_measurement_get_display().value == 10000);
++    complete(407000, 406100, 800000);
++    const uint16_t expected[] = {750, 750, 750, 750};
++    expect_curve(expected, 4);
++}
++
++static void test_first_32_dual_edge_values_are_frozen() {
++    fresh();
++    load(HIGH, 10000);
++    for (unsigned i = 0; i < 20; ++i) {
++        edge(HIGH, 12000U + i * 6000U);
++        edge(LOW, 12200U + i * 6000U);
++    }
++    edge(HIGH, 129000); // 後段變成 3000 us，更新 MAX 但不能重寫前 32 點。
++    edge(LOW, 129200);
++    complete(130000, 129200, 700000);
++    CHECK(host_session.state().total == 1 && host_session.state().records[0] == 20000);
++    for (auto raw : host_session.state().curve) {
++        CHECK(raw == 750);
++    }
++}
++
++static void test_event_polarity_survives_queued_batch() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000, false);
++    edge(LOW, 12100, false);
++    edge(HIGH, 18000, false);
++    edge(LOW, 18100, false);
++    at(19000); // GPIO 已是 LOW；必須使用 ISR 保存的每筆電位。
++    complete(20000, 18100, 618000);
++    const uint16_t expected[] = {750, 750};
++    expect_curve(expected, 2);
++}
++
++static void test_dual_edge_periods_across_micros_wrap() {
++    fresh(0xffff0000U);
++    load(HIGH, 0xffff1000U);
++    edge(HIGH, 0xfffff000U);
++    edge(LOW, 0xfffff080U);
++    edge(HIGH, 0x00000770U); // 6000 us，上升沿跨回繞。
++    edge(LOW, 0x000007f0U); // 6000 us，下降沿跨回繞。
++    complete(0x00001000U, 0x000007f0U, 0x000b0000U);
++    const uint16_t expected[] = {750, 750};
++    expect_curve(expected, 2);
++}
++
++static void test_short_same_polarity_glitches_do_not_move_period_base() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12050);
++    edge(HIGH, 16000);
++    edge(LOW, 16050);
++    edge(HIGH, 16070); // 與上次有效上升沿相距 70 us，應忽略且不移動基準。
++    edge(LOW, 16090);  // 與上次有效下降沿相距 40 us。
++    edge(HIGH, 20000);
++    edge(LOW, 20050);
++    complete(21000, 20050, 616000);
++    const uint16_t expected[] = {500, 500, 500, 500};
++    expect_curve(expected, 4);
++}
++
++static void test_reload_clears_both_polarity_bases() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12100);
++    edge(HIGH, 18000);
++    edge(LOW, 18100);
++    complete(19000, 18100, 618000);
++    at(3200000); // 解除前一發 HOLD，重新同步 LOAD。
++    load(HIGH, 3210000);
++    edge(HIGH, 3212000);
++    edge(LOW, 3212100);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 3216000);
++    edge(LOW, 3216100);
++    CHECK(brd_measurement_get_display().value == 15000);
++    complete(3217000, 3216100, 3816000);
++    CHECK(host_session.state().total == 2);
++    CHECK(host_session.state().records[1] == 15000);
++    CHECK(host_session.state().curve[0] == 500 && host_session.state().curve[1] == 500);
++    CHECK(host_session.state().curve[2] == 0);
++}
++
++static void test_dual_edge_overflow_reset_and_reload() {
++    fresh();
++    load(HIGH, 10000);
++    edge(HIGH, 12000);
++    edge(LOW, 12100);
++    edge(HIGH, 18000);
++    edge(LOW, 18100);
++    // 交替邊沿不交給主迴圈處理，確實超出 255 個事件的有效容量。
++    for (unsigned i = 0; i < 258; ++i) {
++        edge((i % 2U) ? LOW : HIGH, 20000U + i * 500U, false);
++    }
++    at(149000);
++    CHECK(brd_measurement_get_diagnostics().rpm_queue_overflows == 1);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 150000);
++    edge(LOW, 150100);
++    CHECK(brd_measurement_get_display().value == 0); // 兩類邊沿重新建立基準。
++    edge(HIGH, 156000);
++    edge(LOW, 156100);
++    CHECK(brd_measurement_get_display().value == 10000);
++    complete(157000, 156100, 800000);
++    CHECK(host_session.state().total == 0); // 溢位的這一發不能發布。
++    at(3200000);
++    load(HIGH, 3210000);
++    edge(HIGH, 3212000);
++    edge(LOW, 3212100);
++    CHECK(brd_measurement_get_display().value == 0);
++    edge(HIGH, 3218000);
++    edge(LOW, 3218100);
++    complete(3219000, 3218100, 3818000);
++    const uint16_t expected[] = {750, 750};
++    expect_curve(expected, 2);
++}
++
++int main() {
++    test_same_polarity_periods_and_prelaunch_capture();
++    test_narrow_pulse_not_half_period_rpm();
++    test_unloaded_edges_do_not_seed_next_shot();
++    test_zero_timeout_resets_both_period_bases();
++    test_first_32_dual_edge_values_are_frozen();
++    test_event_polarity_survives_queued_batch();
++    test_dual_edge_periods_across_micros_wrap();
++    test_short_same_polarity_glitches_do_not_move_period_base();
++    test_reload_clears_both_polarity_bases();
++    test_dual_edge_overflow_reset_and_reload();
++    return failures ? 1 : 0;
++}
+--- a/BRD_BBP/tests/test_measurement.cpp
++++ b/BRD_BBP/tests/test_measurement.cpp
+@@ -22,13 +22,15 @@
+  load(1,10000);rpm(12000);rpm(18000);rpm(24000);at(24000);CHECK(host_session.flags(50,20,5)&4);
+  load(0,25000);rpm(30000);rpm(60000);at(60000); // 2000rpm <=20% of 10000
+  host_session.update(618000,600000);CHECK(host_session.state().total==1);
+- // [API V1.1 新增] 發射確認在 26000 us；24000..30000 跨界不保存。
++ // [R2 修改] 裝載後所有有效週期都保存；發射前及跨界週期不丟棄。
+  CHECK(host_session.state().records[0]==10000);
+- CHECK(host_session.state().curve[0]==3750 && host_session.state().curve[1]==0);
++ CHECK(host_session.state().curve[0]==750 && host_session.state().curve[1]==750);
++ CHECK(host_session.state().curve[2]==750 && host_session.state().curve[3]==3750 && host_session.state().curve[4]==0);
+  brd_measurement_max_frame_presented(brd_measurement_get_display().generation);at(3200000);
+  load(1,3210000);rpm(3220000);rpm(3226000);at(3226000);load(0,3230000);at(3536001);host_session.update(3826000,600000);CHECK(host_session.state().total==2);
+- // [API V1.1 新增] 發射後沒有新週期，保留 History 並送零曲線。
+- for(unsigned i=0;i<32;i++) CHECK(host_session.state().curve[i]==0);
++ // [R2 修改] 發射後沒有新週期，仍保留裝載拉轉時已取得的資料。
++ CHECK(host_session.state().curve[0]==750);
++ for(unsigned i=1;i<32;i++) CHECK(host_session.state().curve[i]==0);
+  brd_measurement_stop();CHECK(brd_measurement_storage_allowed());
+  brd_measurement_begin();load(1,4000000);for(unsigned i=0;i<RPM_ISR_QUEUE_SIZE+2;i++)rpm(4010000+i*6000);at(4800000);CHECK(brd_measurement_get_diagnostics().rpm_queue_overflows==1);host_session.update(5000000,600000);CHECK(host_session.state().total==2);
+  brd_measurement_stop();host_session.update(6000000,600000);CHECK(host_session.state().total==2);
+--- a/BRD_BBP/tests/test_session.cpp
++++ b/BRD_BBP/tests/test_session.cpp
+@@ -1,5 +1,5 @@
+ /* 檔案位置: BRD_BBP/tests/test_session.cpp
+-   [API V1.1 修改] 發射後曲線、整次代表 SP、發布延遲與命令回歸。 */
++   [R2 修改] 裝載後曲線、整次代表 SP、發布延遲與命令回歸。 */
+ #include "../brd_bbp_session.h"
+ #include <cstdio>
+ #include <cstring>
+@@ -29,7 +29,7 @@
+     CHECK(session.state().total == 0);
+     session.update(610000, 600000);
+     CHECK(session.state().total == 1 && session.state().lifetime_max == 10000);
+-    CHECK(session.state().curve[0] == 1000 && session.state().curve[1] == 0);
++    CHECK(session.state().curve[0] == 750 && session.state().curve[1] == 1000 && session.state().curve[2] == 0);
+ 
+     const auto before = session.state();
+     CHECK(session.command(0x61, 1, uid, 0, pages) == 0);
+--- a/BRD_BBP/tests/test_subscriber.cpp
++++ b/BRD_BBP/tests/test_subscriber.cpp
+@@ -64,9 +64,9 @@
+     CHECK(host_ble::notifications[first + 7][16] == checksum);
+     const auto &metadata = host_ble::notifications[first + 6];
+     CHECK((metadata[9] | (metadata[10] << 8)) == total);
+-    /* [新增] 發射後 12000 us / 8 = 1500；主動通知仍使用 raw period 格式。 */
++    /* [新增] 裝載後 6000 us / 8 = 750；主動通知仍使用 raw period 格式。 */
+     const auto &profile = host_ble::notifications[first + 8];
+-    CHECK((profile[1] | (profile[2] << 8)) == 1500);
++    CHECK((profile[1] | (profile[2] << 8)) == 750);
+ }
+ 
+ int main() {
