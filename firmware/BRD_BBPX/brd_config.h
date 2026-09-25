@@ -25,16 +25,10 @@
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
-/*
-    [BRD_BBPX 修改] BLE Identity 改為 BRD 自有識別。
-    Device Name 由 ESP32-C3 eFuse MAC 最後 2 bytes 動態產生 BRD-XXXX。
-    Service / Notify / Write 使用 BRD_BBPX 固定 128-bit vendor-specific UUID。
-    原有 CMD、17-byte 封包、History、Curve 與量測流程均不修改。
-*/
-#define BBPX_DEVICE_NAME_PREFIX            "BRD-"
-#define BBPX_SERVICE_UUID                  "e5b93fef-0c75-476a-9bf6-5b38826b9ae8"
-#define BBPX_NOTIFY_UUID                   "1aa492d5-0c66-44db-8398-a13ebc9cd117"
-#define BBPX_WRITE_UUID                    "98a3780e-545a-43ee-96c4-d71b7d31fa8a"
+/* [BRD_BBP 新增] 共用特徵支援 notify/write/write-no-response；名稱不能附加ID。 */
+#define BBP_DEVICE_NAME                   "BEYBLADE_TOOL01"
+#define BBP_SERVICE_UUID                  "55c40000-f8eb-11ec-b939-0242ac120002"
+#define BBP_CHARACTERISTIC_UUID           "55c4f002-f8eb-11ec-b939-0242ac120002"
 #define BBP_TX_POWER_DBM                  0
 #define BBP_COMMAND_QUEUE_SIZE            32U
 #define BBP_NOTIFY_INTERVAL_MS            10UL

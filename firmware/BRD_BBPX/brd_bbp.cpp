@@ -9,7 +9,6 @@
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <esp_mac.h>
-#include <stdio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "brd_battery.h"
@@ -35,8 +34,7 @@ static StaticQueue_t g_command_queue_control;
 static uint8_t g_command_queue_storage[BBP_COMMAND_QUEUE_SIZE * sizeof(bbp_command_t)];
 static QueueHandle_t g_command_queue = nullptr;
 static NimBLEServer *g_server = nullptr;
-static NimBLECharacteristic *g_notify_characteristic = nullptr;
-static NimBLECharacteristic *g_write_characteristic = nullptr;
+static NimBLECharacteristic *g_characteristic = nullptr;
 static bool g_started = false;
 static bool g_accept_connections = false;
 static bool g_storage_loaded = false;
@@ -44,10 +42,7 @@ static uint32_t g_last_start_attempt_ms = 0U;
 static bool g_start_attempted = false;
 static uint32_t g_last_advertise_attempt_ms = 0U;
 static uint32_t g_last_storage_attempt_ms = 0U;
-/* [BRD_BBPX 保留] Device UID 直接使用 ESP32-C3 eFuse default MAC 6 bytes。 */
 static uint8_t g_uid[6] = {};
-/* [BRD_BBPX 新增] BRD-XXXX，XXXX 取 eFuse MAC 最後 2 bytes。 */
-static char g_device_name[16] = {};
 static brd_bbp::Session g_session;
 static uint8_t g_storage[brd_bbp::STORAGE_SIZE];
 static uint8_t g_tx_pages[brd_bbp::PAGE_COUNT][brd_bbp::PACKET_SIZE];
@@ -218,15 +213,8 @@ bool brd_bbp_begin(void) {
         increment_diagnostic(g_diagnostics.init_failures);
         return false;
     }
-    /* [BRD_BBPX 新增] BLE Device Name = BRD-XXXX，與封包 Device UID 使用同一顆 eFuse MAC。 */
-    int device_name_length = snprintf(g_device_name, sizeof(g_device_name), "%s%02X%02X",
-                                      BBPX_DEVICE_NAME_PREFIX, g_uid[4], g_uid[5]);
-    if (device_name_length <= 0 || static_cast<size_t>(device_name_length) >= sizeof(g_device_name)) {
-        increment_diagnostic(g_diagnostics.init_failures);
-        return false;
-    }
     xQueueReset(g_command_queue);
-    if (!NimBLEDevice::init(g_device_name)) {
+    if (!NimBLEDevice::init(BBP_DEVICE_NAME)) {
         increment_diagnostic(g_diagnostics.init_failures);
         brd_bbp_stop();
         return false;
@@ -236,17 +224,14 @@ bool brd_bbp_begin(void) {
     if (g_server != nullptr) {
         g_server->setCallbacks(&g_server_callbacks, false);
         g_server->advertiseOnDisconnect(false);
-        NimBLEService *service = g_server->createService(BBPX_SERVICE_UUID);
+        NimBLEService *service = g_server->createService(BBP_SERVICE_UUID);
         if (service != nullptr) {
-            /* [BRD_BBPX 修改] 原單一雙向 Characteristic 拆成 BRD Notify / Write 兩個 UUID。 */
-            g_notify_characteristic = service->createCharacteristic(BBPX_NOTIFY_UUID,
-                NIMBLE_PROPERTY::NOTIFY, brd_bbp::PACKET_SIZE);
-            g_write_characteristic = service->createCharacteristic(BBPX_WRITE_UUID,
-                NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR, brd_bbp::PACKET_SIZE);
+            g_characteristic = service->createCharacteristic(BBP_CHARACTERISTIC_UUID,
+                NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR,
+                brd_bbp::PACKET_SIZE);
         }
-        if (g_notify_characteristic != nullptr && g_write_characteristic != nullptr) {
-            g_notify_characteristic->setCallbacks(&g_characteristic_callbacks);
-            g_write_characteristic->setCallbacks(&g_characteristic_callbacks);
+        if (g_characteristic != nullptr) {
+            g_characteristic->setCallbacks(&g_characteristic_callbacks);
             success = g_server->start() && success;
         } else {
             success = false;
@@ -257,9 +242,8 @@ bool brd_bbp_begin(void) {
     NimBLEAdvertisementData advertisement;
     NimBLEAdvertisementData scan_response;
     success = advertisement.setFlags(0x06U) && success;
-    /* [BRD_BBPX 修改] Advertising payload 只放 BRD Service；名稱只放 Scan Response。 */
-    success = advertisement.addServiceUUID(BBPX_SERVICE_UUID) && success;
-    success = scan_response.setName(g_device_name) && success;
+    success = advertisement.addServiceUUID(BBP_SERVICE_UUID) && success;
+    success = scan_response.setName(BBP_DEVICE_NAME) && success;
     NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
     if (advertising != nullptr) {
         advertising->enableScanResponse(true);
@@ -299,8 +283,7 @@ void brd_bbp_stop(void) {
     }
     g_started = false;
     g_server = nullptr;
-    g_notify_characteristic = nullptr;
-    g_write_characteristic = nullptr;
+    g_characteristic = nullptr;
 }
 /*
     [修正 新增] 命令與主動通知使用同一個封包建立入口。
@@ -415,7 +398,7 @@ void brd_bbp_update(bool storage_allowed) {
         return;
     }
     g_last_tx_ms = now_ms;
-    if (g_notify_characteristic->notify(g_tx_pages[g_tx_index], brd_bbp::PACKET_SIZE, link.handle)) {
+    if (g_characteristic->notify(g_tx_pages[g_tx_index], brd_bbp::PACKET_SIZE, link.handle)) {
         /* [新增] true 只是交給 BLE stack，不代表應用層 ACK。 */
         g_tx_index++;
         g_page_started_ms = now_ms;
