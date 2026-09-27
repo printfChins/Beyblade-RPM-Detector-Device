@@ -1,0 +1,107 @@
+--- bbpx_name_original/BRD_BBPX/brd_config.h	2026-09-25 09:29:46.000000000 +0000
++++ bbpx_name_work/BRD_BBPX/brd_config.h	2026-09-25 13:47:30.834942204 +0000
+@@ -25,8 +25,11 @@
+ #define CPU_FIXED_FREQ_MHZ                80U
+ #define MAIN_LOOP_DELAY_MS                1UL
+ 
+-/* [BRD_BBP 新增] 共用特徵支援 notify/write/write-no-response；名稱不能附加ID。 */
+-#define BBP_DEVICE_NAME                   "BEYBLADE_TOOL01"
++/*
++    [修改] BLE 裝置名稱改為固定前綴 + ESP32 eFuse MAC 最後 1 byte。
++    實際名稱由 brd_bbp.cpp 在啟動時建立，例如 eFuse MAC 尾碼 0xAF -> BEYBLADE_TOOLAF。
++*/
++#define BBP_DEVICE_NAME_PREFIX            "BEYBLADE_TOOL"
+ #define BBP_SERVICE_UUID                  "55c40000-f8eb-11ec-b939-0242ac120002"
+ #define BBP_CHARACTERISTIC_UUID           "55c4f002-f8eb-11ec-b939-0242ac120002"
+ #define BBP_TX_POWER_DBM                  0
+--- bbpx_name_original/BRD_BBPX/brd_bbp.cpp	2026-09-21 17:42:02.000000000 +0000
++++ bbpx_name_work/BRD_BBPX/brd_bbp.cpp	2026-09-25 13:47:30.835259872 +0000
+@@ -43,6 +43,8 @@
+ static uint32_t g_last_advertise_attempt_ms = 0U;
+ static uint32_t g_last_storage_attempt_ms = 0U;
+ static uint8_t g_uid[6] = {};
++/* [新增] 固定名稱前綴 + ESP32 eFuse MAC 最後 1 byte 的 2 位 HEX + \0。 */
++static char g_device_name[sizeof(BBP_DEVICE_NAME_PREFIX) + 2U] = {};
+ static brd_bbp::Session g_session;
+ static uint8_t g_storage[brd_bbp::STORAGE_SIZE];
+ static uint8_t g_tx_pages[brd_bbp::PAGE_COUNT][brd_bbp::PACKET_SIZE];
+@@ -141,6 +143,23 @@
+ static BbpServerCallbacks g_server_callbacks;
+ static BbpCharacteristicCallbacks g_characteristic_callbacks;
+ 
++/*
++    [新增] 建立 BLE 裝置名稱。
++    g_uid 來源為 esp_efuse_mac_get_default()；只取最後 1 byte，轉成兩位大寫 HEX。
++    例如 g_uid[5] = 0xAF -> BEYBLADE_TOOLAF。
++*/
++static void build_device_name(void) {
++    static const char hex[] = "0123456789ABCDEF";
++    const size_t prefix_length = sizeof(BBP_DEVICE_NAME_PREFIX) - 1U;
++    for (size_t index = 0U; index < prefix_length; index++) {
++        g_device_name[index] = BBP_DEVICE_NAME_PREFIX[index];
++    }
++    const uint8_t suffix = g_uid[5];
++    g_device_name[prefix_length] = hex[(suffix >> 4U) & 0x0FU];
++    g_device_name[prefix_length + 1U] = hex[suffix & 0x0FU];
++    g_device_name[prefix_length + 2U] = '\0';
++}
++
+ static bool load_storage(void) {
+     if (g_storage_loaded) {
+         return true;
+@@ -214,7 +233,9 @@
+         return false;
+     }
+     xQueueReset(g_command_queue);
+-    if (!NimBLEDevice::init(BBP_DEVICE_NAME)) {
++    /* [新增] eFuse MAC 已取得，BLE 初始化前先建立本機唯一的兩碼名稱尾碼。 */
++    build_device_name();
++    if (!NimBLEDevice::init(g_device_name)) {
+         increment_diagnostic(g_diagnostics.init_failures);
+         brd_bbp_stop();
+         return false;
+@@ -243,7 +264,7 @@
+     NimBLEAdvertisementData scan_response;
+     success = advertisement.setFlags(0x06U) && success;
+     success = advertisement.addServiceUUID(BBP_SERVICE_UUID) && success;
+-    success = scan_response.setName(BBP_DEVICE_NAME) && success;
++    success = scan_response.setName(g_device_name) && success;
+     NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
+     if (advertising != nullptr) {
+         advertising->enableScanResponse(true);
+--- bbpx_name_original/BRD_BBPX/README.md	2026-09-25 09:34:37.000000000 +0000
++++ bbpx_name_work/BRD_BBPX/README.md	2026-09-25 13:48:18.022572966 +0000
+@@ -80,14 +80,14 @@
+ 
+ | 項目 | 值 |
+ |---|---|
+-| 名稱 | `BEYBLADE_TOOL01` |
++| 名稱 | `BEYBLADE_TOOLXX`，`XX` = ESP32 eFuse MAC 最後 1 byte 的兩位大寫 HEX |
+ | Service | `55c40000-f8eb-11ec-b939-0242ac120002` |
+ | 共用特徵 | `55c4f002-f8eb-11ec-b939-0242ac120002` |
+ | 特徵屬性 | Notify、Write、Write Without Response |
+ | 封包 | 固定 17 bytes，多 byte 值為 Little Endian |
+ | TX 功率 | 0 dBm |
+ 
+-Service 放主廣播，完整名稱放 Scan Response。共用 F002 接收命令是本包實作，原廠 Write UUID 仍未完全確認。
++Service 放主廣播，完整名稱放 Scan Response。裝置啟動時使用 `esp_efuse_mac_get_default()` 讀取 ESP32 eFuse MAC，名稱最後兩碼取 MAC 最後 1 byte，例如尾碼 `0x6A` 時名稱為 `BEYBLADE_TOOL6A`。共用 F002 接收命令是本包實作，原廠 Write UUID 仍未完全確認。
+ 
+ | 一個 byte 命令 | 行為 |
+ |---|---|
+--- bbpx_name_original/BRD_BBPX/CHANGELOG.md	2026-09-25 09:35:05.000000000 +0000
++++ bbpx_name_work/BRD_BBPX/CHANGELOG.md	2026-09-25 13:48:18.022706687 +0000
+@@ -16,6 +16,14 @@
+ 
+ 主程式 `BRD_BBPX/BRD_BBPX.ino` 不需新增程式碼。
+ 
++
++## BLE 裝置名稱尾碼
++
++- [修改] 固定名稱 `BEYBLADE_TOOL01` 改為 `BEYBLADE_TOOLXX`。
++- `XX` 直接取 `esp_efuse_mac_get_default()` 取得的 ESP32 eFuse MAC 最後 1 byte，轉成兩位大寫 HEX。
++- 例如 eFuse MAC 尾碼為 `0x6A`，BLE Scan Response 名稱為 `BEYBLADE_TOOL6A`。
++- Service UUID、Characteristic UUID、BBPX 封包與 LOAD / AUTO 模式均不變。
++
+ ## CFG 模式選擇
+ 
+ `BRD_BBPX/brd_config.h`：

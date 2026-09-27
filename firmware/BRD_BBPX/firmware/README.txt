@@ -1,19 +1,21 @@
-BRD_BBP API_V1.1_R4 — ESP32-C3 完整 4 MB 映像
+BRD_BBPX LOAD / AUTO 雙模式版
 
-[修改] OLED 藍牙圖示改用 BRD_BLE_OLED(3).zip 的原生 7x13 符號。
-點陣與位置一致：x119..125、y17..29，已連線顯示、斷線清除。
-本次由 R4 原始碼重新編譯。
+本次原始碼已新增 AUTO 模式，但目前工作環境沒有 Arduino CLI / Arduino-ESP32
+完整編譯工具鏈，因此沒有產生新的 ESP32-C3 binary。
 
-檔名：BRD_BBP_ESP32C3_4MB_0x000000.bin
-位址：0x000000
-映像：4194304 bytes，4 MB
-CPU：80 MHz；Flash：DIO、80 MHz
-Arduino-ESP32：3.3.11；NimBLE-Arduino：2.5.1
-SHA-256：6c5953747c473c90616b4701c4e40afad8894f20fa62d21932e378b6aeed3b12
+為避免誤燒，已移除原包內未包含 AUTO 修改的舊 R4：
+- BRD_BBPX.ino.esp32c3.bin
+- firmware/BRD_BBP_ESP32C3_4MB_0x000000.bin
 
-含 bootloader、partition、app 及填補區；app 位於 0x010000。
-完整燒錄會覆寫 NVS。保留歷史請使用 Arduino IDE 一般專案上傳，
-Erase All Flash Before Sketch Upload 設為 Disabled。
+請使用本包原始碼重新編譯。
+建議環境沿用原專案：
+- Arduino-ESP32 3.3.11
+- NimBLE-Arduino 2.5.1
+- ESP32C3 Dev Module
+- CPU 80 MHz
+- Flash 4 MB / DIO / 80 MHz
+- Default Partition
 
-完整原始碼：上一層 BRD_BBP.ino 與全部 .cpp/.h。
-修改位置：../CHANGELOG.md；驗證：../VALIDATION.md。
+模式設定位置：../brd_config.h
+預設：BRD_MEASUREMENT_MODE_LOAD
+AUTO：BRD_MEASUREMENT_MODE_AUTO

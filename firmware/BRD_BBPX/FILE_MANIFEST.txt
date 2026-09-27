@@ -1,10 +1,10 @@
-BRD_BBP API_V1.1_R4 — 完整檔案清單
-檔案總數：66
-根目錄：BRD_BBP/
+BRD_BBPX LOAD / AUTO 雙模式版 — 完整檔案清單
+檔案總數：67
+根目錄：BRD_BBPX/
 
-BRD_BBP.ino
-CHANGELOG.md
 FILE_MANIFEST.txt
+BRD_BBPX.ino
+CHANGELOG.md
 README.md
 VALIDATION.md
 brd_battery.cpp
@@ -22,6 +22,7 @@ brd_measurement.cpp
 brd_measurement.h
 brd_oled.cpp
 brd_oled.h
+docs/BRD_BBPX_AUTO_MODE.patch
 docs/BRD_BBP_API_Conformance_Before.md
 docs/BRD_BBP_API_Conformance_Review.md
 docs/BRD_BBP_API_V1.1.patch
@@ -48,7 +49,6 @@ docs/compile.log
 docs/dual_edge_red.log
 docs/host_tests.log
 docs/single_curve_red.log
-firmware/BRD_BBP_ESP32C3_4MB_0x000000.bin
 firmware/README.txt
 tests/host_stubs/Arduino.h
 tests/host_stubs/NimBLEDevice.h
@@ -64,6 +64,7 @@ tests/run_host_tests.py
 tests/test_conformance.cpp
 tests/test_dual_edge.cpp
 tests/test_measurement.cpp
+tests/test_measurement_auto.cpp
 tests/test_protocol.cpp
 tests/test_session.cpp
 tests/test_subscriber.cpp

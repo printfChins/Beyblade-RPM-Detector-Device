@@ -1,25 +1,51 @@
-# BRD_BBP — OLED 藍牙圖示替換版
+# BRD_BBPX — LOAD / AUTO 雙模式版
 
-修訂識別：`API_V1.1_R4`，2026-09-21。依使用者提供的 `BRD_BLE_OLED(3).zip`，採用該專案原生 **7×13 OLED 藍牙符號**，點陣、尺寸與位置皆直接沿用。專案與開機字串仍為 `BRD_BBP`。
+修訂識別：`BRD_BBPX_AUTO`，2026-09-25。以原 `BRD_BBPX` 的 BBPX BLE 協議、單圈曲線與 OLED 圖示為基礎，新增可由 `brd_config.h` 選擇的 **LOAD / AUTO 量測模式**。預設維持 LOAD，避免既有行為在未改 CFG 時改變。
 
 ## 開啟與替換方式
 
-完整解壓縮後，以本包的 `BRD_BBP/` 替換舊專案資料夾，Arduino IDE 開啟 `BRD_BBP/BRD_BBP.ino`。根目錄全部 `.cpp/.h` 與 `.ino` 放在同一層。主程式沒有新增片段，不需手動貼入程式。
+完整解壓縮後，以本包的 `BRD_BBPX/` 替換舊專案資料夾，Arduino IDE 開啟 `BRD_BBPX/BRD_BBPX.ino`。根目錄全部 `.cpp/.h` 與 `.ino` 放在同一層。主程式沒有新增片段，不需手動貼入程式。
 
 - Arduino-ESP32 3.3.11；NimBLE-Arduino 2.5.1。
 - ESP32C3 Dev Module；CPU 80 MHz；Flash 4 MB、DIO、80 MHz；Default Partition。
-- 直接燒錄：`firmware/BRD_BBP_ESP32C3_4MB_0x000000.bin`，位址 `0x000000`。
-- 完整 4 MB 映像會覆寫 NVS；需要保留歷史時，使用一般專案上傳並停用 Erase All Flash Before Sketch Upload。
+- 本次原始碼已變更，但目前環境沒有 Arduino-ESP32 完整編譯工具鏈，因此已移除舊 R4 `.bin`，避免誤燒未包含 AUTO 的舊韌體。
+- 請以本包原始碼重新編譯；若要保留 NVS 歷史，停用 Erase All Flash Before Sketch Upload。
 
 ## 新增、修改與刪減
 
 | 標記 | 內容 |
 |---|---|
-| 新增 | 從附件移入 `oled_draw_bluetooth_icon()`，使用原生 7×13 逐列點陣。 |
-| 修改 | 連線時呼叫附件圖示，位置 x119..125、y17..29。 |
-| 刪減 | 移除 R3 的 7×7 點陣與 2×2 像素放大迴圈。 |
+| 新增 | `BRD_MEASUREMENT_MODE_LOAD` / `BRD_MEASUREMENT_MODE_AUTO` 與單一 `AUTO_RPM_THRESHOLD=2000`。 |
+| 新增 | AUTO 有效歸零：最後有效 RPM < 2000，之後 0 RPM 持續 250 ms。 |
+| 新增 | AUTO 有效發射：曾達 RPM >= 2000，之後 0 RPM 持續 1000 ms。 |
+| 修改 | AUTO 不掛 LOAD interrupt，也不以 LOAD GPIO 決定開始、發射或歸零。 |
+| 修改 | AUTO 的 A0 `loaded` bit：即時 RPM != 0 為 1，RPM == 0 為 0。 |
+| 修改 | AUTO OLED 第一行固定 `AUTO READY`；HOLD 仍具有最高顯示優先權。 |
+| 保留 | BBPX 既有 32 點單圈曲線格式、Service/Characteristic UUID、17-byte CMD/Notify 封包與 History 格式。 |
 
-本次正式程式只修改 `brd_oled.cpp`。位置及完整檔案替換方式見 `CHANGELOG.md`，差異見 `docs/BRD_BBP_OLED_ICON_R4.patch`。
+本次主要修改 `brd_config.h`、`brd_measurement.cpp`、`brd_oled.cpp`，並新增 AUTO 宿主測試。詳細差異見 `docs/BRD_BBPX_AUTO_MODE.patch`.
+
+## 量測模式設定
+
+模式集中在 `BRD_BBPX/brd_config.h`：
+
+```c
+#define BRD_MEASUREMENT_MODE_LOAD         0U
+#define BRD_MEASUREMENT_MODE_AUTO         1U
+#define BRD_MEASUREMENT_MODE              BRD_MEASUREMENT_MODE_LOAD
+#define AUTO_RPM_THRESHOLD                2000U
+#define AUTO_LAUNCH_ZERO_MS               1000UL
+#define AUTO_RESET_ZERO_MS                250UL
+```
+
+| 模式 | READY / 發射來源 | 有效歸零 | 有效發射 | BLE A0 loaded | OLED |
+|---|---|---|---|---|---|
+| LOAD | LOAD GPIO | 原本 LOAD/timeout 流程 | LOAD HIGH->LOW | 實體 LOAD | `WAIT LOAD` / `LOADED READY` |
+| AUTO | RPM-only | `<2000 RPM` 後 0 RPM >=250 ms | 曾 `>=2000 RPM` 後 0 RPM >=1000 ms | RPM!=0 -> 1；RPM==0 -> 0 | `AUTO READY` |
+
+AUTO 達到 2000 RPM 後，250 ms 歸零只會讓即時 RPM 回到 0，不會清掉發射候選；要等 1000 ms 靜止滿足才封存 Shot。AUTO 的 MAX/HOLD 行為沿用 V1.17：完成後顯示 MAX，HOLD 結束仍保留 MAX，直到下一次 RPM 真正開始才清除。
+
+BBPX 協議沒有獨立的「Launch RPM」欄位，因此 AUTO 不新增也不傳送額外發射點 RPM；既有 History 代表值仍維持整次量測 MAX RPM 的 BBPX 測試映射。
 
 ## 曲線規則
 
@@ -46,7 +72,7 @@ History 代表 SP 保留整次雙邊沿 MAX RPM 的 BRD 測試映射，可與所
 
 ## API 判定
 
-依原報告相同 30 項條件，沿用 R3 的判定為 **29 項符合、0 項部分符合、1 項不符合**。第 24、26 項已恢復單圈資料與前 32 圈語意；第 27 項原建議「發射後起錄」，本版依你的要求保留「裝載後取得有效週期就起錄」。詳細比對在 `docs/BRD_BBP_API_Conformance_Review.md`。
+LOAD 模式沿用原報告相同 30 項條件與 R3 判定：**29 項符合、0 項部分符合、1 項不符合**。AUTO 是 BRD 新增模式，不納入該原協議符合性統計。第 24、26 項已恢復單圈資料與前 32 圈語意；第 27 項原建議「發射後起錄」，本版依你的要求保留「裝載後取得有效週期就起錄」。詳細比對在 `docs/BRD_BBP_API_Conformance_Review.md`。
 
 註解：既有 NVS 曲線不重算，格式沒有 R2／R3 取樣模式欄位；R3 起的新 Shot 採單圈曲線，R4 沿用此規則。
 
@@ -54,14 +80,14 @@ History 代表 SP 保留整次雙邊沿 MAX RPM 的 BRD 測試映射，可與所
 
 | 項目 | 值 |
 |---|---|
-| 名稱 | `BEYBLADE_TOOL01` |
+| 名稱 | `BEYBLADE_TOOL_BRD_XXXX`，`XXXX` = ESP32 eFuse MAC 最後 2 bytes 的四位大寫 HEX |
 | Service | `55c40000-f8eb-11ec-b939-0242ac120002` |
 | 共用特徵 | `55c4f002-f8eb-11ec-b939-0242ac120002` |
 | 特徵屬性 | Notify、Write、Write Without Response |
 | 封包 | 固定 17 bytes，多 byte 值為 Little Endian |
 | TX 功率 | 0 dBm |
 
-Service 放主廣播，完整名稱放 Scan Response。共用 F002 接收命令是本包實作，原廠 Write UUID 仍未完全確認。
+Service 放主廣播，完整名稱放 Scan Response。裝置啟動時使用 `esp_efuse_mac_get_default()` 讀取 ESP32 eFuse MAC，名稱尾碼四碼取 MAC 最後 2 bytes，例如尾碼 `0x126A` 時名稱為 `BEYBLADE_TOOL_BRD_126A`。共用 F002 接收命令是本包實作，原廠 Write UUID 仍未完全確認。
 
 | 一個 byte 命令 | 行為 |
 |---|---|
@@ -70,7 +96,7 @@ Service 放主廣播，完整名稱放 Scan Response。共用 F002 接收命令�
 | `0x75` | 清除 RAM 歷史、曲線、MAX、Counter，作廢目前 Capture，安排保存；不增加自創 ACK。 |
 | `0x61`／未知 | 安全忽略，不改資料。 |
 
-預設模式 1 同時支援命令與事件通知：訂閱穩定 100 ms 後送 A0，已識別的 LOAD 改變送 A0，Shot 發布後送 12 頁。A0 byte3 在已裝載為 0x04、未裝載為 0x00。主機即使每 500 ms 輪詢，也可維持模式 1；主機須按 Header 與 Shot Counter 整理可能重複的結果。
+預設 `BBP_COMPAT_AUTONOTIFY=1` 同時支援命令與事件通知：訂閱穩定 100 ms 後送 A0，loaded 狀態改變送 A0，Shot 發布後送 12 頁。LOAD 模式 A0 byte3 bit2 仍跟隨實體 LOAD；AUTO 模式改為即時 RPM != 0 時為 0x04、RPM == 0 時為 0x00。主機即使每 500 ms 輪詢，也可維持相同封包解析。
 
 `BBP_COMPAT_AUTONOTIFY=0` 只保留舊純輪詢及舊 flags 語意供回歸比對，**不符合預設模式的全部通知條件**。本包無固定每 500 ms 自動 Notify；10 ms 是待送頁面的排程間隔。
 
@@ -95,18 +121,18 @@ Flash 僅在既有安全時段保存。0x75 的 RAM 清除不表示 Flash 已寫
 | 充電 LED | 8 |
 | OLED | SDA20／SCL21、外部上拉、128×32 SSD1306 |
 
-LOAD 去抖 1000 us、發射後降至 MAX 的 20% 結束、無脈衝 300 ms 結束、MAX 自鎖 2.5 秒、OLED 更新 100 ms。既有低電與 ADC 錯誤保護沿用。Battery Raw 為 SOC 對應 0~250 的 BRD 映射，非原廠電池標定。
+LOAD 模式維持 LOAD 去抖 1000 us、發射後降至 MAX 的 20% 結束、無脈衝 300 ms 結束。AUTO 模式使用 2000 RPM 單一門檻與 250/1000 ms 歸零/發射時間。兩種模式都保留 MAX 自鎖 2.5 秒、OLED 更新 100 ms、低電與 ADC 錯誤保護。Battery Raw 為 SOC 對應 0~250 的 BRD 映射，非原廠電池標定。
 
 ## 資料夾結構與驗證
 
 | 位置 | 內容 |
 |---|---|
-| `BRD_BBP/BRD_BBP.ino` | Arduino 主程式 |
-| `BRD_BBP/*.cpp`、`BRD_BBP/*.h` | 完整正式模組 |
-| `BRD_BBP/CHANGELOG.md` | 新增／修改／刪減及行號 |
-| `BRD_BBP/VALIDATION.md` | 本次實際測試、編譯結果與限制 |
-| `BRD_BBP/docs/` | API、單圈參考說明、30 項比對、歷史報告、差異與驗證日誌 |
-| `BRD_BBP/firmware/` | 本次完整 4 MB 燒錄檔與說明 |
-| `BRD_BBP/tests/` | 7 組宿主測試及硬體替身 |
+| `BRD_BBPX/BRD_BBPX.ino` | Arduino 主程式 |
+| `BRD_BBPX/*.cpp`、`BRD_BBPX/*.h` | 完整正式模組 |
+| `BRD_BBPX/CHANGELOG.md` | 新增／修改／刪減及行號 |
+| `BRD_BBPX/VALIDATION.md` | 本次實際測試、編譯結果與限制 |
+| `BRD_BBPX/docs/` | API、單圈參考說明、30 項比對、歷史報告、差異與驗證日誌 |
+| `BRD_BBPX/firmware/` | 燒錄檔說明；本次未附新 `.bin` |
+| `BRD_BBPX/tests/` | 8 組宿主測試及硬體替身 |
 
-完整檔名清單見 `FILE_MANIFEST.txt`。在專案資料夾執行 `python3 tests/run_host_tests.py`；使用 g++ C++17、ASan/UBSan。這些測試包含真實協定、Session、量測與 BLE 排程程式，但硬體邊界使用替身，尚未執行實板、無線擷取及官方 App 驗證。
+完整檔名清單見 `FILE_MANIFEST.txt`。在專案資料夾執行 `python3 tests/run_host_tests.py`；使用 g++ C++17、ASan/UBSan。現為 8 組測試，新增 AUTO 量測回歸；這些測試包含真實協定、Session、量測與 BLE 排程程式，但硬體邊界使用替身，尚未執行實板、無線擷取及官方 App 驗證。

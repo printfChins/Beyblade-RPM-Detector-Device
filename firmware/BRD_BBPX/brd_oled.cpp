@@ -173,6 +173,8 @@ static const uint8_t *oled_get_glyph(char c) {
     static const uint8_t glyph_P[5] = {0x7F, 0x09, 0x09, 0x09, 0x06};
     static const uint8_t glyph_R[5] = {0x7F, 0x09, 0x19, 0x29, 0x46};
     static const uint8_t glyph_T[5] = {0x01, 0x01, 0x7F, 0x01, 0x01};
+    /* [新增] AUTO READY 顯示所需 U 字元。 */
+    static const uint8_t glyph_U[5] = {0x3F, 0x40, 0x40, 0x40, 0x3F};
     /* [保留] PROJECT_VERSION 顯示所需 V 字元。 */
     static const uint8_t glyph_V[5] = {0x1F, 0x20, 0x40, 0x20, 0x1F};
     static const uint8_t glyph_W[5] = {0x3F, 0x40, 0x38, 0x40, 0x3F};
@@ -208,6 +210,7 @@ static const uint8_t *oled_get_glyph(char c) {
         case 'P': return glyph_P;
         case 'R': return glyph_R;
         case 'T': return glyph_T;
+        case 'U': return glyph_U;
         case 'V': return glyph_V;
         case 'W': return glyph_W;
         case 'X': return glyph_X;
@@ -464,7 +467,8 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     /* [V0.10 刪減] 自鎖期間仍只顯示 WAIT LOAD 的判斷方式。
        [V0.10 新增] HOLD 優先顯示；第二行仍保留本次 MAX 轉速。 */
     const char *status_line = display.hold_active ? "HOLD" :
-        (display.loaded ? "LOADED READY" : "WAIT LOAD");
+        (BRD_MEASUREMENT_MODE == BRD_MEASUREMENT_MODE_AUTO ? "AUTO READY" :
+         (display.loaded ? "LOADED READY" : "WAIT LOAD"));
     oled_draw_text(0U, 0U, status_line, 1U);
     snprintf(value_line, sizeof(value_line), "%s %u",
              display.show_max ? "MAX" : "RPM", (unsigned int)display.value);

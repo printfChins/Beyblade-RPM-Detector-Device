@@ -40,6 +40,9 @@ static bool g_battery_adc_fault_active = true;
 static uint16_t g_battery_voltage_mv = 0U;
 static uint8_t g_battery_percent = 0U;
 static bool g_battery_low_locked = false;
+/* [新增] 區分「開機 <= 10%」鎖定與運行中 < 5% 鎖定，避免 10% 回彈造成重啟循環。 */
+static bool g_battery_startup_check_pending = true;
+static bool g_battery_startup_low_locked = false;
 static bool g_battery_recovery_active = false;
 static bool g_battery_recovery_ready = false;
 static uint32_t g_battery_recovery_start_ms = 0UL;
@@ -146,6 +149,9 @@ void brd_battery_begin(void) {
     g_battery_voltage_mv = 0U;
     g_battery_percent = 0U;
     g_battery_low_locked = false;
+    /* [新增] 每次真正開機都必須重新通過 > 10% 的第一筆有效 ADC 檢查。 */
+    g_battery_startup_check_pending = true;
+    g_battery_startup_low_locked = false;
     g_battery_diagnostics = {};
     battery_reset_recovery();
     brd_battery_update();
@@ -217,11 +223,30 @@ void brd_battery_update(void) {
     g_battery_diagnostics.consecutive_failures = 0UL;
     battery_increment(g_battery_diagnostics.success_count);
 
-    /* [保留] ESP_OK 的有效低電讀值立即鎖定，包括有效 0 mV；不做去抖或濾波。 */
-    if (g_battery_percent < BATTERY_LOW_STOP_PERCENT) {
+    /*
+        [新增] 開機第一筆有效 ADC 必須 > 10%。
+        <= 10% 時直接進入低電鎖定，因此 OLED 不會進入正常開機畫面，BLE/RPM 也不啟動。
+        [保留] 正常運行後仍維持 < 5% 才觸發低電鎖定。
+    */
+    if (g_battery_startup_check_pending) {
+        g_battery_startup_check_pending = false;
+        if (g_battery_percent <= BATTERY_BOOT_MIN_PERCENT) {
+            g_battery_low_locked = true;
+            g_battery_startup_low_locked = true;
+        }
+    } else if (g_battery_percent < BATTERY_LOW_STOP_PERCENT) {
         g_battery_low_locked = true;
+        g_battery_startup_low_locked = false;
     }
-    if (!g_battery_low_locked || g_battery_percent < BATTERY_RECOVER_PERCENT) {
+
+    /*
+        [新增] 開機低電鎖定必須恢復到 > 10% 才開始恢復計時。
+        運行中 < 5% 的低電鎖定維持原規則：>= 10% 可開始恢復計時。
+    */
+    bool recovery_below_threshold = g_battery_startup_low_locked ?
+        (g_battery_percent <= BATTERY_BOOT_MIN_PERCENT) :
+        (g_battery_percent < BATTERY_RECOVER_PERCENT);
+    if (!g_battery_low_locked || recovery_below_threshold) {
         battery_reset_recovery();
     } else {
         if (!g_battery_recovery_active) {

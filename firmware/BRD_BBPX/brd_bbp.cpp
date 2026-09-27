@@ -43,6 +43,8 @@ static bool g_start_attempted = false;
 static uint32_t g_last_advertise_attempt_ms = 0U;
 static uint32_t g_last_storage_attempt_ms = 0U;
 static uint8_t g_uid[6] = {};
+/* [修改] 固定名稱前綴 + ESP32 eFuse MAC 最後 2 bytes 的 4 位 HEX + \0。 */
+static char g_device_name[sizeof(BBP_DEVICE_NAME_PREFIX) + 4U] = {};
 static brd_bbp::Session g_session;
 static uint8_t g_storage[brd_bbp::STORAGE_SIZE];
 static uint8_t g_tx_pages[brd_bbp::PAGE_COUNT][brd_bbp::PACKET_SIZE];
@@ -141,6 +143,28 @@ class BbpCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 static BbpServerCallbacks g_server_callbacks;
 static BbpCharacteristicCallbacks g_characteristic_callbacks;
 
+/*
+    [修改] 建立 BLE 裝置名稱。
+    g_uid 來源為 esp_efuse_mac_get_default()；取最後 2 bytes，轉成四位大寫 HEX。
+    例如 g_uid[4] = 0x12、g_uid[5] = 0xAF -> BEYBLADE_TOOL_BRD_12AF。
+*/
+static void build_device_name(void) {
+    static const char hex[] = "0123456789ABCDEF";
+    const size_t prefix_length = sizeof(BBP_DEVICE_NAME_PREFIX) - 1U;
+    for (size_t index = 0U; index < prefix_length; index++) {
+        g_device_name[index] = BBP_DEVICE_NAME_PREFIX[index];
+    }
+
+    /* [修改] ESP32 ID 尾碼 XXXX = eFuse MAC 最後 2 bytes。 */
+    const uint8_t suffix_high = g_uid[4];
+    const uint8_t suffix_low = g_uid[5];
+    g_device_name[prefix_length] = hex[(suffix_high >> 4U) & 0x0FU];
+    g_device_name[prefix_length + 1U] = hex[suffix_high & 0x0FU];
+    g_device_name[prefix_length + 2U] = hex[(suffix_low >> 4U) & 0x0FU];
+    g_device_name[prefix_length + 3U] = hex[suffix_low & 0x0FU];
+    g_device_name[prefix_length + 4U] = '\0';
+}
+
 static bool load_storage(void) {
     if (g_storage_loaded) {
         return true;
@@ -214,7 +238,9 @@ bool brd_bbp_begin(void) {
         return false;
     }
     xQueueReset(g_command_queue);
-    if (!NimBLEDevice::init(BBP_DEVICE_NAME)) {
+    /* [新增] eFuse MAC 已取得，BLE 初始化前先建立本機唯一的兩碼名稱尾碼。 */
+    build_device_name();
+    if (!NimBLEDevice::init(g_device_name)) {
         increment_diagnostic(g_diagnostics.init_failures);
         brd_bbp_stop();
         return false;
@@ -243,7 +269,7 @@ bool brd_bbp_begin(void) {
     NimBLEAdvertisementData scan_response;
     success = advertisement.setFlags(0x06U) && success;
     success = advertisement.addServiceUUID(BBP_SERVICE_UUID) && success;
-    success = scan_response.setName(BBP_DEVICE_NAME) && success;
+    success = scan_response.setName(g_device_name) && success;
     NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
     if (advertising != nullptr) {
         advertising->enableScanResponse(true);

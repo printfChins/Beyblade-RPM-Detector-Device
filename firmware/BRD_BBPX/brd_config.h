@@ -25,8 +25,11 @@
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
-/* [BRD_BBP 新增] 共用特徵支援 notify/write/write-no-response；名稱不能附加ID。 */
-#define BBP_DEVICE_NAME                   "BEYBLADE_TOOL01"
+/*
+    [修改] BLE 裝置名稱改為固定前綴 + ESP32 eFuse MAC 最後 2 bytes。
+    實際名稱由 brd_bbp.cpp 在啟動時建立，例如 eFuse MAC 尾碼 0x12AF -> BEYBLADE_TOOL_BRD_12AF。
+*/
+#define BBP_DEVICE_NAME_PREFIX            "BEYBLADE_TOOL_BRD_"
 #define BBP_SERVICE_UUID                  "55c40000-f8eb-11ec-b939-0242ac120002"
 #define BBP_CHARACTERISTIC_UUID           "55c4f002-f8eb-11ec-b939-0242ac120002"
 #define BBP_TX_POWER_DBM                  0
@@ -113,8 +116,9 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define BATTERY_ADC_STALE_TIMEOUT_MS      3000UL
 #define BATTERY_RECOVER_STABLE_MS         3000UL
 #define BATTERY_RECOVER_MAX_GAP_MS        (BATTERY_SAMPLE_INTERVAL_MS * 3UL / 2UL)
-#define BATTERY_LOW_STOP_PERCENT          5U
-#define BATTERY_RECOVER_PERCENT           10U
+#define BATTERY_LOW_STOP_PERCENT          5U                                            // 低電保護百分比 5%
+#define BATTERY_BOOT_MIN_PERCENT          8U                                            // 開機最小電量百分比 8%
+#define BATTERY_RECOVER_PERCENT           10U                                           // 低電保護解除百分比 10%
 #define BATTERY_LOW_LOOP_DELAY_MS         20UL
 #define BATTERY_LOW_OLED_REFRESH_MS       1000UL
 
@@ -129,6 +133,27 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define LOAD_ISR_QUEUE_SIZE              32U
 #define LOAD_IR_DEBOUNCE_US               1000UL
 #define OLED_MAX_HOLD_MS                  2500UL
+
+/*
+    [新增] 量測模式選擇。
+    BRD_MEASUREMENT_MODE_LOAD:
+        維持 BBPX 原本 LOAD 流程，LOAD=HIGH 進入 READY，HIGH->LOW 判定發射。
+    BRD_MEASUREMENT_MODE_AUTO:
+        不使用 LOAD 作為開始 / 發射 / 歸零條件，只依 RPM 自動判定。
+        AUTO_RPM_THRESHOLD 為唯一 RPM 門檻，目前設定 2000 RPM。
+        有效發射: RPM 曾大於等於門檻，之後無有效 RPM 持續至少 1000 ms。
+        有效歸零: RPM 小於門檻，之後無有效 RPM 持續至少 250 ms。
+        若已達有效發射門檻，250 ms 只把即時 RPM 歸零，不清除發射候選；
+        直到 1000 ms 連續為 0 才封存為有效發射結果。
+*/
+#define BRD_MEASUREMENT_MODE_LOAD         0U
+#define BRD_MEASUREMENT_MODE_AUTO         1U
+#ifndef BRD_MEASUREMENT_MODE
+#define BRD_MEASUREMENT_MODE              BRD_MEASUREMENT_MODE_LOAD
+#endif
+#define AUTO_RPM_THRESHOLD                2000U
+#define AUTO_LAUNCH_ZERO_MS               1000UL
+#define AUTO_RESET_ZERO_MS                250UL
 
 /* [R2 修改] 每種邊沿每圈一次；上升到上升、下降到下降，不把半圈乘二。 */
 #define PULSES_PER_REV                    1UL
@@ -171,6 +196,15 @@ static_assert(BATTERY_SAMPLE_INTERVAL_MS < 0x80000000UL / 3UL &&
               BATTERY_RECOVER_MAX_GAP_MS < BATTERY_ADC_STALE_TIMEOUT_MS, "Invalid recovery sample gap.");
 static_assert(LOAD_ISR_QUEUE_SIZE >= 2U && LOAD_ISR_QUEUE_SIZE <= 256U,
               "LOAD queue size must be between 2 and 256.");
+static_assert(BRD_MEASUREMENT_MODE == BRD_MEASUREMENT_MODE_LOAD ||
+              BRD_MEASUREMENT_MODE == BRD_MEASUREMENT_MODE_AUTO,
+              "Invalid BRD measurement mode.");
+static_assert(AUTO_RPM_THRESHOLD > 0U && AUTO_RPM_THRESHOLD < RPM_VALID_MAX,
+              "Invalid AUTO RPM threshold.");
+static_assert(AUTO_RESET_ZERO_MS > 0UL &&
+              AUTO_RESET_ZERO_MS < AUTO_LAUNCH_ZERO_MS &&
+              AUTO_LAUNCH_ZERO_MS < 0x80000000UL / 1000UL,
+              "Invalid AUTO zero timing.");
 static_assert(RPM_ZERO_TIMEOUT_MS > 0UL && RPM_ZERO_TIMEOUT_MS < 0x80000000UL / 1000UL,
               "Invalid RPM zero timeout.");
 static_assert(PRELAUNCH_IDLE_RESET_MS >= RPM_ZERO_TIMEOUT_MS &&
@@ -187,7 +221,10 @@ static_assert(BATTERY_SAMPLE_INTERVAL_MS > 0UL && BATTERY_SAMPLE_INTERVAL_MS < 0
 static_assert(BATTERY_LOW_STOP_PERCENT > 0U &&
               BATTERY_LOW_STOP_PERCENT < BATTERY_RECOVER_PERCENT &&
               BATTERY_RECOVER_PERCENT <= 100U,
-              "Low battery thresholds must satisfy 0 < stop < recover <= 100.");
+              "Runtime battery thresholds must satisfy 0 < stop < recover <= 100.");
+static_assert(BATTERY_BOOT_MIN_PERCENT > BATTERY_LOW_STOP_PERCENT &&
+              BATTERY_BOOT_MIN_PERCENT < 100U,
+              "Boot battery threshold must satisfy stop < boot < 100.");
 static_assert(BATTERY_LOW_LOOP_DELAY_MS > 0UL && BATTERY_LOW_LOOP_DELAY_MS <= 1000UL,
               "Invalid low battery loop delay.");
 static_assert(BATTERY_LOW_OLED_REFRESH_MS > 0UL && BATTERY_LOW_OLED_REFRESH_MS < 0x80000000UL,
