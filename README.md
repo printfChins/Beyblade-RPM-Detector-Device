@@ -8,10 +8,4 @@ Open-source firmware.
 
 https://github.com/printfChins/Web-Flash-Download-Tool/tree/main
 
-## Web Interface
-
-Use the BRD Web interface here:
-
-https://printfchins.github.io/BRD-Web/
-
 ---
