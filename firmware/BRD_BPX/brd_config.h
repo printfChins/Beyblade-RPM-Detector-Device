@@ -19,9 +19,9 @@
 #error "This project requires Arduino-ESP32 with ESP-IDF 5.3 or newer."
 #endif
 
-#define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePass"
+#define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
-#define PROJECT_VERSION                   "BRD_BBPX"
+#define PROJECT_VERSION                   "BPX V1.0"
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
@@ -70,7 +70,8 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
 #define RPM_IR_GPIO                       3
 #define RPM_IR_INPUT_MODE                 INPUT
-/* [R2 修改] 雙邊沿更新；每一種邊沿各以相鄰同類邊沿計算整圈。 */
+/* [修改] RPM 使用 CHANGE 捕捉正、負緣；本次量測第一個觸發邊沿決定固定參考極性。
+    先正緣：正緣 -> 正緣計算一圈 RPM；先負緣：負緣 -> 負緣計算一圈 RPM。 */
 #define RPM_IR_TRIGGER_EDGE               CHANGE
 #define LOAD_IR_GPIO                      1
 #define LOAD_IR_INPUT_MODE                INPUT
@@ -131,13 +132,14 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 */
 /* [V0.12 新增] 環形佇列保留一格，32 格可保存 31 個 LOAD 邊沿。 */
 #define LOAD_ISR_QUEUE_SIZE              32U
-#define LOAD_IR_DEBOUNCE_US               1000UL
+#define LOAD_IR_DEBOUNCE_US             50000UL
 #define OLED_MAX_HOLD_MS                  2500UL
 
 /*
     [新增] 量測模式選擇。
     BRD_MEASUREMENT_MODE_LOAD:
-        維持 BBPX 原本 LOAD 流程，LOAD=HIGH 進入 READY，HIGH->LOW 判定發射。
+        LOAD 穩定 HIGH 100 ms 後清零並啟動 RPM 檢測；RPM 開始後 LOAD 不參與發射判定。
+        發射成功只依即時 RPM 嚴格低於本次 MAX 的 20% 判定。
     BRD_MEASUREMENT_MODE_AUTO:
         不使用 LOAD 作為開始 / 發射 / 歸零條件，只依 RPM 自動判定。
         AUTO_RPM_THRESHOLD 為唯一 RPM 門檻，目前設定 2000 RPM。
@@ -155,18 +157,17 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define AUTO_LAUNCH_ZERO_MS               1000UL
 #define AUTO_RESET_ZERO_MS                250UL
 
-/* [R2 修改] 每種邊沿每圈一次；上升到上升、下降到下降，不把半圈乘二。 */
+/* [修改] 選定參考極性的相鄰同極性邊沿為一圈，因此每一有效週期直接換算一次 RPM。 */
 #define PULSES_PER_REV                    1UL
-/* [R2 修改] 每圈事件數加倍，擴充佇列維持原本可緩衝圈數。 */
-#define RPM_ISR_QUEUE_SIZE               256U
+#define RPM_ISR_QUEUE_SIZE               128U
 #define RPM_MIN_PERIOD_US                500UL
 #define RPM_MAX_PERIOD_US                1000000UL
 #define RPM_VALID_MAX                    60000UL
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
 #define POST_LAUNCH_NO_RPM_TIMEOUT_MS      1200UL
-/* [V0.12 修改] MAX 的 50% 改為 20%，仍以單筆有效 RPM 判斷。 */
-#define POST_LAUNCH_FINISH_PERCENT        20U
+/* [修改] 發射成功只依 RPM 判定：即時 RPM 嚴格低於整次 MAX 的 30%。 */
+#define POST_LAUNCH_FINISH_PERCENT        30U
 
 /*
     [V0.10 修改] 直接使用 ESP-IDF I2C master，初始化禁止內部上拉。
@@ -229,14 +230,15 @@ static_assert(BATTERY_LOW_LOOP_DELAY_MS > 0UL && BATTERY_LOW_LOOP_DELAY_MS <= 10
               "Invalid low battery loop delay.");
 static_assert(BATTERY_LOW_OLED_REFRESH_MS > 0UL && BATTERY_LOW_OLED_REFRESH_MS < 0x80000000UL,
               "Invalid low battery OLED refresh interval.");
-static_assert(RPM_IR_TRIGGER_EDGE == CHANGE, "RPM must capture both edge polarities.");
+static_assert(RPM_IR_TRIGGER_EDGE == CHANGE, "RPM must capture both edges and lock to the first edge polarity.");
 static_assert(PULSES_PER_REV == 1UL, "Each same-polarity interval must equal one revolution.");
 static_assert(RPM_ISR_QUEUE_SIZE >= 2U && RPM_ISR_QUEUE_SIZE <= 256U,
               "RPM queue size must be between 2 and 256.");
 static_assert(RPM_VALID_MAX > 0UL && RPM_VALID_MAX <= 65535UL, "Invalid RPM limit.");
 static_assert(POST_LAUNCH_FINISH_PERCENT > 0U && POST_LAUNCH_FINISH_PERCENT <= 100U,
               "Invalid finish percentage.");
-static_assert(LOAD_IR_DEBOUNCE_US < 0x80000000UL, "LOAD debounce is too long.");
+static_assert(LOAD_IR_DEBOUNCE_US >= 10000UL && LOAD_IR_DEBOUNCE_US < 0x80000000UL,
+              "LOAD state must remain unchanged for at least 10 ms.");
 static_assert(OLED_MAX_HOLD_MS >= 2000UL && OLED_MAX_HOLD_MS < 0x80000000UL,
               "MAX display hold must be at least 2000 ms.");
 static_assert(OLED_I2C_DATA_CHUNK_SIZE > 0U && OLED_I2C_DATA_CHUNK_SIZE <= 128U,

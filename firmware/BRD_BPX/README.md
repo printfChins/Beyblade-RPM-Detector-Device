@@ -114,14 +114,14 @@ Flash 僅在既有安全時段保存。0x75 的 RAM 清除不表示 Flash 已寫
 
 | 功能 | GPIO／設定 |
 |---|---|
-| RPM IR | 3，INPUT、CHANGE、兩種邊沿各以整圈計時 |
+| RPM IR | 3，INPUT、CHANGE；每次量測第一個觸發邊沿決定固定參考，正緣→正緣或負緣→負緣為一整圈 |
 | LOAD IR | 1，INPUT、CHANGE、HIGH=裝載 |
 | 電池 ADC | 0，470k/470k 分壓、單次換算 |
 | 充電偵測 | 10，INPUT_PULLUP、LOW=充電 |
 | 充電 LED | 8 |
 | OLED | SDA20／SCL21、外部上拉、128×32 SSD1306 |
 
-LOAD 模式維持 LOAD 去抖 1000 us、發射後降至 MAX 的 20% 結束、無脈衝 300 ms 結束。AUTO 模式使用 2000 RPM 單一門檻與 250/1000 ms 歸零/發射時間。兩種模式都保留 MAX 自鎖 2.5 秒、OLED 更新 100 ms、低電與 ADC 錯誤保護。Battery Raw 為 SOC 對應 0~250 的 BRD 映射，非原廠電池標定。
+LOAD 模式使用 LOAD 穩定 100 ms 才切換；LOAD 只負責歸零與啟動檢測，RPM 開始後不再參與發射判定。BLE 曲線保存最早 32 筆非 0 RPM，MAX 持續獨立更新；即時 RPM 嚴格低於 MAX 的 20% 時完成發射，300 ms 無「本次參考極性」邊沿會把即時 RPM 視為 0。AUTO 模式使用 2000 RPM 單一門檻與 250/1000 ms 歸零/發射時間。兩種模式都保留 MAX 自鎖 2.5 秒、OLED 更新 100 ms、低電與 ADC 錯誤保護。Battery Raw 為 SOC 對應 0~250 的 BRD 映射，非原廠電池標定。
 
 ## 資料夾結構與驗證
 

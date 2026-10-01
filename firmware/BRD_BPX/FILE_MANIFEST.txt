@@ -1,10 +1,7 @@
-BRD_BBPX LOAD / AUTO 雙模式版 — 完整檔案清單
-檔案總數：67
-根目錄：BRD_BBPX/
-
-FILE_MANIFEST.txt
 BRD_BBPX.ino
 CHANGELOG.md
+FILE_MANIFEST.txt
+MODIFICATION_NOTE.md
 README.md
 VALIDATION.md
 brd_battery.cpp
@@ -23,6 +20,8 @@ brd_measurement.h
 brd_oled.cpp
 brd_oled.h
 docs/BRD_BBPX_AUTO_MODE.patch
+docs/BRD_BBPX_DEVICE_NAME_BRD_XXXX.patch
+docs/BRD_BBPX_DEVICE_NAME_ID_SUFFIX.patch
 docs/BRD_BBP_API_Conformance_Before.md
 docs/BRD_BBP_API_Conformance_Review.md
 docs/BRD_BBP_API_V1.1.patch
@@ -39,7 +38,6 @@ docs/DUAL_EDGE_RECORDING.md
 docs/NOTIFY_FIX.md
 docs/OLED_BLE_R3_Preview.png
 docs/OLED_BLE_R4_Preview.png
-docs/SHA256SUMS.txt
 docs/SINGLE_REV_REFERENCE.md
 docs/VALIDATION_R3.md
 docs/api_conformance_red.log
