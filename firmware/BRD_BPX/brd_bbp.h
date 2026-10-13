@@ -1,4 +1,4 @@
-/* 檔案位置: BRD_BBP/brd_bbp.h
+/* 檔案位置: BRD_BPX/brd_bbp.h
    [BRD_BBP 新增] 完整新檔，API 不可由 ISR 呼叫。 */
 #ifndef BRD_BBP_H
 #define BRD_BBP_H
@@ -15,6 +15,8 @@ bool brd_bbp_begin(void);
 void brd_bbp_stop(void);
 bool brd_bbp_prepare_restart(void);
 void brd_bbp_update(bool storage_allowed);
+/* [新增] 唯讀 BLE 啟動狀態，供 OLED 區分未連線與充電停用；只由主 loop 呼叫。 */
+bool brd_bbp_is_started(void);
 bool brd_bbp_is_connected(void);
 brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void);
 void brd_bbp_capture_reset(void);

@@ -1,5 +1,8 @@
 /*
-    檔案位置: BRD_BBP/brd_oled.cpp
+    檔案位置: BRD_BPX/brd_oled.cpp
+    [修改] 充電導致 BLE 停用時，右下角分兩行顯示 BLE / OFF 小字。
+    [刪減] 原本帶斜線的藍牙停用圖示。
+    [修改] BLE 停用狀態改變時立即安排下一幅畫面，不等待固定更新週期。
     [V0.10 修改] 顯示 LOAD 狀態、RPM / MAX 與開機版本。
     [V0.10 恢復] 右上角電池圖示與左側充電閃電圖示，沿用 V1.9 尺寸與位置。
     [V0.10 刪減] OLED 休眠與獨立 FreeRTOS Task。
@@ -19,6 +22,8 @@
 #include "brd_battery.h"
 #include "brd_bbp.h"
 #include "brd_config.h"
+/* [新增] OLED 狀態文字跟隨執行時模式。 */
+#include "brd_settings.h"
 #include "brd_io.h"
 #include "brd_measurement.h"
 #include "brd_oled.h"
@@ -39,6 +44,8 @@ static uint8_t g_frame_battery_percent = 0U;
 static bool g_frame_charging = false;
 /* [BRD_BBP 新增] 連線狀態變化立即安排畫面更新。 */
 static bool g_frame_ble_connected = false;
+/* [新增] 保存本幅畫面的充電停用狀態，與單純未連線分開判斷。 */
+static bool g_frame_ble_disabled_for_charging = false;
 static bool g_frame_is_low_battery = false;
 /* [V0.12 新增] ADC 故障有獨立畫面，不冒充 0% 低電。 */
 static bool g_frame_is_adc_fault = false;
@@ -186,6 +193,8 @@ static const uint8_t *oled_get_glyph(char c) {
     /* [BRD_BBP 新增] 版本名稱使用的底線字元。 */
     static const uint8_t glyph_underscore[5] = {0x40, 0x40, 0x40, 0x40, 0x40};
 
+    /* [新增] FW VER 開機版本資訊使用的 F 字元，BPX 的 X 沿用既有字庫。 */
+    static const uint8_t glyph_F[5] = {0x7F, 0x09, 0x09, 0x09, 0x01};
     switch (c) {
         case '0': return glyph_0;
         case '1': return glyph_1;
@@ -202,6 +211,7 @@ static const uint8_t *oled_get_glyph(char c) {
         case 'C': return glyph_C;
         case 'D': return glyph_D;
         case 'E': return glyph_E;
+        case 'F': return glyph_F;
         case 'H': return glyph_H;
         case 'I': return glyph_I;
         case 'L': return glyph_L;
@@ -453,6 +463,19 @@ static void oled_draw_bluetooth_icon(void) {
     }
 }
 
+/* [修改] 使用既有 5x7 字型、1 倍大小，右下角分兩行顯示 BLE / OFF。
+   [刪減] 斜線藍牙點陣；文字範圍 x111..127、y16..30，不占用五位數值區。 */
+static void oled_draw_bluetooth_disabled_text(void) {
+    const uint8_t x = (uint8_t)(OLED_WIDTH - 17U);
+    oled_draw_text(x, 16U, "BLE", 1U);
+    oled_draw_text(x, 24U, "OFF", 1U);
+}
+
+/* [新增] BLE 確實停止後才提示；設定保存的 200 ms 回覆期間不提前顯示停用。 */
+static bool oled_bluetooth_disabled_for_charging(bool charging) {
+    return charging && brd_settings_get().charging_ble_off != 0U && !brd_bbp_is_started();
+}
+
 static void oled_begin_frame(const brd_display_t &display, uint8_t battery_percent, bool charging) {
     char value_line[16];
 
@@ -460,6 +483,7 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     g_frame_battery_percent = battery_percent;
     g_frame_charging = charging;
     g_frame_ble_connected = brd_bbp_is_connected();
+    g_frame_ble_disabled_for_charging = oled_bluetooth_disabled_for_charging(charging);
     g_frame_is_low_battery = false;
     g_frame_is_adc_fault = false;
     g_warning_frame_drawn = false;
@@ -467,15 +491,17 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     /* [V0.10 刪減] 自鎖期間仍只顯示 WAIT LOAD 的判斷方式。
        [V0.10 新增] HOLD 優先顯示；第二行仍保留本次 MAX 轉速。 */
     const char *status_line = display.hold_active ? "HOLD" :
-        (BRD_MEASUREMENT_MODE == BRD_MEASUREMENT_MODE_AUTO ? "AUTO READY" :
+        (brd_settings_get().mode == BRD_MEASUREMENT_MODE_AUTO ? "AUTO READY" :
          (display.loaded ? "LOADED READY" : "WAIT LOAD"));
     oled_draw_text(0U, 0U, status_line, 1U);
     snprintf(value_line, sizeof(value_line), "%s %u",
              display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
     oled_draw_text(0U, 16U, value_line, 2U);
-    /* [R4 修改] 已連線時繪製附件的原生符號，斷線重畫時自然清除。
-       [R4 刪減] 移除 R3 的 7x7 點陣與 2x2 像素放大迴圈。 */
-    if (g_frame_ble_connected) {
+    /* [修改] 充電停用分兩行顯示 BLE / OFF 小字；一般連線沿用原生藍牙符號。
+       [刪減] 原本只判斷已連線，充電停用後右下角完全空白的顯示方式。 */
+    if (g_frame_ble_disabled_for_charging) {
+        oled_draw_bluetooth_disabled_text();
+    } else if (g_frame_ble_connected) {
         oled_draw_bluetooth_icon();
     }
     /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */
@@ -541,8 +567,10 @@ void brd_oled_begin(void) {
     } else {
         /* [保留] 開機時中斷尚未啟動，可以完整送出版本畫面。 */
         oled_clear_buffer();
-        oled_draw_centered_text(1U, PROJECT_SHORT_NAME, 1U);
-        oled_draw_centered_text(16U, PROJECT_VERSION, 2U);
+        /* [修改] 頂部大字專案名稱；下方小字韌體版本。 */
+        /* [刪減] 頂部小字 BRD 與下方混合名稱/版本的大字。 */
+        oled_draw_centered_text(1U, PROJECT_BOOT_NAME, 2U);
+        oled_draw_centered_text(23U, PROJECT_BOOT_VERSION, 1U);
         g_page = 0U;
         g_column = 0U;
         g_page_address_pending = true;
@@ -626,7 +654,9 @@ void brd_oled_update(void) {
             /* [V0.10 新增] 自鎖結束即要求重畫，即使 MAX 數值及電量都未改變。 */
             display.hold_active != g_frame_display.hold_active ||
             battery_percent != g_frame_battery_percent || charging != g_frame_charging ||
-            brd_bbp_is_connected() != g_frame_ble_connected;
+            brd_bbp_is_connected() != g_frame_ble_connected ||
+            /* [新增] 充電及連線都未變化，BLE 停止或設定變更仍要求重畫。 */
+            oled_bluetooth_disabled_for_charging(charging) != g_frame_ble_disabled_for_charging;
         if (!changed_state &&
             (uint32_t)(millis() - g_last_frame_start_ms) < OLED_UPDATE_INTERVAL_MS) {
             return;

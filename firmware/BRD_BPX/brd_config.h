@@ -1,5 +1,5 @@
 /*
-    檔案位置: BRD_BBP/brd_config.h
+    檔案位置: BRD_BPX/brd_config.h
     [V0.10 修改] 單機 OLED 轉速版本。硬體腳位沿用附件 V1.9。
     [V0.10 刪減] BLE、休眠與曲線封包參數。
     [V0.10 恢復] 電池 ADC 取樣與 OLED 電量、充電圖示。
@@ -21,7 +21,11 @@
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
-#define PROJECT_VERSION                   "BPX V1.0"
+/* [V1.1 修改] 韌體版本更新為 V1.1；[刪減] 原 V1.0 設定。 */
+#define PROJECT_FIRMWARE_VERSION          "V1.1"
+#define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
+#define PROJECT_BOOT_NAME                 "BRD BPX"
+#define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
@@ -56,6 +60,18 @@ static_assert(BBP_COMPAT_AUTONOTIFY == 0 || BBP_COMPAT_AUTONOTIFY == 1,
 /* [新增] BRD 鋰電池 SOC 門檻，非聲稱已確認原廠 AAA 門檻。 */
 #define BBP_BATTERY_WARNING_PERCENT       20U
 #define BBP_BATTERY_CRITICAL_PERCENT      5U
+/* [新增] BRD 設定 API 獨立於既有 BBP 封包；下列為編譯期結構參數。 */
+#define SETTINGS_SERVICE_UUID            "c7570001-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_REQUEST_UUID            "c7570002-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_RESPONSE_UUID           "c7570003-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_COMMAND_QUEUE_SIZE       8U
+#define SETTINGS_NVS_NAMESPACE            "brd_cfg"
+#define SETTINGS_NVS_KEY                  "settings_v1"
+#define SETTINGS_WRITE_INTERVAL_MS        1000UL
+#define SETTINGS_CHARGE_CLOSE_GRACE_MS    200UL
+/* [修改] 預設停用充電關閉 BLE：0=充電時保留 BLE；1=充電時關閉 BLE。
+   [刪減] 原預設啟用值 1U。可透過設定 API 覆寫，已保存的 Flash 設定優先。 */
+#define BLE_OFF_WHILE_CHARGING            0U
 #define BBP_NVS_NAMESPACE                 "brd_bbp"
 #define BBP_NVS_KEY                       "history_v1"
 static_assert(BBP_COMMAND_QUEUE_SIZE > 0U && BBP_COMMAND_QUEUE_SIZE <= 256U,
@@ -138,15 +154,14 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /*
     [新增] 量測模式選擇。
     BRD_MEASUREMENT_MODE_LOAD:
-        LOAD 穩定 HIGH 100 ms 後清零並啟動 RPM 檢測；RPM 開始後 LOAD 不參與發射判定。
-        發射成功只依即時 RPM 嚴格低於本次 MAX 的 20% 判定。
+        LOAD 穩定 HIGH 達去抖時間（預設 50 ms）後清零並啟動 RPM 檢測；RPM 開始後 LOAD 不參與發射判定。
+        發射成功依即時 RPM 嚴格低於本次 MAX 的執行時設定百分比判定。
     BRD_MEASUREMENT_MODE_AUTO:
         不使用 LOAD 作為開始 / 發射 / 歸零條件，只依 RPM 自動判定。
         AUTO_RPM_THRESHOLD 為唯一 RPM 門檻，目前設定 2000 RPM。
-        有效發射: RPM 曾大於等於門檻，之後無有效 RPM 持續至少 1000 ms。
+        有效發射: RPM 曾大於等於門檻，之後即時 RPM 嚴格低於 MAX 的設定百分比。
         有效歸零: RPM 小於門檻，之後無有效 RPM 持續至少 250 ms。
-        若已達有效發射門檻，250 ms 只把即時 RPM 歸零，不清除發射候選；
-        直到 1000 ms 連續為 0 才封存為有效發射結果。
+        達門檻後共用 RPM_ZERO_TIMEOUT_MS 的無脈衝歸零備援，立即封存有效結果。
 */
 #define BRD_MEASUREMENT_MODE_LOAD         0U
 #define BRD_MEASUREMENT_MODE_AUTO         1U
@@ -154,7 +169,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define BRD_MEASUREMENT_MODE              BRD_MEASUREMENT_MODE_LOAD
 #endif
 #define AUTO_RPM_THRESHOLD                2000U
-#define AUTO_LAUNCH_ZERO_MS               1000UL
+/* [刪減] AUTO_LAUNCH_ZERO_MS：AUTO 不再等待零轉速滿一秒，改共用百分比結束。 */
 #define AUTO_RESET_ZERO_MS                250UL
 
 /* [修改] 選定參考極性的相鄰同極性邊沿為一圈，因此每一有效週期直接換算一次 RPM。 */
@@ -166,7 +181,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
 #define POST_LAUNCH_NO_RPM_TIMEOUT_MS      1200UL
-/* [修改] 發射成功只依 RPM 判定：即時 RPM 嚴格低於整次 MAX 的 30%。 */
+/* [修改] 兩模式共用預設 30%；BLE API 可以修改為 1..100%。 */
 #define POST_LAUNCH_FINISH_PERCENT        30U
 
 /*
@@ -203,8 +218,7 @@ static_assert(BRD_MEASUREMENT_MODE == BRD_MEASUREMENT_MODE_LOAD ||
 static_assert(AUTO_RPM_THRESHOLD > 0U && AUTO_RPM_THRESHOLD < RPM_VALID_MAX,
               "Invalid AUTO RPM threshold.");
 static_assert(AUTO_RESET_ZERO_MS > 0UL &&
-              AUTO_RESET_ZERO_MS < AUTO_LAUNCH_ZERO_MS &&
-              AUTO_LAUNCH_ZERO_MS < 0x80000000UL / 1000UL,
+              AUTO_RESET_ZERO_MS < 0x80000000UL / 1000UL,
               "Invalid AUTO zero timing.");
 static_assert(RPM_ZERO_TIMEOUT_MS > 0UL && RPM_ZERO_TIMEOUT_MS < 0x80000000UL / 1000UL,
               "Invalid RPM zero timeout.");
@@ -243,5 +257,10 @@ static_assert(OLED_MAX_HOLD_MS >= 2000UL && OLED_MAX_HOLD_MS < 0x80000000UL,
               "MAX display hold must be at least 2000 ms.");
 static_assert(OLED_I2C_DATA_CHUNK_SIZE > 0U && OLED_I2C_DATA_CHUNK_SIZE <= 128U,
               "Invalid OLED I2C chunk size.");
+
+/* [新增] 設定 API 結構參數檢查。 */
+static_assert(BLE_OFF_WHILE_CHARGING <= 1U, "Charging BLE policy must be 0 or 1.");
+static_assert(SETTINGS_COMMAND_QUEUE_SIZE > 0U && SETTINGS_COMMAND_QUEUE_SIZE <= 32U,
+              "Invalid settings command queue size.");
 
 #endif

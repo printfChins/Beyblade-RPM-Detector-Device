@@ -1,0 +1,1 @@
+#define ADC_ATTEN_DB_12 12

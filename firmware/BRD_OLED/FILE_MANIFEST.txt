@@ -1,0 +1,32 @@
+BRD_OLED V1.1 完整專案檔案清單
+來源: BRD_BPX(6).zip
+模式: LOAD / AUTO，編譯期選擇
+
+BRD_OLED/BRD_OLED.ino
+BRD_OLED/README.md
+BRD_OLED/VALIDATION.md
+BRD_OLED/brd_battery.cpp
+BRD_OLED/brd_battery.h
+BRD_OLED/brd_config.h
+BRD_OLED/brd_io.cpp
+BRD_OLED/brd_io.h
+BRD_OLED/brd_measurement.cpp
+BRD_OLED/brd_measurement.h
+BRD_OLED/brd_oled.cpp
+BRD_OLED/brd_oled.h
+BRD_OLED/tests/run_host_tests.py
+BRD_OLED/tests/stubs/Arduino.h
+BRD_OLED/tests/stubs/driver/gpio.h
+BRD_OLED/tests/stubs/driver/i2c_master.h
+BRD_OLED/tests/stubs/esp_adc/adc_cali.h
+BRD_OLED/tests/stubs/esp_adc/adc_cali_scheme.h
+BRD_OLED/tests/stubs/esp_adc/adc_oneshot.h
+BRD_OLED/tests/stubs/esp_err.h
+BRD_OLED/tests/stubs/esp_idf_version.h
+BRD_OLED/tests/stubs/esp_system.h
+BRD_OLED/tests/stubs/hal/adc_types.h
+BRD_OLED/tests/stubs/soc/gpio_struct.h
+BRD_OLED/tests/test_measurement.cpp
+BRD_OLED/tests/test_oled.cpp
+BRD_OLED/tests/test_sketch.cpp
+BRD_OLED/FILE_MANIFEST.txt

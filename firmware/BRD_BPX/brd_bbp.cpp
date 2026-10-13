@@ -1,5 +1,5 @@
 /*
-    檔案位置: BRD_BBP/brd_bbp.cpp
+    檔案位置: BRD_BPX/brd_bbp.cpp
     [BRD_BBP 新增] 完整新檔，NimBLE-Arduino 2.5.1。
     callback 只入列；主 loop 建立一致快照，逐頁通知。ISR 不寫 BLE 或 NVS。
     [BRD_BBP 修正 新增] 支援只訂閱通知的上位機，補上訂閱、LOAD 與結果事件。
@@ -16,6 +16,10 @@
 #include "brd_bbp_session.h"
 #include "brd_config.h"
 #include "brd_measurement.h"
+/* [新增] 設定 API 與充電 BLE 策略。 */
+#include "brd_io.h"
+#include "brd_settings.h"
+#include "brd_settings_ble.h"
 
 struct bbp_command_t {
     uint32_t generation;
@@ -84,9 +88,13 @@ class BbpServerCallbacks : public NimBLEServerCallbacks {
         portEXIT_CRITICAL(&g_link_mux);
         if (reject) {
             server->disconnect(info.getConnHandle());
+        } else {
+            /* [新增] 只有已接受的連線才交給設定服務。 */
+            brd_settings_ble_connected(info.getConnHandle());
         }
     }
     void onDisconnect(NimBLEServer *, NimBLEConnInfo &info, int) override {
+        brd_settings_ble_disconnected(info.getConnHandle());
         portENTER_CRITICAL(&g_link_mux);
         if (g_link.handle == info.getConnHandle()) {
             g_link.generation++;
@@ -125,6 +133,11 @@ class BbpCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
             return;
         }
         if ((command == 0x51U || command == 0x74U) && !link.subscribed) {
+            increment_diagnostic(g_diagnostics.invalid_commands);
+            return;
+        }
+        /* [新增] 量測中保留 0x51 / 0x74 查詢；0x75 清除紀錄直接拒絕。 */
+        if (command == 0x75U && !brd_measurement_modifications_allowed()) {
             increment_diagnostic(g_diagnostics.invalid_commands);
             return;
         }
@@ -198,10 +211,13 @@ static void save_storage(uint32_t now_ms, bool allowed) {
         return;
     }
     g_last_storage_attempt_ms = now_ms;
+    /* [新增] Flash 保存前確認空 GPIO 佇列，暫停捕捉，避免與新一輪 RPM 重疊。 */
+    if (!brd_measurement_pause_for_settings()) { return; }
     brd_bbp::encode_storage(g_session.state(), g_storage);
     Preferences preferences;
     if (!preferences.begin(BBP_NVS_NAMESPACE, false)) {
         increment_diagnostic(g_diagnostics.storage_failures);
+        brd_measurement_resume_after_settings(false);
         return;
     }
     /* [新增] 單一版本化 blob，NVS commit 加上 CRC，不儲存 struct padding。 */
@@ -211,6 +227,7 @@ static void save_storage(uint32_t now_ms, bool allowed) {
         increment_diagnostic(g_diagnostics.storage_failures);
     }
     preferences.end();
+    brd_measurement_resume_after_settings(false);
 }
 bool brd_bbp_begin(void) {
     if (g_started) {
@@ -219,6 +236,9 @@ bool brd_bbp_begin(void) {
     if (!brd_battery_measurement_allowed()) {
         return false;
     }
+    /* [新增] 充電停用 BLE 時仍載入本機歷史，量測/曲線不依賴無線啟動。 */
+    if (!load_storage()) { return false; }
+    if (!brd_settings_bluetooth_allowed(brd_io_is_charging())) { return false; }
     uint32_t now_ms = millis();
     if (g_start_attempted &&
         static_cast<uint32_t>(now_ms - g_last_start_attempt_ms) < BBP_RETRY_INTERVAL_MS) {
@@ -226,9 +246,6 @@ bool brd_bbp_begin(void) {
     }
     g_start_attempted = true;
     g_last_start_attempt_ms = now_ms;
-    if (!load_storage()) {
-        return false;
-    }
     if (g_command_queue == nullptr) {
         g_command_queue = xQueueCreateStatic(BBP_COMMAND_QUEUE_SIZE, sizeof(bbp_command_t),
                                              g_command_queue_storage, &g_command_queue_control);
@@ -258,6 +275,8 @@ bool brd_bbp_begin(void) {
         }
         if (g_characteristic != nullptr) {
             g_characteristic->setCallbacks(&g_characteristic_callbacks);
+            /* [新增] 先建立獨立設定服務，再一起啟動 GATT。 */
+            success = brd_settings_ble_create(g_server) && success;
             success = g_server->start() && success;
         } else {
             success = false;
@@ -292,6 +311,9 @@ bool brd_bbp_begin(void) {
     return true;
 }
 void brd_bbp_stop(void) {
+    if (!g_started && !NimBLEDevice::isInitialized()) { return; }
+    /* [新增] 清除設定服務的舊連線入口，已接受的 SAVE 保留。 */
+    brd_settings_ble_stop();
     portENTER_CRITICAL(&g_link_mux);
     g_accept_connections = false;
     g_link.generation++;
@@ -392,6 +414,11 @@ void brd_bbp_update(bool storage_allowed) {
             if (!link.connected || request.generation != link.generation || request.handle != link.handle) {
                 return;
             }
+            /* [新增] 入列後若量測開始，再次丟棄清除操作；查詢不受限制。 */
+            if (request.command == 0x75U && !brd_measurement_modifications_allowed()) {
+                increment_diagnostic(g_diagnostics.invalid_commands);
+                return;
+            }
             prepare_response(request.command, link, now_ms);
             if (request.command == 0x75U) {
                 g_last_storage_attempt_ms = now_ms - BBP_RETRY_INTERVAL_MS;
@@ -438,6 +465,10 @@ void brd_bbp_update(bool storage_allowed) {
             g_server->disconnect(link.handle);
         }
     }
+}
+/* [新增] 回報實際 BLE 啟動狀態，不修改充電策略或設定保存的回覆寬限時間。 */
+bool brd_bbp_is_started(void) {
+    return g_started;
 }
 bool brd_bbp_is_connected(void) {
     return link_snapshot().connected;

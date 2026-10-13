@@ -39,6 +39,11 @@ void brd_measurement_stop(void);
 void brd_measurement_update(void);
 /* [BRD_BBP 新增] 非量測時段才允許 Flash 保存及 BLE 初始化重試。 */
 bool brd_measurement_storage_allowed(void);
+/* [新增] 設定與清除紀錄只能在非量測安全時段執行。 */
+bool brd_measurement_modifications_allowed(void);
+/* [新增] Flash 交易暫停/恢復；不清除已完成的 MAX 與凍結曲線。 */
+bool brd_measurement_pause_for_settings(void);
+void brd_measurement_resume_after_settings(bool applied);
 brd_display_t brd_measurement_get_display(void);
 brd_measurement_diagnostics_t brd_measurement_get_diagnostics(void);
 void brd_measurement_max_frame_presented(uint32_t generation);
