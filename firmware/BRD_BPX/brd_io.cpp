@@ -10,6 +10,7 @@
 
 #include "brd_config.h"
 #include "brd_io.h"
+#include "brd_capture.h"
 
 static void input_without_pull(uint8_t pin) {
     pinMode(pin, INPUT);
@@ -17,6 +18,8 @@ static void input_without_pull(uint8_t pin) {
 }
 
 void brd_io_begin(void) {
+    /* [新增] BLE 等模組初始化前先取得 IRAM GPIO ISR service。 */
+    (void)brd_capture_prepare();
     input_without_pull(RPM_IR_GPIO);
     input_without_pull(LOAD_IR_GPIO);
 
@@ -41,4 +44,13 @@ void brd_io_begin(void) {
 bool brd_io_is_charging(void) {
     /* [V0.10 恢復] 僅讀取 DET 電位，不更動上拉模式或 LED 狀態。 */
     return gpio_get_level((gpio_num_t)CHRG_DET_GPIO) == CHRG_ACTIVE_LEVEL;
+}
+
+/* [新增] IR TEST：使用原本兩組 GPIO，避免重複初始化或搶占 RPM / LOAD ISR。 */
+bool brd_io_read_ir1(void) {
+    return gpio_get_level((gpio_num_t)RPM_IR_GPIO) == IR_TEST_TRIGGER_LEVEL;
+}
+
+bool brd_io_read_ir2(void) {
+    return gpio_get_level((gpio_num_t)LOAD_IR_GPIO) == IR_TEST_TRIGGER_LEVEL;
 }

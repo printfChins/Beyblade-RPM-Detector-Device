@@ -1,0 +1,18 @@
+BRD BPX PRO V1.2 - ST7735 RGB/BGR color order correction
+Base: BRD_BPX_PRO_V1.2_NEbULA_PeakHold_3Styles.zip
+
+[修改] brd_config.h: TFT_PANEL_BGR_ORDER = 1U (BGR); can set 0U for RGB.
+[修改] brd_ui_screen.cpp: after setRotation() apply official Adafruit sendCommand ST77XX_MADCTL with same rotation bits and BGR 0x08.
+[新增] examples/ST7735_RGB_BGR_ColorTest/ST7735_RGB_BGR_ColorTest.ino: side-by-side 3-second runtime color-order diagnostic.
+[新增] tests/test_color_order.cpp: validates correct 0xA8 for rotation=1 and BGR, zero override for RGB.
+[修改] tests/stubs/Adafruit_ST7735.h: MADCTL test support.
+[修改] tests/test_adafruit_api.py: accounts for updated page router and allows official MADCTL write exclusively in panel initialization.
+
+HOST VALIDATION:
+PASS: BGR path, RGB path, panel dimensions 160x80.
+PASS: official Adafruit API and color-order path checks.
+PASS: 12 baseline regression modules + 7 UI tests + C++ syntax checks.
+PASS: standalone RGB/BGR diagnostic sketch host syntax check.
+NOT TESTED: ESP32-C3 Arduino 3.3.11 compile, actual ST7735S physical display.
+
+NOTE: Color correction is systemwide via MADCTL, not per-theme color constant reversal.

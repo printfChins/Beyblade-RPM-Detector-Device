@@ -1,0 +1,4 @@
+#ifndef TEST_ESP_INTR_ALLOC_H
+#define TEST_ESP_INTR_ALLOC_H
+#define ESP_INTR_FLAG_IRAM 1024
+#endif

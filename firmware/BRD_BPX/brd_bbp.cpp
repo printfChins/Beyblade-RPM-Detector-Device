@@ -2,8 +2,9 @@
     檔案位置: BRD_BPX/brd_bbp.cpp
     [BRD_BBP 新增] 完整新檔，NimBLE-Arduino 2.5.1。
     callback 只入列；主 loop 建立一致快照，逐頁通知。ISR 不寫 BLE 或 NVS。
-    [BRD_BBP 修正 新增] 支援只訂閱通知的上位機，補上訂閱、LOAD 與結果事件。
+    [V1.4 LOAD Notify 修正] 裝載切換即時排程 A0；保留 30 秒電量 A0 與原有結果事件。
     [刪減] 預設不再依賴上位機一定會寫入 0x51 / 0x74。
+    [BLE_LINK_STABILITY_20261025 修改] 佇列滿／Notify 失敗不再強制斷線；失敗頁面節流重試。
 */
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -15,11 +16,14 @@
 #include "brd_bbp.h"
 #include "brd_bbp_session.h"
 #include "brd_config.h"
+#include "brd_scheduler.h"
 #include "brd_measurement.h"
 /* [新增] 設定 API 與充電 BLE 策略。 */
 #include "brd_io.h"
 #include "brd_settings.h"
 #include "brd_settings_ble.h"
+/* [V1.2 新增] OTA 與既有服務共用單一 NimBLE Server。 */
+#include "brd_ota.h"
 
 struct bbp_command_t {
     uint32_t generation;
@@ -29,10 +33,10 @@ struct bbp_command_t {
 struct bbp_link_t {
     uint32_t generation;
     uint16_t handle;
-    bool connected, subscribed, overflow;
+    bool connected, subscribed;
 };
 static portMUX_TYPE g_link_mux = portMUX_INITIALIZER_UNLOCKED;
-static bbp_link_t g_link = {0U, BLE_HS_CONN_HANDLE_NONE, false, false, false};
+static bbp_link_t g_link = {0U, BLE_HS_CONN_HANDLE_NONE, false, false};
 static brd_bbp_diagnostics_t g_diagnostics = {};
 static StaticQueue_t g_command_queue_control;
 static uint8_t g_command_queue_storage[BBP_COMMAND_QUEUE_SIZE * sizeof(bbp_command_t)];
@@ -53,10 +57,15 @@ static brd_bbp::Session g_session;
 static uint8_t g_storage[brd_bbp::STORAGE_SIZE];
 static uint8_t g_tx_pages[brd_bbp::PAGE_COUNT][brd_bbp::PACKET_SIZE];
 static uint8_t g_tx_count = 0U, g_tx_index = 0U;
-static uint32_t g_tx_generation = 0U, g_last_tx_ms = 0U, g_page_started_ms = 0U;
+static uint32_t g_tx_generation = 0U, g_last_tx_ms = 0U;
+/* [新增] BLE stack 暫時拒收時保留同頁，使用時間戳節流，不忙等。 */
+static bool g_tx_retry_pending = false;
 /* [修正 新增] 主動事件只由 loop 排程，與命令回覆共用同一組傳輸快照。 */
 static uint32_t g_link_generation_seen = UINT32_MAX;
 static uint32_t g_subscribe_ms = 0U;
+/* [V1.4 BLE 30s 新增] 從最近一筆成功排入 BLE stack 的 A0 起算，避免失敗重試密集發送。 */
+static uint32_t g_last_a0_notify_ms = 0U;
+static bool g_a0_notified = false;
 static bool g_auto_a0_pending = false, g_auto_dump_pending = false;
 static bool g_last_loaded = false;
 
@@ -83,7 +92,6 @@ class BbpServerCallbacks : public NimBLEServerCallbacks {
             g_link.handle = info.getConnHandle();
             g_link.connected = true;
             g_link.subscribed = false;
-            g_link.overflow = false;
         }
         portEXIT_CRITICAL(&g_link_mux);
         if (reject) {
@@ -91,15 +99,20 @@ class BbpServerCallbacks : public NimBLEServerCallbacks {
         } else {
             /* [新增] 只有已接受的連線才交給設定服務。 */
             brd_settings_ble_connected(info.getConnHandle());
+            brd_ota_connected(info.getConnHandle());
         }
     }
-    void onDisconnect(NimBLEServer *, NimBLEConnInfo &info, int) override {
+    void onDisconnect(NimBLEServer *, NimBLEConnInfo &info, int reason) override {
         brd_settings_ble_disconnected(info.getConnHandle());
+        brd_ota_disconnected(info.getConnHandle());
         portENTER_CRITICAL(&g_link_mux);
         if (g_link.handle == info.getConnHandle()) {
+            /* [新增] callback 僅記錄 RAM；不列印、不寫 Flash、不影響 RPM ISR。 */
+            if (g_diagnostics.disconnect_events != UINT32_MAX) { g_diagnostics.disconnect_events++; }
+            g_diagnostics.last_disconnect_reason = reason;
             g_link.generation++;
             g_link.handle = BLE_HS_CONN_HANDLE_NONE;
-            g_link.connected = g_link.subscribed = g_link.overflow = false;
+            g_link.connected = g_link.subscribed = false;
         }
         portEXIT_CRITICAL(&g_link_mux);
     }
@@ -143,12 +156,11 @@ class BbpCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         }
         bbp_command_t request = {link.generation, link.handle, command};
         if (xQueueSend(g_command_queue, &request, 0) != pdTRUE) {
-            /* [新增] 不合併或覆寫輪詢命令，超出有界佇列則斷線重讀。 */
-            portENTER_CRITICAL(&g_link_mux);
-            if (g_link.generation == link.generation) {
-                g_link.overflow = true;
-            }
-            portEXIT_CRITICAL(&g_link_mux);
+            /*
+                [刪減] 佇列滿時設定斷線旗標並清除已接受命令。
+                [修改] 只拒絕這一筆超額命令；保留連線、待送頁面及既有命令。
+                BBP 沒有新增 ACK；上位機未取得回覆時可稍後重送查詢。
+            */
             increment_diagnostic(g_diagnostics.command_queue_overflows);
         }
     }
@@ -262,7 +274,9 @@ bool brd_bbp_begin(void) {
         brd_bbp_stop();
         return false;
     }
-    bool success = NimBLEDevice::setPower(BBP_TX_POWER_DBM);
+    /* [V1.2 新增] 嘗試將本機 ATT MTU 設為 247；對端不支援時仍以實際 MTU 分包。 */
+    bool success = NimBLEDevice::setMTU(OTA_PREFERRED_MTU);
+    success = NimBLEDevice::setPower(BBP_TX_POWER_DBM) && success;
     g_server = NimBLEDevice::createServer();
     if (g_server != nullptr) {
         g_server->setCallbacks(&g_server_callbacks, false);
@@ -277,6 +291,7 @@ bool brd_bbp_begin(void) {
             g_characteristic->setCallbacks(&g_characteristic_callbacks);
             /* [新增] 先建立獨立設定服務，再一起啟動 GATT。 */
             success = brd_settings_ble_create(g_server) && success;
+            success = brd_ota_create(g_server) && success;
             success = g_server->start() && success;
         } else {
             success = false;
@@ -314,14 +329,20 @@ void brd_bbp_stop(void) {
     if (!g_started && !NimBLEDevice::isInitialized()) { return; }
     /* [新增] 清除設定服務的舊連線入口，已接受的 SAVE 保留。 */
     brd_settings_ble_stop();
+    /* [V1.2 新增] 先中止 OTA / 釋放量測，再釋放 NimBLE 物件。 */
+    brd_ota_stop();
     portENTER_CRITICAL(&g_link_mux);
     g_accept_connections = false;
     g_link.generation++;
     g_link.handle = BLE_HS_CONN_HANDLE_NONE;
-    g_link.connected = g_link.subscribed = g_link.overflow = false;
+    g_link.connected = g_link.subscribed = false;
     portEXIT_CRITICAL(&g_link_mux);
     g_tx_count = g_tx_index = 0U;
+    g_tx_retry_pending = false;
     g_auto_a0_pending = g_auto_dump_pending = false;
+    /* [V1.4 BLE 30s 新增] BLE 完全停止後丟棄舊連線的電量發送計時。 */
+    g_last_a0_notify_ms = 0U;
+    g_a0_notified = false;
     g_link_generation_seen = UINT32_MAX;
     if (g_command_queue != nullptr) {
         xQueueReset(g_command_queue);
@@ -337,7 +358,7 @@ void brd_bbp_stop(void) {
     [修正 新增] 命令與主動通知使用同一個封包建立入口。
     相容模式只以 LOAD 表示 A0 狀態，純輪詢模式保留文件的電量及轉動旗標。
 */
-static void prepare_response(uint8_t command, const bbp_link_t &link, uint32_t now_ms) {
+static void prepare_response(uint8_t command, const bbp_link_t &link) {
     uint8_t percent = brd_battery_get_percent();
     uint8_t raw = static_cast<uint8_t>((static_cast<uint16_t>(percent) * 250U + 50U) / 100U);
     uint8_t flags = BBP_COMPAT_AUTONOTIFY ? (g_last_loaded ? 0x04U : 0U) :
@@ -345,7 +366,7 @@ static void prepare_response(uint8_t command, const bbp_link_t &link, uint32_t n
     g_tx_count = g_session.command(command, raw, g_uid, flags, g_tx_pages);
     g_tx_index = 0U;
     g_tx_generation = link.generation;
-    g_page_started_ms = now_ms;
+    g_tx_retry_pending = false;
     if (command == 0x51U) {
         g_auto_a0_pending = false;
     } else if (command == 0x74U) {
@@ -374,17 +395,21 @@ void brd_bbp_update(bool storage_allowed) {
         if (link.generation != g_link_generation_seen) {
             g_link_generation_seen = link.generation;
             g_subscribe_ms = now_ms;
+            /* [V1.4 BLE 30s 修改] 重新連線／訂閱重新計時並排入一次首次 A0。 */
             g_auto_a0_pending = link.connected && link.subscribed;
             g_auto_dump_pending = false;
-            g_last_loaded = loaded;
+            g_a0_notified = false;
+            g_last_a0_notify_ms = now_ms;
         }
-        if (link.connected && link.subscribed) {
-            if (loaded != g_last_loaded) {
-                g_auto_a0_pending = true;
-            }
-            if (published) {
-                g_auto_dump_pending = true;
-            }
+        if (link.connected && link.subscribed && published) {
+            g_auto_dump_pending = true;
+        }
+        /* [V1.4 LOAD Notify 新增] 僅在已連線且訂閱後，已去抖的 LOAD 狀態切換時排程一包 A0。
+           [保留] 每 30 秒電量通知、訂閱首次 A0、APP 0x51 查詢與低功耗空閒路徑。
+           [保護] 只設旗標，不在此呼叫 BLE notify；RPM / OLED 排程仍優先。
+           多次切換發生在 12 頁結果傳輸期間時，僅回報傳輸後的最新狀態。 */
+        if (loaded != g_last_loaded && link.connected && link.subscribed) {
+            g_auto_a0_pending = true;
         }
         g_last_loaded = loaded;
     }
@@ -400,14 +425,6 @@ void brd_bbp_update(bool storage_allowed) {
             increment_diagnostic(g_diagnostics.init_failures);
         }
     }
-    if (link.overflow) {
-        g_tx_count = 0U;
-        xQueueReset(g_command_queue);
-        if (link.connected) {
-            g_server->disconnect(link.handle);
-        }
-        return;
-    }
     if (g_tx_count == 0U) {
         bbp_command_t request;
         if (xQueueReceive(g_command_queue, &request, 0) == pdTRUE) {
@@ -419,7 +436,7 @@ void brd_bbp_update(bool storage_allowed) {
                 increment_diagnostic(g_diagnostics.invalid_commands);
                 return;
             }
-            prepare_response(request.command, link, now_ms);
+            prepare_response(request.command, link);
             if (request.command == 0x75U) {
                 g_last_storage_attempt_ms = now_ms - BBP_RETRY_INTERVAL_MS;
                 save_storage(now_ms, storage_allowed);
@@ -435,14 +452,20 @@ void brd_bbp_update(bool storage_allowed) {
         return;
     }
     if (BBP_COMPAT_AUTONOTIFY && g_tx_count == 0U && link.connected && link.subscribed) {
-        if (g_auto_a0_pending) {
-            prepare_response(0x51U, link, now_ms);
-        } else if (g_auto_dump_pending) {
-            prepare_response(0x74U, link, now_ms);
+        /* [V1.4 LOAD Notify 修正] 已去抖裝載變化與 30 秒定期電量共用 A0。
+           發射曲線仍優先；不可在既有 12 頁快照中插入狀態封包。
+           忙碌期間多次切換只補送最新 LOAD；空閒不新增輪詢或 Notify。 */
+        if (g_auto_dump_pending) {
+            prepare_response(0x74U, link);
+        } else if (g_auto_a0_pending ||
+                   (g_a0_notified &&
+                    static_cast<uint32_t>(now_ms - g_last_a0_notify_ms) >= BBP_BATTERY_NOTIFY_INTERVAL_MS)) {
+            prepare_response(0x51U, link);
         }
     }
+    const uint32_t notify_interval = g_tx_retry_pending ? BBP_NOTIFY_RETRY_INTERVAL_MS : BBP_NOTIFY_INTERVAL_MS;
     if (g_tx_count == 0U ||
-        static_cast<uint32_t>(now_ms - g_last_tx_ms) < BBP_NOTIFY_INTERVAL_MS) {
+        static_cast<uint32_t>(now_ms - g_last_tx_ms) < notify_interval) {
         return;
     }
     link = link_snapshot();
@@ -450,20 +473,28 @@ void brd_bbp_update(bool storage_allowed) {
         g_tx_count = 0U;
         return;
     }
+    if (!brd_scheduler_take_notify_slot()) { return; }
     g_last_tx_ms = now_ms;
     if (g_characteristic->notify(g_tx_pages[g_tx_index], brd_bbp::PACKET_SIZE, link.handle)) {
         /* [新增] true 只是交給 BLE stack，不代表應用層 ACK。 */
+        /* [V1.4 BLE 30s 新增] A0（主動或 0x51 回覆）成功時才重設定時器。
+           不能在 prepare_response() 時起算，否則 Notify 失敗會延後資料刷新。 */
+        if (g_tx_pages[g_tx_index][0] == 0xA0U) {
+            g_last_a0_notify_ms = now_ms;
+            g_a0_notified = true;
+        }
+        g_tx_retry_pending = false;
         g_tx_index++;
-        g_page_started_ms = now_ms;
         if (g_tx_index == g_tx_count) {
             g_tx_count = 0U;
         }
     } else {
         increment_diagnostic(g_diagnostics.notify_failures);
-        if (static_cast<uint32_t>(now_ms - g_page_started_ms) >= BBP_NOTIFY_TIMEOUT_MS) {
-            g_tx_count = 0U;
-            g_server->disconnect(link.handle);
-        }
+        /*
+            [刪減] 1.5 秒逾時強制斷線。RPM 優先造成的等待不代表 BLE 已失聯。
+            [修改] 同一快照／同一頁每 100ms 最多重試一次，成功才前進。
+        */
+        g_tx_retry_pending = true;
     }
 }
 /* [新增] 回報實際 BLE 啟動狀態，不修改充電策略或設定保存的回覆寬限時間。 */
@@ -480,6 +511,10 @@ bool brd_bbp_prepare_restart(void) {
     }
     save_storage(millis(), true);
     return !g_session.dirty();
+}
+bool brd_bbp_ota_ready(void) {
+    /* [修正 新增] 包含 600ms 發布延遲與 NVS 寫入重試期間。 */
+    return g_storage_loaded && !g_session.pending() && !g_session.dirty();
 }
 brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void) {
     portENTER_CRITICAL(&g_link_mux);

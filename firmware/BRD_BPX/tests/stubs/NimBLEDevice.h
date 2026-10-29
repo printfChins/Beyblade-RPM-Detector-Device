@@ -8,13 +8,16 @@
 #define BLE_HS_CONN_HANDLE_NONE 0xFFFFU
 namespace NIMBLE_PROPERTY { constexpr uint16_t READ=1U, WRITE=2U, WRITE_NR=4U, NOTIFY=8U; }
 extern bool test_notify_ok;
+inline unsigned test_notify_attempts=0U;
 class NimBLECharacteristic;
 class NimBLEServer;
+inline uint16_t test_negotiated_mtu = 23U;
 class NimBLEConnInfo {
     uint16_t handle_;
 public:
     explicit NimBLEConnInfo(uint16_t handle) : handle_(handle) {}
     uint16_t getConnHandle() const { return handle_; }
+    uint16_t getMTU() const { return test_negotiated_mtu; }
 };
 class NimBLECharacteristicCallbacks {
 public:
@@ -39,6 +42,7 @@ public:
     std::vector<uint8_t> getValue() const { return value_; }
     void setValue(const uint8_t *bytes,size_t size) { value_.assign(bytes,bytes+size); }
     bool notify(const uint8_t *bytes,size_t size,uint16_t) const {
+        test_notify_attempts++;
         if(!test_notify_ok) { return false; }
         sent.emplace_back(bytes,bytes+size); return true;
     }
@@ -56,9 +60,11 @@ class NimBLEServer {
     std::map<std::string,std::unique_ptr<NimBLEService>> services_;
 public:
     NimBLEServerCallbacks *callbacks=nullptr;
+    /* [新增] 記錄韌體要求斷線；GAP 完成事件由各測試明確注入。 */
+    std::vector<uint16_t> disconnect_requests;
     void setCallbacks(NimBLEServerCallbacks *value,bool) { callbacks=value; }
     void advertiseOnDisconnect(bool) {}
-    void disconnect(uint16_t) {}
+    void disconnect(uint16_t handle) { disconnect_requests.push_back(handle); }
     NimBLEService *createService(const char *uuid) {
         auto service=std::make_unique<NimBLEService>(); auto *result=service.get();
         services_[uuid]=std::move(service); return result;
@@ -87,7 +93,9 @@ class NimBLEDevice {
     inline static NimBLEAdvertising advertising_;
 public:
     static bool init(const char *) { initialized_=true; return true; }
+    static NimBLEServer *getServer() { return server_.get(); }
     static bool setPower(int) { return true; }
+    static bool setMTU(uint16_t) { return true; }
     static NimBLEServer *createServer() { server_=std::make_unique<NimBLEServer>(); return server_.get(); }
     static NimBLEAdvertising *getAdvertising() { return &advertising_; }
     static bool isInitialized() { return initialized_; }

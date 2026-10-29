@@ -21,6 +21,9 @@ static brd_settings::Manager g_model(g_defaults, RPM_VALID_MAX);
 static bool g_write_attempted = false;
 static uint32_t g_last_write_attempt_ms = 0U;
 static bool g_completion_pending = false;
+/* [新增] Flash 已保存但新 RPM 正在處理時，延後套用，避免改到當次量測。 */
+static bool g_saved_waiting_apply = false;
+static void complete_success(void) { g_model.complete_save(true); }
 /* [新增] 斷線時 pending snapshot 保留，完成後再丟棄舊連線草稿。 */
 static bool g_discard_after_save = false;
 static uint8_t g_completion[brd_settings::RESPONSE_SIZE] = {};
@@ -31,6 +34,7 @@ void brd_settings_begin(void) {
     g_model.restore(g_defaults, false);
     g_write_attempted = g_completion_pending = g_charge_grace_active = false;
     g_discard_after_save = false;
+    g_saved_waiting_apply = false;
     Preferences preferences;
     if (!preferences.begin(SETTINGS_NVS_NAMESPACE, false)) { return; }
     uint8_t blob[brd_settings::STORAGE_SIZE];
@@ -59,11 +63,27 @@ void brd_settings_discard_draft(void) {
 void brd_settings_update(void) {
     if (!g_model.pending() || !brd_battery_measurement_allowed()) { return; }
     uint32_t now_ms = millis();
+    if (g_saved_waiting_apply) {
+        if (!brd_measurement_apply_settings(complete_success)) {
+            /* [新增] ADC 停機可能釋放交易；恢復後重新取得安全窗口，下輪套用。 */
+            (void)brd_measurement_pause_for_settings();
+            return;
+        }
+        g_saved_waiting_apply = false;
+        brd_settings::make_response(g_model, brd_settings::CMD_SAVE, g_model.save_sequence(),
+                                   0U, g_model.last_save_status(), g_completion);
+        g_completion_pending = true;
+        if (g_discard_after_save) { (void)g_model.discard_staged(); g_discard_after_save = false; }
+        if (g_model.active().charging_ble_off != 0U && brd_io_is_charging()) {
+            g_charge_grace_active = true; g_charge_grace_start_ms = now_ms;
+        }
+        return;
+    }
     if (g_write_attempted &&
         static_cast<uint32_t>(now_ms - g_last_write_attempt_ms) < SETTINGS_WRITE_INTERVAL_MS) {
         return;
     }
-    /* [新增] 在同一個 critical section 確認安全狀態/空佇列並暫停捕捉。 */
+    /* [修改] 確認安全窗口後取得設定交易，持續捕捉 Flash 期間的新事件。 */
     if (!brd_measurement_pause_for_settings()) { return; }
     g_write_attempted = true;
     g_last_write_attempt_ms = now_ms;
@@ -79,13 +99,19 @@ void brd_settings_update(void) {
                   memcmp(blob, check, sizeof(blob)) == 0;
         preferences.end();
     }
-    g_model.complete_save(success);
+    if (success) {
+        g_saved_waiting_apply = true;
+        /* [修改] 原子套用若被新事件阻擋，保留交易並下輪再試，ISR 仍持續擷取。 */
+        brd_settings_update();
+        return;
+    }
+    g_model.complete_save(false);
     if (g_discard_after_save) {
         /* [修正] 失敗也不能讓新連線取得舊連線的未成功草稿。 */
         (void)g_model.discard_staged();
         g_discard_after_save = false;
     }
-    brd_measurement_resume_after_settings(success);
+    brd_measurement_resume_after_settings(false);
     brd_settings::make_response(g_model, brd_settings::CMD_SAVE, g_model.save_sequence(),
                                0U, g_model.last_save_status(), g_completion);
     g_completion_pending = true;

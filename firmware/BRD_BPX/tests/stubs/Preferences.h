@@ -7,6 +7,7 @@
 extern std::map<std::string, std::vector<uint8_t>> test_nvs;
 extern unsigned test_flash_writes;
 extern bool test_flash_fail;
+inline void (*test_nvs_write_hook)() = nullptr;
 class Preferences {
     std::string prefix_;
 public:
@@ -21,6 +22,7 @@ public:
     }
     size_t putBytes(const char *key, const void *data, size_t size) {
         test_flash_writes++;
+        if (test_nvs_write_hook) { auto hook=test_nvs_write_hook; test_nvs_write_hook=nullptr; hook(); }
         if (test_flash_fail) { return 0U; }
         const auto *bytes = static_cast<const uint8_t *>(data);
         test_nvs[prefix_ + key] = std::vector<uint8_t>(bytes, bytes + size);

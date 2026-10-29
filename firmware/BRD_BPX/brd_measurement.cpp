@@ -24,10 +24,13 @@
 #include "brd_measurement.h"
 /* [新增] 四項參數讀取執行時設定，ISR 不存取設定模型。 */
 #include "brd_settings.h"
+#include "brd_capture.h"
+/* [修改] RPM 為最高優先；HOLD 只限制顯示，NVS 交易不停止擷取。 */
 
 struct input_edge_t {
     uint32_t time_us;
     int level;
+    uint32_t generation;
 };
 
 static portMUX_TYPE g_input_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -40,6 +43,9 @@ static volatile uint16_t g_load_tail = 0U;
 static volatile bool g_rpm_overflow = false;
 static volatile bool g_load_overflow = false;
 static volatile bool g_input_capture = false;
+static volatile uint32_t g_rpm_generation = 0U;
+static uint32_t g_processed_rpm_generation = 0U;
+static bool g_capture_tainted = false;
 /* [修改] -1=尚未選定；HIGH=正緣參考；LOW=負緣參考。ISR 選定後只收參考極性，降低 Queue 負載。 */
 static volatile int g_rpm_reference_level = -1;
 static volatile int g_isr_load_level = LOW;
@@ -53,6 +59,12 @@ static bool g_measurement_enabled = false;
 static bool g_modification_window = true;
 static bool g_settings_paused = false;
 static bool g_measurement_stopped = false;
+static bool g_maintenance_paused = false;
+static bool g_capture_fault = false;
+/* [新增] 尾段脈衝不重複計次，新 LOAD 或安靜 300ms 可重新武裝。 */
+static bool g_rearm_wait = false;
+static bool g_rearm_seen_low = false;
+static uint32_t g_rearm_activity_us = 0U;
 static bool g_measurement_interrupts_attached = false;
 static bool g_load_interrupt_attached = false;
 static brd_state_t g_state = BRD_STATE_WAIT_LOAD;
@@ -103,10 +115,17 @@ static void update_modification_window(void) {
 }
 
 static void IRAM_ATTR rpm_ir_isr(void) {
-    uint32_t edge_us = micros();
+    uint32_t edge_us = brd_capture_time_us();
     int level = (int)((GPIO.in.val >> RPM_IR_GPIO) & 1U);
     portENTER_CRITICAL_ISR(&g_input_mux);
-    if (g_input_capture && (g_rpm_reference_level < 0 || level == g_rpm_reference_level)) {
+    /* [新增] 在篩選前記錄是否真的進入 ISR。 */
+    if (g_diagnostics.rpm_isr_entries != UINT32_MAX) { g_diagnostics.rpm_isr_entries++; }
+    g_diagnostics.last_rpm_isr_us = edge_us;
+    if (!g_input_capture) {
+        if (g_diagnostics.rpm_capture_disabled != UINT32_MAX) { g_diagnostics.rpm_capture_disabled++; }
+    } else if (g_rpm_reference_level >= 0 && level != g_rpm_reference_level) {
+        if (g_diagnostics.rpm_polarity_filtered != UINT32_MAX) { g_diagnostics.rpm_polarity_filtered++; }
+    } else {
         /*
             [修改] 尚未選定參考時先收正、負緣，讓主迴圈依事件時間決定真正的第一個邊沿。
             一旦參考極性確定，ISR 只收同極性事件，避免 CHANGE 讓 Queue 負載加倍。
@@ -115,16 +134,22 @@ static void IRAM_ATTR rpm_ir_isr(void) {
         if (next != g_rpm_tail) {
             g_rpm_queue[g_rpm_head].time_us = edge_us;
             g_rpm_queue[g_rpm_head].level = level;
+            g_rpm_queue[g_rpm_head].generation = g_rpm_generation;
             g_rpm_head = next;
+            if (g_diagnostics.rpm_events_enqueued != UINT32_MAX) { g_diagnostics.rpm_events_enqueued++; }
+            uint32_t depth = (g_rpm_head + RPM_ISR_QUEUE_SIZE - g_rpm_tail) % RPM_ISR_QUEUE_SIZE;
+            if (depth > g_diagnostics.max_rpm_queue_depth) { g_diagnostics.max_rpm_queue_depth = depth; }
         } else {
+            if (!g_rpm_overflow) { g_rpm_generation++; }
             g_rpm_overflow = true;
+            if (g_diagnostics.rpm_events_dropped != UINT32_MAX) { g_diagnostics.rpm_events_dropped++; }
         }
     }
     portEXIT_CRITICAL_ISR(&g_input_mux);
 }
 
 static void IRAM_ATTR load_ir_isr(void) {
-    uint32_t edge_us = micros();
+    uint32_t edge_us = brd_capture_time_us();
     int level = (int)((GPIO.in.val >> LOAD_IR_GPIO) & 1U);
     portENTER_CRITICAL_ISR(&g_input_mux);
     if (g_input_capture) {
@@ -172,6 +197,7 @@ static void restart_input_capture(void) {
         g_load_stable = LOAD_ACTIVE_LEVEL;
     }
     g_load_candidate_us = micros();
+    g_processed_rpm_generation = g_rpm_generation;
     g_input_capture = true;
     portEXIT_CRITICAL(&g_input_mux);
 }
@@ -192,6 +218,8 @@ static void reset_measurement(bool loaded) {
     g_current_rpm = 0U;
     g_max_rpm = 0U;
     g_auto_launch_candidate = false;
+    g_rearm_wait = false;
+    g_capture_tainted = false;
     g_state = (loaded || !measurement_uses_load()) ? BRD_STATE_LOADED_READY : BRD_STATE_WAIT_LOAD;
     g_show_max = false;
     g_display_max = 0U;
@@ -210,19 +238,30 @@ static void finish_measurement(void) {
         return;
     }
 
-    /* [BRD_BBP 新增] 凍結完整曲線，發布及 Flash 留給主 loop。 */
-    brd_bbp_capture_finish();
-    g_display_max = g_max_rpm;
-    g_show_max = true;
+    /* [修改] 已知事件遺失時，不把不完整 MAX/曲線發布成有效結果。 */
+    if (g_capture_tainted) {
+        brd_bbp_capture_abort();
+        increment_counter(g_diagnostics.invalid_measurements);
+        g_show_max = false;
+        g_max_lock = false;
+    } else {
+        brd_bbp_capture_finish();
+        g_display_max = g_max_rpm;
+        g_show_max = true;
+        g_max_lock = true;
+    }
     g_display_generation++;
-    g_max_lock = true;
     g_max_frame_seen = false;
     g_max_lock_start_ms = millis();
     g_state = BRD_STATE_WAIT_LOAD;
     g_current_rpm = 0U;
     g_period_valid[LOW] = g_period_valid[HIGH] = false;
     g_quiet_expired = true;
-    disable_input_capture();
+    /* [刪減] 結束量測不再 disable_input_capture，尾段事件仍持續取走。 */
+    g_rearm_wait = true;
+    g_rearm_seen_low = g_load_stable != LOAD_ACTIVE_LEVEL;
+    g_rearm_activity_us = g_last_activity_us;
+    g_rpm_reference_level = -1;
     update_modification_window();
 }
 
@@ -248,6 +287,13 @@ static void check_launch_threshold(uint32_t event_us) {
 }
 
 static void process_rpm_edge(const input_edge_t &edge) {
+    if (edge.generation != g_processed_rpm_generation) {
+        /* [新增] 跨遺失區段只重建基準，不把兩圈以上間隔誤算成低 RPM。 */
+        g_period_valid[LOW] = g_period_valid[HIGH] = false;
+        g_processed_rpm_generation = edge.generation;
+        if (g_state == BRD_STATE_SPINNING_LOADED) { g_capture_tainted = true; }
+    }
+    if (g_rearm_wait) { g_rearm_activity_us = edge.time_us; return; }
     /* [修改] LOAD 模式在未完成裝載啟動前完全忽略 RPM。 */
     if (g_state == BRD_STATE_WAIT_LOAD) {
         if (measurement_uses_load()) {
@@ -256,7 +302,7 @@ static void process_rpm_edge(const input_edge_t &edge) {
         g_state = BRD_STATE_LOADED_READY;
     }
     if (g_state == BRD_STATE_LOADED_READY) {
-        if (!measurement_uses_load() && g_show_max) {
+        if (g_show_max || g_capture_tainted) {
             reset_measurement(true);
         }
         g_state = BRD_STATE_SPINNING_LOADED;
@@ -344,6 +390,11 @@ static void handle_load_change(uint32_t confirmed_us) {
 
     g_load_stable = g_load_raw;
     increment_counter(g_diagnostics.load_stable_transitions);
+    if (g_rearm_wait) {
+        if (g_load_stable != LOAD_ACTIVE_LEVEL) { g_rearm_seen_low = true; }
+        else if (g_rearm_seen_low) { reset_measurement(true); }
+        return;
+    }
 
     /*
         [修正] RPM 已開始後，LOAD 只更新穩定顯示狀態，不得再重置量測。
@@ -377,7 +428,8 @@ enum input_timer_t {
     INPUT_TIMER_ZERO,
     INPUT_TIMER_IDLE,
     INPUT_TIMER_EMPTY_LAUNCH,
-    INPUT_TIMER_AUTO_RESET
+    INPUT_TIMER_AUTO_RESET,
+    INPUT_TIMER_REARM
 };
 
 static void consider_timer(uint32_t deadline, input_timer_t type, uint32_t until_us,
@@ -396,15 +448,19 @@ static void advance_input_time(uint32_t until_us, bool include_equal_timeouts,
         [修改] 已達有效門檻的 AUTO 與 LOAD 共用無脈衝歸零備援。
         [保留] AUTO 未達門檻時，250ms 無有效 RPM 重置，不發布 MAX。
     */
-    for (uint8_t pass = 0U; pass < 6U && !g_max_lock; pass++) {
+    for (uint8_t pass = 0U; pass < 6U; pass++) {
         input_timer_t timer = INPUT_TIMER_NONE;
         uint32_t deadline = 0UL;
+        if (g_rearm_wait && !suppress_rpm_timeouts) {
+            consider_timer(g_rearm_activity_us + RPM_ZERO_TIMEOUT_MS * 1000UL,
+                           INPUT_TIMER_REARM, until_us, include_equal_timeouts, timer, deadline);
+        }
         if (measurement_uses_load()) {
             if (g_load_raw != g_load_stable) {
                 consider_timer(static_cast<uint32_t>(g_load_candidate_us + LOAD_IR_DEBOUNCE_US),
                                INPUT_TIMER_LOAD, until_us, true, timer, deadline);
             }
-            if (!suppress_rpm_timeouts) {
+            if (!suppress_rpm_timeouts && !g_rearm_wait) {
                 bool spinning = g_state == BRD_STATE_SPINNING_LOADED ||
                                 g_state == BRD_STATE_SPINNING_LAUNCHED;
                 if (spinning && !g_quiet_expired) {
@@ -420,7 +476,7 @@ static void advance_input_time(uint32_t until_us, bool include_equal_timeouts,
                                    INPUT_TIMER_EMPTY_LAUNCH, until_us, include_equal_timeouts, timer, deadline);
                 }
             }
-        } else if (!suppress_rpm_timeouts && g_state == BRD_STATE_SPINNING_LOADED) {
+        } else if (!suppress_rpm_timeouts && !g_rearm_wait && g_state == BRD_STATE_SPINNING_LOADED) {
             if (!g_quiet_expired && g_has_valid_rpm) {
                 uint32_t zero_ms = g_auto_launch_candidate ? RPM_ZERO_TIMEOUT_MS : AUTO_RESET_ZERO_MS;
                 input_timer_t zero_type = g_auto_launch_candidate ? INPUT_TIMER_ZERO : INPUT_TIMER_AUTO_RESET;
@@ -433,7 +489,18 @@ static void advance_input_time(uint32_t until_us, bool include_equal_timeouts,
             }
         }
         if (timer == INPUT_TIMER_NONE) { return; }
-        if (timer == INPUT_TIMER_LOAD) {
+        if (timer == INPUT_TIMER_REARM) {
+            g_rearm_wait = false;
+            brd_bbp_capture_reset();
+            g_state = (!measurement_uses_load() || g_load_stable == LOAD_ACTIVE_LEVEL) ?
+                      BRD_STATE_LOADED_READY : BRD_STATE_WAIT_LOAD;
+            g_period_valid[LOW] = g_period_valid[HIGH] = false;
+            g_rpm_reference_level = -1;
+            g_quiet_expired = true;
+            g_has_valid_rpm = false;
+            g_current_rpm = g_max_rpm = 0U;
+            g_auto_launch_candidate = false;
+        } else if (timer == INPUT_TIMER_LOAD) {
             handle_load_change(deadline);
         } else if (timer == INPUT_TIMER_ZERO) {
             g_current_rpm = 0U;
@@ -451,7 +518,7 @@ static void advance_input_time(uint32_t until_us, bool include_equal_timeouts,
 }
 
 static void snapshot_inputs(uint16_t &rpm_count, uint16_t &load_count, uint32_t &now_us,
-                            bool &rpm_overflow, bool &load_overflow) {
+                            bool &rpm_overflow, bool &load_overflow, uint32_t &activity_us) {
     rpm_count = 0U;
     load_count = 0U;
     portENTER_CRITICAL(&g_input_mux);
@@ -459,14 +526,31 @@ static void snapshot_inputs(uint16_t &rpm_count, uint16_t &load_count, uint32_t 
     load_overflow = measurement_uses_load() ? g_load_overflow : false;
     g_rpm_overflow = false;
     g_load_overflow = false;
-    while (g_rpm_tail != g_rpm_head && rpm_count < RPM_ISR_QUEUE_SIZE) {
-        g_rpm_batch[rpm_count].time_us = g_rpm_queue[g_rpm_tail].time_us;
-        g_rpm_batch[rpm_count].level = g_rpm_queue[g_rpm_tail].level;
-        rpm_count++;
-        g_rpm_tail = (uint16_t)((g_rpm_tail + 1U) % RPM_ISR_QUEUE_SIZE);
+    /* [修改] 先封存本輪 head；每 16 筆釋放 critical section，ISR 可繼續擷取。 */
+    uint16_t rpm_end = g_rpm_head;
+    uint16_t load_end = g_load_head;
+    now_us = micros();
+    activity_us = g_diagnostics.last_rpm_isr_us;
+    bool missing_load = false;
+    int missing_level = LOW;
+    if (measurement_uses_load() && !load_overflow) {
+        missing_level = (int)((GPIO.in.val >> LOAD_IR_GPIO) & 1U);
+        missing_load = missing_level != g_isr_load_level;
+        if (missing_load) { g_isr_load_level = missing_level; }
+    }
+    while (g_rpm_tail != rpm_end && rpm_count < RPM_ISR_QUEUE_SIZE) {
+        for (uint16_t n = 0U; n < RPM_SNAPSHOT_CHUNK_SIZE && g_rpm_tail != rpm_end; n++) {
+            g_rpm_batch[rpm_count].time_us = g_rpm_queue[g_rpm_tail].time_us;
+            g_rpm_batch[rpm_count].level = g_rpm_queue[g_rpm_tail].level;
+            g_rpm_batch[rpm_count].generation = g_rpm_queue[g_rpm_tail].generation;
+            rpm_count++;
+            g_rpm_tail = (uint16_t)((g_rpm_tail + 1U) % RPM_ISR_QUEUE_SIZE);
+        }
+        portEXIT_CRITICAL(&g_input_mux);
+        portENTER_CRITICAL(&g_input_mux);
     }
     if (measurement_uses_load()) {
-        while (g_load_tail != g_load_head && load_count < LOAD_ISR_QUEUE_SIZE - 1U) {
+        while (g_load_tail != load_end && load_count < LOAD_ISR_QUEUE_SIZE - 1U) {
             g_load_batch[load_count].time_us = g_load_queue[g_load_tail].time_us;
             g_load_batch[load_count].level = g_load_queue[g_load_tail].level;
             load_count++;
@@ -476,16 +560,10 @@ static void snapshot_inputs(uint16_t &rpm_count, uint16_t &load_count, uint32_t 
         /* [新增] AUTO 不累積、不處理 LOAD 事件。 */
         g_load_tail = g_load_head;
     }
-    now_us = micros();
-    if (measurement_uses_load()) {
-        int actual_level = (int)((GPIO.in.val >> LOAD_IR_GPIO) & 1U);
-        if (actual_level != g_isr_load_level && !load_overflow) {
-            /* [V0.12 新增] 補捉尚未送達的 ISR；補捉時間起重新完整去抖。 */
-            g_load_batch[load_count].time_us = now_us;
-            g_load_batch[load_count].level = actual_level;
-            load_count++;
-            g_isr_load_level = actual_level;
-        }
+    if (missing_load) {
+        g_load_batch[load_count].time_us = now_us;
+        g_load_batch[load_count].level = missing_level;
+        load_count++;
     }
     portEXIT_CRITICAL(&g_input_mux);
 }
@@ -493,17 +571,31 @@ static void snapshot_inputs(uint16_t &rpm_count, uint16_t &load_count, uint32_t 
 void brd_measurement_begin(void) {
     /* [V0.12 新增] 允許主 loop 重複呼叫；ADC 故障恢復時才重新建立量測。 */
     if (g_measurement_enabled) {
+        portENTER_CRITICAL(&g_input_mux);
+        if (!g_input_capture && !g_maintenance_paused) {
+            g_input_capture = true;
+            increment_counter(g_diagnostics.capture_recoveries);
+        }
+        portEXIT_CRITICAL(&g_input_mux);
         return;
     }
     g_measurement_stopped = false;
     reset_measurement(!measurement_uses_load());
     g_load_stable = measurement_uses_load() ? LOW : LOAD_ACTIVE_LEVEL;
     restart_input_capture();
-    attachInterrupt(digitalPinToInterrupt(RPM_IR_GPIO), rpm_ir_isr, RPM_IR_TRIGGER_EDGE);
-    g_measurement_interrupts_attached = true;
+    g_measurement_interrupts_attached = brd_capture_attach_rpm(rpm_ir_isr);
+    if (!g_measurement_interrupts_attached) {
+        disable_input_capture(); g_capture_fault = true;
+        increment_counter(g_diagnostics.capture_init_failures); return;
+    }
+    g_capture_fault = false;
     if (measurement_uses_load()) {
-        attachInterrupt(digitalPinToInterrupt(LOAD_IR_GPIO), load_ir_isr, LOAD_IR_TRIGGER_EDGE);
-        g_load_interrupt_attached = true;
+        g_load_interrupt_attached = brd_capture_attach_load(load_ir_isr);
+        if (!g_load_interrupt_attached) {
+            brd_capture_detach_rpm(); g_measurement_interrupts_attached = false;
+            disable_input_capture(); g_capture_fault = true;
+            increment_counter(g_diagnostics.capture_init_failures); return;
+        }
     } else {
         g_load_interrupt_attached = false;
     }
@@ -517,13 +609,14 @@ void brd_measurement_stop(void) {
     }
     g_measurement_stopped = true;
     g_measurement_enabled = false;
+    g_settings_paused = g_maintenance_paused = false;
     disable_input_capture();
     if (g_measurement_interrupts_attached) {
-        detachInterrupt(digitalPinToInterrupt(RPM_IR_GPIO));
+        brd_capture_detach_rpm();
         g_measurement_interrupts_attached = false;
     }
     if (g_load_interrupt_attached) {
-        detachInterrupt(digitalPinToInterrupt(LOAD_IR_GPIO));
+        brd_capture_detach_load();
         g_load_interrupt_attached = false;
     }
     reset_measurement(!measurement_uses_load());
@@ -537,27 +630,10 @@ void brd_measurement_update(void) {
     if (!g_measurement_enabled) {
         return;
     }
-    if (g_max_lock) {
-        if ((uint32_t)(millis() - g_max_lock_start_ms) < OLED_MAX_HOLD_MS) {
-            return;
-        }
+    if (g_maintenance_paused) { return; }
+    /* [修改] HOLD 到期只變更顯示，不清空事件或停止量測。 */
+    if (g_max_lock && (uint32_t)(millis() - g_max_lock_start_ms) >= OLED_MAX_HOLD_MS) {
         g_max_lock = false;
-        /* [修改] HOLD 結束代表下一次量測週期，重新等待第一個正/負緣決定參考。 */
-        g_rpm_reference_level = -1;
-        if (measurement_uses_load()) {
-            g_load_stable = LOW;
-        } else {
-            /* [新增] AUTO HOLD 結束後回邏輯 READY；MAX 保留到下一次 RPM 啟動。 */
-            g_state = BRD_STATE_LOADED_READY;
-            g_current_rpm = 0U;
-            g_has_valid_rpm = false;
-            g_period_valid[LOW] = g_period_valid[HIGH] = false;
-            g_quiet_expired = true;
-            g_auto_launch_candidate = false;
-        }
-        update_modification_window();
-        restart_input_capture();
-        return;
     }
 
     uint16_t rpm_count;
@@ -565,7 +641,8 @@ void brd_measurement_update(void) {
     uint32_t now_us;
     bool rpm_overflow;
     bool load_overflow;
-    snapshot_inputs(rpm_count, load_count, now_us, rpm_overflow, load_overflow);
+    uint32_t activity_us;
+    snapshot_inputs(rpm_count, load_count, now_us, rpm_overflow, load_overflow, activity_us);
     if (rpm_overflow) {
         /*
             [修正] RPM Queue overflow 不再 abort 整次 Capture。
@@ -595,15 +672,12 @@ void brd_measurement_update(void) {
 
     uint16_t rpm_index = 0U;
     uint16_t load_index = 0U;
-    while ((rpm_index < rpm_count || load_index < load_count) && !g_max_lock) {
+    while (rpm_index < rpm_count || load_index < load_count) {
         bool use_rpm = rpm_index < rpm_count &&
             (load_index >= load_count ||
              !time_before(g_load_batch[load_index].time_us, g_rpm_batch[rpm_index].time_us));
         uint32_t event_us = use_rpm ? g_rpm_batch[rpm_index].time_us : g_load_batch[load_index].time_us;
         advance_input_time(event_us, false, rpm_overflow);
-        if (g_max_lock) {
-            break;
-        }
         if (use_rpm) {
             process_rpm_edge(g_rpm_batch[rpm_index++]);
         } else {
@@ -614,7 +688,10 @@ void brd_measurement_update(void) {
             }
         }
     }
-    if (!g_max_lock && rpm_overflow) {
+    if (rpm_overflow) {
+        /* [修正] 遺失尾段事件仍表示活動中，不得以舊 FIFO 尾端誤判安靜。 */
+        if (g_rearm_wait) { g_rearm_activity_us = activity_us; }
+        if (g_state == BRD_STATE_SPINNING_LOADED) { g_capture_tainted = true; }
         /*
             [修正] Queue overflow 代表中間可能遺失參考邊沿，不能拿 overflow 前最後一個
             參考邊沿與 overflow 後第一個同極性邊沿直接計算 RPM。
@@ -627,9 +704,7 @@ void brd_measurement_update(void) {
             g_quiet_expired = false;
         }
     }
-    if (!g_max_lock) {
-        advance_input_time(now_us, true, false);
-    }
+    advance_input_time(now_us, true, false);
     update_modification_window();
 }
 
@@ -642,11 +717,16 @@ brd_display_t brd_measurement_get_display(void) {
     display.value = g_show_max ? g_display_max : g_current_rpm;
     display.generation = g_display_generation;
     display.hold_active = g_show_max && g_max_lock;
+    display.input_fault = g_capture_fault;
+    display.sample_loss = g_capture_tainted;
     return display;
 }
 
 brd_measurement_diagnostics_t brd_measurement_get_diagnostics(void) {
-    return g_diagnostics;
+    portENTER_CRITICAL(&g_input_mux);
+    brd_measurement_diagnostics_t result = g_diagnostics;
+    portEXIT_CRITICAL(&g_input_mux);
+    return result;
 }
 
 void brd_measurement_max_frame_presented(uint32_t generation) {
@@ -655,9 +735,8 @@ void brd_measurement_max_frame_presented(uint32_t generation) {
         return;
     }
     g_max_frame_seen = true;
-    g_max_lock = true;
-    g_max_lock_start_ms = millis();
-    disable_input_capture();
+    /* [刪減] OLED 回報不再控制輸入捕捉，也不讓過期 HOLD 復活。 */
+    if (g_max_lock) { g_max_lock_start_ms = millis(); }
 }
 
 /* [修改] LOAD 維持 WAIT_LOAD；AUTO 的 READY 亦屬非量測安全時段。 */
@@ -679,36 +758,81 @@ bool brd_measurement_pause_for_settings(void) {
     bool allowed = g_modification_window && !g_rpm_overflow && !g_load_overflow &&
                    g_rpm_head == g_rpm_tail && g_load_head == g_load_tail && !g_settings_paused;
     if (allowed) {
+        /* [修改] 一般 NVS 只取得設定交易，不停止 IRAM ISR。 */
         g_settings_paused = true;
+    }
+    portEXIT_CRITICAL(&g_input_mux);
+    return allowed;
+}
+/* [新增] 只在 ISR 尚未排入新事件的原子窗口套用設定。 */
+bool brd_measurement_apply_settings(void (*apply)(void)) {
+    portENTER_CRITICAL(&g_input_mux);
+    bool allowed = g_settings_paused && !g_maintenance_paused && g_modification_window &&
+                   !g_rpm_overflow && !g_load_overflow &&
+                   g_rpm_head == g_rpm_tail && g_load_head == g_load_tail;
+    if (allowed) {
+        bool used_load = measurement_uses_load();
+        apply();
+        /* [修正] 同模式僅更新參數，不重設已完成的 LOAD 去抖及 READY。 */
+        if (used_load != measurement_uses_load()) {
+            g_period_valid[LOW] = g_period_valid[HIGH] = false;
+            g_rpm_reference_level = -1;
+            g_quiet_expired = true;
+            g_has_valid_rpm = false;
+            g_current_rpm = g_max_rpm = 0U;
+            g_auto_launch_candidate = false;
+            g_load_stable = measurement_uses_load() ? LOW : LOAD_ACTIVE_LEVEL;
+            g_isr_load_level = measurement_uses_load() ? (int)((GPIO.in.val >> LOAD_IR_GPIO) & 1U) : LOAD_ACTIVE_LEVEL;
+            g_load_raw = g_isr_load_level;
+            g_load_candidate_us = micros();
+            g_state = measurement_uses_load() ? BRD_STATE_WAIT_LOAD : BRD_STATE_LOADED_READY;
+        }
+        g_settings_paused = false;
+    }
+    portEXIT_CRITICAL(&g_input_mux);
+    if (allowed && g_measurement_enabled) {
+        if (g_load_interrupt_attached && !measurement_uses_load()) {
+            brd_capture_detach_load(); g_load_interrupt_attached = false;
+        } else if (!g_load_interrupt_attached && measurement_uses_load()) {
+            g_load_interrupt_attached = brd_capture_attach_load(load_ir_isr);
+            if (!g_load_interrupt_attached) { g_capture_fault = true; }
+        }
+    }
+    update_modification_window();
+    return allowed;
+}
+void brd_measurement_resume_after_settings(bool applied) {
+    (void)applied;
+    /* [刪減] 不再 restart_input_capture，避免清除 Flash 期間的脈衝。 */
+    portENTER_CRITICAL(&g_input_mux);
+    if (!g_maintenance_paused) { g_settings_paused = false; }
+    portEXIT_CRITICAL(&g_input_mux);
+    update_modification_window();
+}
+bool brd_measurement_pause_for_ota(void) {
+    portENTER_CRITICAL(&g_input_mux);
+    bool allowed = g_modification_window && !g_settings_paused && !g_rpm_overflow && !g_load_overflow &&
+                   g_rpm_head == g_rpm_tail && g_load_head == g_load_tail;
+    if (allowed) {
+        g_settings_paused = g_maintenance_paused = true;
         g_input_capture = false;
     }
     portEXIT_CRITICAL(&g_input_mux);
     return allowed;
 }
-void brd_measurement_resume_after_settings(bool applied) {
-    if (!g_settings_paused) { return; }
-    if (applied && g_measurement_enabled) {
-        /* [新增] 模式切換更新 LOAD 中斷，但不呼叫 stop/reset_capture 清除已完成曲線。 */
-        if (g_load_interrupt_attached && !measurement_uses_load()) {
-            detachInterrupt(digitalPinToInterrupt(LOAD_IR_GPIO));
-            g_load_interrupt_attached = false;
-        } else if (!g_load_interrupt_attached && measurement_uses_load()) {
-            attachInterrupt(digitalPinToInterrupt(LOAD_IR_GPIO), load_ir_isr, LOAD_IR_TRIGGER_EDGE);
-            g_load_interrupt_attached = true;
-        }
-        g_period_valid[LOW] = g_period_valid[HIGH] = false;
-        g_rpm_reference_level = -1;
-        g_quiet_expired = true;
-        g_has_valid_rpm = false;
-        g_current_rpm = g_max_rpm = 0U;
-        g_auto_launch_candidate = false;
-        g_load_stable = measurement_uses_load() ? LOW : LOAD_ACTIVE_LEVEL;
-        g_state = !measurement_uses_load() && !g_max_lock ?
-                  BRD_STATE_LOADED_READY : BRD_STATE_WAIT_LOAD;
-    }
-    portENTER_CRITICAL(&g_input_mux);
-    g_settings_paused = false;
-    portEXIT_CRITICAL(&g_input_mux);
+void brd_measurement_resume_after_ota(void) {
+    if (!g_maintenance_paused) { return; }
+    g_maintenance_paused = g_settings_paused = false;
+    g_period_valid[LOW] = g_period_valid[HIGH] = false;
+    g_rpm_reference_level = -1;
+    g_quiet_expired = true;
+    if (g_measurement_enabled) { restart_input_capture(); }
     update_modification_window();
-    if (g_measurement_enabled && !g_max_lock) { restart_input_capture(); }
+}
+bool brd_measurement_background_ready(void) {
+    portENTER_CRITICAL(&g_input_mux);
+    bool ready = !g_rpm_overflow && !g_load_overflow &&
+                 g_rpm_head == g_rpm_tail && g_load_head == g_load_tail;
+    portEXIT_CRITICAL(&g_input_mux);
+    return ready;
 }

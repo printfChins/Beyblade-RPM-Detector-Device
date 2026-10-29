@@ -9,4 +9,6 @@ void brd_settings_ble_connected(uint16_t handle);
 void brd_settings_ble_disconnected(uint16_t handle);
 void brd_settings_ble_stop(void);
 void brd_settings_ble_update(void);
+/* [新增] OLED 即時頁面，僅 RAM；掉線自動回 MAIN。 */
+uint8_t brd_settings_ble_display_page(void);
 #endif

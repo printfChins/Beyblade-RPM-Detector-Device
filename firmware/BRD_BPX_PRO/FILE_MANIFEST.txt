@@ -1,0 +1,16 @@
+BRD BPX PRO V1.3 — TORQUE ONLY (2026-10-29)
+
+專案主程式: BRD_BPX_PRO/BRD_BPX_PRO.ino （保持原 setup()/loop() 流程）
+硬體參數: BRD_BPX_PRO/brd_config.h
+GPIO1 裝載 ADC: brd_load_adc.cpp/.h
+GPIO3 RPM ISR、雙極性計算: brd_measurement.cpp/.h
+BLE 儲存/通知/曲線選擇: brd_bbp.cpp/.h, brd_bbp_session.cpp/.h, brd_bbp_protocol.cpp/.h
+TFT 頁面/曲線: brd_ui_style_scene.cpp, brd_ui_curve.cpp/.h, brd_ui_types.h,
+               brd_ui_motion.cpp, brd_ui_core.cpp/.h, brd_tft.cpp
+完整改版說明: docs/TORQUE_V1_3_FIRMWARE_CHANGES.md
+驗證: tests/run_motion_tests.py（含雙邊緣、BLE選組、ADC、開機動畫）
+預覽: docs/TORQUE_V1_3_FIRMWARE_RENDER.png（正式繪圖引擎 mock 生成）
+
+歷史文件 README/CHANGELOG 下方章節保留作版本比較用途。
+
+V1.4 新增：brd_shot_capture.cpp、brd_shot_capture.h、tests/test_shot_capture.cpp、docs/TORQUE_V1_4_RPM_FIRST_CAPTURE.md

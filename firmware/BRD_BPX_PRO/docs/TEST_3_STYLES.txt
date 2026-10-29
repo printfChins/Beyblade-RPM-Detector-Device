@@ -1,0 +1,8 @@
+BRD BPX PRO V1.2 – 3 styles validation
+
+Host test: python tests/run_motion_tests.py
+Results: 12 regression modules plus 6 UI tests passed.
+Pixel identity: 3 styles x 7 pages = 21 images, identical to old theme slots 0,1,3.
+Pixel identity: 3 styles x 8 boot + 3 styles x 5 OTA = 39 frames, identical to old slots 0,1,3.
+Page transitions: 4 allowed paths, 5 nonblocking steps, pixel-perfect end frames.
+Unverified: Arduino ESP32 Core 3.3.11 build and actual ST7735 LCD operation.

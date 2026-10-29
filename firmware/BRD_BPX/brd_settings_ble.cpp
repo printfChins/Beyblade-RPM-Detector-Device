@@ -10,6 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "brd_config.h"
+#include "brd_scheduler.h"
 #include "brd_measurement.h"
 #include "brd_settings.h"
 #include "brd_settings_ble.h"
@@ -35,6 +36,9 @@ static StaticQueue_t g_queue_control;
 static uint8_t g_queue_storage[SETTINGS_COMMAND_QUEUE_SIZE * sizeof(settings_request_t)];
 static QueueHandle_t g_queue = nullptr;
 static NimBLECharacteristic *g_response = nullptr;
+/* [新增] 1-byte Display Page GATT (READ/WRITE)。與原設定 GET/SET/SAVE 分離。 */
+static NimBLECharacteristic *g_display_page_characteristic = nullptr;
+static uint8_t g_display_page = BRD_DISPLAY_PAGE_MAIN;
 static bool g_notify_pending = false;
 static uint8_t g_packet[brd_settings::RESPONSE_SIZE] = {};
 static uint32_t g_packet_generation = 0U, g_save_generation = UINT32_MAX;
@@ -88,6 +92,37 @@ class SettingsResponseCallbacks : public NimBLECharacteristicCallbacks {
         portEXIT_CRITICAL(&g_mux);
     }
 };
+/*
+    [新增] 切換 OLED 顯示頁，不操作 Flash、ADC、GPIO 或量測中斷。
+    READ 回傳當前有效頁面；錯誤長度/值均不改變頁面。
+*/
+class DisplayPageCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &info) override {
+        auto value = characteristic->getValue();
+        if (value.size() != 1U || value[0] > BRD_DISPLAY_PAGE_IR_TEST) {
+            return;
+        }
+        portENTER_CRITICAL(&g_mux);
+        if (g_link.connected && g_link.handle == info.getConnHandle()) {
+            g_display_page = value[0];
+        }
+        portEXIT_CRITICAL(&g_mux);
+    }
+
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        const uint8_t current_page = brd_settings_ble_display_page();
+        characteristic->setValue(&current_page, sizeof(current_page));
+    }
+};
+static DisplayPageCallbacks g_display_page_callbacks;
+
+uint8_t brd_settings_ble_display_page(void) {
+    portENTER_CRITICAL(&g_mux);
+    uint8_t page = g_display_page;
+    portEXIT_CRITICAL(&g_mux);
+    return page;
+}
+
 static SettingsRequestCallbacks g_request_callbacks;
 static SettingsResponseCallbacks g_response_callbacks;
 
@@ -105,8 +140,14 @@ bool brd_settings_ble_create(NimBLEServer *server) {
         SETTINGS_REQUEST_UUID, NIMBLE_PROPERTY::WRITE, brd_settings::RESPONSE_SIZE);
     g_response = service->createCharacteristic(SETTINGS_RESPONSE_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY, brd_settings::RESPONSE_SIZE);
-    if (request == nullptr || g_response == nullptr) { return false; }
+    /* [新增] 單 byte READ/WRITE，APP 寫入後可立即 READ 確認。 */
+    g_display_page_characteristic = service->createCharacteristic(
+        SETTINGS_DISPLAY_PAGE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE, 1U);
+    if (request == nullptr || g_response == nullptr || g_display_page_characteristic == nullptr) { return false; }
     request->setCallbacks(&g_request_callbacks);
+    g_display_page_characteristic->setCallbacks(&g_display_page_callbacks);
+    g_display_page = BRD_DISPLAY_PAGE_MAIN;
+    g_display_page_characteristic->setValue(&g_display_page, sizeof(g_display_page));
     g_response->setCallbacks(&g_response_callbacks);
     brd_settings::make_response(brd_settings_model(), brd_settings::CMD_GET, 0U, 0U,
                                brd_settings::OK, g_packet);
@@ -121,6 +162,8 @@ void brd_settings_ble_connected(uint16_t handle) {
     g_link.handle = handle;
     g_link.connected = true;
     g_link.subscribed = false;
+    /* [新增] 每次連線恢復主頁，不跨連線保留 IR TEST 診斷頁。 */
+    g_display_page = BRD_DISPLAY_PAGE_MAIN;
     g_rejection_pending = false;
     g_discard_pending = true;
     portEXIT_CRITICAL(&g_mux);
@@ -131,6 +174,7 @@ void brd_settings_ble_disconnected(uint16_t handle) {
         g_link.generation++;
         g_link.handle = BLE_HS_CONN_HANDLE_NONE;
         g_link.connected = g_link.subscribed = false;
+        g_display_page = BRD_DISPLAY_PAGE_MAIN;
         g_rejection_pending = false;
         g_discard_pending = true;
     }
@@ -141,10 +185,12 @@ void brd_settings_ble_stop(void) {
     g_link.generation++;
     g_link.handle = BLE_HS_CONN_HANDLE_NONE;
     g_link.connected = g_link.subscribed = false;
+    g_display_page = BRD_DISPLAY_PAGE_MAIN;
     g_rejection_pending = g_discard_pending = false;
     portEXIT_CRITICAL(&g_mux);
     if (g_queue != nullptr) { xQueueReset(g_queue); }
     g_response = nullptr;
+    g_display_page_characteristic = nullptr;
     g_notify_pending = false;
     brd_settings_discard_draft();
 }
@@ -228,6 +274,7 @@ void brd_settings_ble_update(void) {
     }
     if (g_notify_pending && link.connected && link.subscribed &&
         static_cast<uint32_t>(now_ms - g_last_notify_ms) >= BBP_NOTIFY_INTERVAL_MS) {
+        if (!brd_scheduler_take_notify_slot()) { return; }
         g_last_notify_ms = now_ms;
         if (g_response->notify(g_packet, sizeof(g_packet), link.handle)) {
             g_notify_pending = false;

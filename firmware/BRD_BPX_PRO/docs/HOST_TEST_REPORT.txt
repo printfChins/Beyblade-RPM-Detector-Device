@@ -1,0 +1,23 @@
+2026-10-21 Four-page GPIO5 navigation validation
+Command: python3 tests/run_motion_tests.py
+PASS: GPIO5 4-page short-press/release, 40ms debounce, long hold suppression and blocked-page safety.
+PASS: Main/Max -> Graph -> History -> IR TEST -> Main/Max routing.
+PASS: priority: LowBattery > AdcFault > Ota > BLE IR TEST > local pages.
+PASS: new local IR TEST GPIO1/GPIO4 ADC sampling included in firmware syntax check.
+PASS: 12 host regression modules + 3 graphics/animation tests + syntax/PI macro tests.
+NOTE: Old tests/run_host_tests.py is from the pre-motion UI and has unresolved link dependencies;
+      use tests/run_motion_tests.py for current 20-style motion architecture.
+NOTE: No Arduino ESP32-C3 3.3.11 toolchain or physical switch/LCD validation in this runtime.
+
+--- Previous historical report ---
+PASS: GPIO4 RPM ADC sampling and stale validity
+PASS: ADC LOAD hysteresis, sample period, stale fail-safe.
+PASS: shared ADC1 owner, GPIO0/GPIO1/GPIO4 configuration and channel isolation.
+PASS: settings validation, staging, save failure, CRC and protocol.
+PASS GPIO5 3-page debouncing, disabled nav, last curve, new launch reset
+PASS: AUTO/LOAD ratio, BUSY/GET, safe Flash, MAX/history, 30000 RPM, polarity, wrap/overflow and charging.
+PASS: settings GATT packets, BUSY/GET, second gate, READ fallback and connection generations.
+PASS: AUTO finishes on common MAX ratio.
+PASS: OTA sessions, image/size/power gates, exact retries, MTU=23, abort, timeout/wrap and verification failure.
+PASS: OTA GATT MTU, safe start, reconnect generation, MD5/image verification, app-only boot switch and measurement lease.
+PASS: pending last-shot publication and NVS persistence gate OTA start, including 600ms delay.

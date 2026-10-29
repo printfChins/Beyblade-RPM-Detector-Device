@@ -1,0 +1,10 @@
+# [V1.2 修改] 4 MB Flash，保留雙 OTA 分區與 20 KiB NVS。
+# [V1.2 修改] App 0/App 1 從 0x140000 擴大為 0x1F0000 (1984 KiB)。
+# [V1.2 刪減] 不使用的 SPIFFS 分區；Core Dump 保留 64 KiB。
+# [注意] 修改本檔只改變重新建置的分割表；BLE OTA 無法更新 Partition Table。
+# Name,   Type, SubType, Offset,    Size,     Flags
+nvs,      data, nvs,     0x009000,  0x005000,
+otadata,  data, ota,     0x00E000,  0x002000,
+app0,     app,  ota_0,   0x010000,  0x1F0000,
+app1,     app,  ota_1,   0x200000,  0x1F0000,
+coredump, data, coredump,0x3F0000,  0x010000,

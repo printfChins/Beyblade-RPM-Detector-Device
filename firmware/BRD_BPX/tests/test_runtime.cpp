@@ -47,6 +47,8 @@ static void apply(uint8_t param, uint32_t value) {
     assert(!brd_settings_model().pending());
 }
 static void fresh_auto() {
+    /* [修改] 獨立案例開始前先發布舊完成資料；產品不得再以 reset 丟棄它。 */
+    session.update(micros()+BBP_PUBLISH_MIN_DELAY_US,BBP_PUBLISH_MIN_DELAY_US);
     brd_measurement_stop();
     brd_settings_begin();
     apply(brd_settings::PARAM_MODE,1U);
@@ -165,7 +167,9 @@ int main() {
     edge(2000U, LOW);
     assert(brd_measurement_get_display().value == 30000U);
     edge(10000U, LOW);
-    assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 30000U);
+    assert(!brd_measurement_get_display().show_max && brd_measurement_get_display().sample_loss);
+    /* [修改] 已知遺失事件的該輪不發布不完整 MAX。先待重新武裝才修改設定。 */
+    tick(400000U);
     /* [修改] 明確啟用後才驗證充電停用，避免測試依賴舊的預設啟用值。 */
     apply(brd_settings::PARAM_CHARGING_BLE_OFF,1U);
     charging = true;

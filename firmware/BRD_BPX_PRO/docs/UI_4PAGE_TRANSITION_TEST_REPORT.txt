@@ -1,0 +1,19 @@
+PASS: GPIO4 RPM ADC sampling and stale validity
+PASS: ADC LOAD hysteresis, sample period, stale fail-safe.
+PASS: shared ADC1 owner, GPIO0/GPIO1/GPIO4 configuration and channel isolation.
+PASS: settings validation, staging, save failure, CRC and protocol.
+PASS GPIO5 4-page short-press navigation, debounce, priority block, and curve sampling
+PASS: Main/Graph/History/IR routing and system priority
+PASS: AUTO/LOAD ratio, BUSY/GET, safe Flash, MAX/history, 30000 RPM, polarity, wrap/overflow and charging.
+PASS: settings GATT packets, BUSY/GET, second gate, READ fallback and connection generations.
+PASS: AUTO finishes on common MAX ratio.
+PASS: OTA sessions, image/size/power gates, exact retries, MTU=23, abort, timeout/wrap and verification failure.
+PASS: OTA GATT MTU, safe start, reconnect generation, MD5/image verification, app-only boot switch and measurement lease.
+PASS: pending last-shot publication and NVS persistence gate OTA start, including 600ms delay.
+PASS: 25.6KB initial, 0B unchanged, 256B tile; RGB565 canvas matches LCD in all corners and multi-tile zones.
+PASS: 9 distinct main screen signatures, 7 page renders, independent IR highlights.
+PASS: battery last bar 500ms blink, 12s persistence, Dirty Tile only.
+PASS: 9 original UI layouts, 3 BLE states, isolated icon redraw; no bottom status bar.
+PASS: Nine themes, four allowed routes, 5 nonblocking push-slide steps, pixel-perfect final image, immediate cancel.
+PASS: Arduino ESP32 Core PI macro compatibility
+PASS: 12 regression modules (including four-page navigation) + 5 UI tests + firmware syntax checks.

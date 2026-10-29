@@ -44,6 +44,8 @@ void brd_battery_update(void);
 uint16_t brd_battery_get_voltage_mv(void);
 uint8_t brd_battery_get_percent(void);
 bool brd_battery_is_low_locked(void);
+/* [V1.4 新增] 僅在充電中 >=4.15V 達 30s 才取得 FULL；斷電後保持到 <=4.10V。 */
+bool brd_battery_is_full(void);
 bool brd_battery_restart_required(void);
 /* [V0.12 新增] ADC 故障與低電鎖定分開；故障恢復無須等到 10%。 */
 bool brd_battery_is_adc_fault(void);

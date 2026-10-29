@@ -21,8 +21,15 @@ public:
                     uint8_t status_flags, uint8_t out[PAGE_COUNT][PACKET_SIZE]);
     const State &state() const;
     bool dirty() const;
+    /* [V1.2 新增] 未發布的最後一筆不能在 OTA 暫停後才成為 dirty。 */
+    bool pending() const { return pending_; }
     void mark_saved();
 private:
+    /* [新增] 完成資料獨立於下一輪採樣，避免 600ms 發布延遲丟掉上一發。 */
+    struct Completed { Profile profile; uint32_t first_us; uint16_t sp; };
+    static constexpr uint8_t COMPLETED_SIZE = 8U;
+    Completed completed_[COMPLETED_SIZE];
+    uint8_t completed_head_ = 0U, completed_count_ = 0U;
     State state_;
     Profile profile_;
     uint32_t first_period_us_;

@@ -1,0 +1,9 @@
+基準版本：BRD_BPX_PRO_V1.2_WAIT置中_DIAL移除狀態_完整專案.zip
+變更：index1 DIAL 恢復 WAIT LOAD W1 / LOADED L2；index2 TORQUE 左側 SP 下方刪除 LOAD（MAX PEAK 保留）。
+索引 0 NEBULA 完全不變。
+每種風格 2 狀態×32 影格的 RGB565 逐像素差異範圍：
+style 0: 0 px
+style 1: x 86..151 / y 65..76
+style 2: x 4..26 / y 53..59
+測試：run_motion_tests.py 全部通過（12 模組 + 11 UI；主機端語法檢查）。
+尚未進行 ESP32-C3 實機編譯及 TFT 驗證。
