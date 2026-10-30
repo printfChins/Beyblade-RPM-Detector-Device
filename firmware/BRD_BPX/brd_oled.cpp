@@ -5,15 +5,10 @@
     [修改] BLE 停用狀態改變時立即安排下一幅畫面，不等待固定更新週期。
     [V1.2 修改] OTA 下方進度由 "數值 PCT" 改為左側扇形圓盤與中央百分比。
     [V1.2 新增] 0% 保留圓形外框、1~99% 由 12 點方向順時針填滿、100% 完全實心。
-    [V1.2 新增] % 字型；OTA 數值不使用 PCT 字串，版本號統一由 brd_config.h 設定。
+    [V1.2 新增] % 字型；OTA 數值不使用 PCT 字串，版本號維持 V1.2。
     [修正] OTA 大字百分比以 10x14 專用空心圓圈字型繪製，不再顯示成實心點。
     [V0.10 修改] 顯示 LOAD 狀態、RPM / MAX 與開機版本。
-    [V1.4 OLED UI 修改] 主頁 LOAD 狀態文字為 WAIT LOAD / LOADED；即時數值 RPM -> SP。
-    [V1.4 OLED UI 保留] MAX 標籤與 SP 一樣使用原版 2 倍字體。
-    [V1.4 OLED UI 刪減] 移除 SP 後新增的額外空白，回復 "SP 15800"。
-    [V1.4 OLED 介面修改] 右上角僅顯示閃電 x96..100 與電池 x105..124，移除 SOC 數字及 %。
-    [V1.4 OLED UI 刪除] 充電黑色掃描線動畫與動畫計時常數，電池圖示固定依 SOC 填充。
-    [V1.4 OLED UI 刪除] 主頁不顯示 FULL 字樣，滿電時保留靜態電池並熄滅閃電。
+    [V0.10 恢復] 右上角電池圖示與左側充電閃電圖示，沿用 V1.9 尺寸與位置。
     [V0.10 刪減] OLED 休眠與獨立 FreeRTOS Task。
     [V0.10 修改] 不使用 Wire.begin，避免框架初始化自動開啟內部上拉。
     [V0.10 新增] I2C 明確不開內部上拉；初始化或傳送失敗每隔一秒重試。
@@ -55,12 +50,6 @@ static brd_display_t g_frame_display = {};
 /* [V0.10 恢復] 每幅畫面保存一致的電量與充電狀態。 */
 static uint8_t g_frame_battery_percent = 0U;
 static bool g_frame_charging = false;
-/* [V1.4 OLED 刪除] 黑線動畫時序已移除；充電時不再額外更新掃描相位。 */
-/* [V1.4 OLED 修改] 右上角圖示靠右，保留 4px 間距；不保留文字百分比。 */
-static constexpr uint8_t OLED_MAIN_BATTERY_X = 105U;
-static constexpr uint8_t OLED_MAIN_LIGHTNING_X = 96U;
-/* [V1.4 OLED UI 保留] FULL 變化仍觸發重繪，用於滿電時熄滅閃電；不顯示 FULL 文字。 */
-static bool g_frame_full = false;
 /* [BRD_BBP 新增] 連線狀態變化立即安排畫面更新。 */
 static bool g_frame_ble_connected = false;
 /* [新增] 保存本幅畫面的充電停用狀態，與單純未連線分開判斷。 */
@@ -500,9 +489,6 @@ static void oled_draw_battery_icon(uint8_t x, uint8_t y, uint8_t percent) {
     }
 }
 
-/* [V1.4 OLED 刪除] 移除 oled_draw_battery_charge_scan()：充電不再掃描黑線。
-   [保留] oled_draw_battery_icon() 會直接依實際 SOC 繪製靜態填充。 */
-
 /* [V0.10 恢復] 原版 5x7 充電閃電圖示，未充電時不繪製。 */
 static void oled_draw_charging_icon(uint8_t x, uint8_t y) {
     static const uint8_t lightning_rows[7] = {
@@ -784,7 +770,6 @@ static void oled_begin_ir_test_frame(uint8_t battery_percent, uint16_t voltage_m
     g_frame_display = {};
     g_frame_battery_percent = battery_percent;
     g_frame_charging = charging;
-    g_frame_full = brd_battery_is_full();
     g_frame_ble_connected = brd_bbp_is_connected();
     g_frame_ble_disabled_for_charging = oled_bluetooth_disabled_for_charging(charging);
     g_frame_is_low_battery = false;
@@ -830,7 +815,6 @@ static void oled_begin_ir_test_frame(uint8_t battery_percent, uint16_t voltage_m
 
 static void oled_begin_frame(const brd_display_t &display, uint8_t battery_percent, bool charging) {
     char value_line[16];
-    /* [V1.4 OLED 刪除] 主頁不再建立 battery_text：僅保留電池圖形作為 SOC 指示。 */
 
     g_frame_display = display;
     /* [新增] 普通量測頁包括 OTA，標記 MAIN 避免切換比較誤判。 */
@@ -838,23 +822,20 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     g_frame_battery_percent = battery_percent;
     g_frame_voltage_mv = brd_battery_get_voltage_mv();
     g_frame_charging = charging;
-    g_frame_full = brd_battery_is_full();
     g_frame_ble_connected = brd_bbp_is_connected();
     g_frame_ble_disabled_for_charging = oled_bluetooth_disabled_for_charging(charging);
     g_frame_is_low_battery = false;
     g_frame_is_adc_fault = false;
     g_warning_frame_drawn = false;
     oled_clear_buffer();
-    /* [V1.4 OLED UI 修改] LOAD 模式只顯示 WAIT LOAD / LOADED。
-       [V1.4 OLED UI 刪除] 主頁的 LOADED READY 與 HOLD 字串顯示；
-       [保留] MAX 的自鎖時間與數值顯示，由 brd_measurement 原機制控制。
-       [保留] AUTO READY、IR ERR/LOSS 與 OTA 專用狀態。 */
+    /* [V0.10 刪減] 自鎖期間仍只顯示 WAIT LOAD 的判斷方式。
+       [V0.10 新增] HOLD 優先顯示；第二行仍保留本次 MAX 轉速。 */
     g_frame_ota = brd_ota_get_display();
     const char *status_line = g_frame_ota.active ?
         (g_frame_ota.verifying ? "VERIFY" : (g_frame_ota.phase == brd_ota::COMPLETE ? "OTA DONE" : "OTA UPDATE")) :
-        (display.input_fault ? "IR ERR" : (display.sample_loss ? "IR LOSS" :
+        (display.hold_active ? "HOLD" :
         (brd_settings_get().mode == BRD_MEASUREMENT_MODE_AUTO ? "AUTO READY" :
-         (display.loaded ? "LOADED" : "WAIT LOAD"))));
+         (display.loaded ? "LOADED READY" : "WAIT LOAD")));
     oled_draw_text(0U, 0U, status_line, 1U);
     if (g_frame_ota.active) {
         /* [V1.2 刪減] 原本 "0~100 PCT" 字串與左對齊的第二行數值顯示。 */
@@ -863,10 +844,8 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
         oled_draw_ota_sector(13U, 23U, 8U, g_frame_ota.percent);
         oled_draw_centered_text(16U, value_line, 2U);
     } else {
-        /* [V1.4 OLED 刪減] 移除 SP 後新增的額外空白，回復 "SP 15800"；
-           [保留] MAX 顯示 "MAX 18800"、x0 / y16 / 2 倍字體及轉速值。 */
-        snprintf(value_line, sizeof(value_line), display.show_max ? "MAX %u" : "SP %u",
-                 (unsigned int)display.value);
+        snprintf(value_line, sizeof(value_line), "%s %u",
+                 display.show_max ? "MAX" : "SP", (unsigned int)display.value);
         oled_draw_text(0U, 16U, value_line, 2U);
     }
     /* [修改] 充電停用分兩行顯示 BLE / OFF 小字；一般連線沿用原生藍牙符號。
@@ -876,15 +855,10 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     } else if (g_frame_ble_connected) {
         oled_draw_bluetooth_icon();
     }
-    /* [V1.4 OLED 修改] 右上角僅顯示「閃電 -> 電池」，不顯示任何 SOC 數字或 %。
-       [保留] battery_percent 僅供電池圖案填充；電池演算法、低電保護、BLE 電量封包皆不修改。 */
-    const uint8_t visible_percent = battery_percent > 100U ? 100U : battery_percent;
-
-    /* [V1.4 OLED 修改] 所有狀態均以實際 SOC 繪製靜態電池，不使用動畫相位。
-       [保留] 充電中且尚未 FULL 時顯示左側閃電；確認 FULL 後閃電熄滅。 */
-    oled_draw_battery_icon(OLED_MAIN_BATTERY_X, 0U, visible_percent);
-    if (charging && !g_frame_full) {
-        oled_draw_charging_icon(OLED_MAIN_LIGHTNING_X, 1U);
+    /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */
+    oled_draw_battery_icon(108U, 0U, battery_percent);
+    if (charging) {
+        oled_draw_charging_icon(100U, 1U);
     }
 
     g_page = 0U;
@@ -1044,8 +1018,6 @@ void brd_oled_update(void) {
             ota.active != g_frame_ota.active || ota.verifying != g_frame_ota.verifying ||
             ota.phase != g_frame_ota.phase || ota.percent != g_frame_ota.percent ||
             battery_percent != g_frame_battery_percent || charging != g_frame_charging ||
-            (requested_page == BRD_DISPLAY_PAGE_MAIN &&
-             brd_battery_is_full() != g_frame_full) ||
             brd_bbp_is_connected() != g_frame_ble_connected ||
             oled_bluetooth_disabled_for_charging(charging) != g_frame_ble_disabled_for_charging;
         if (requested_page == BRD_DISPLAY_PAGE_IR_TEST && !ota.active) {

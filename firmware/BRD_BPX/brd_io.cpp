@@ -10,7 +10,6 @@
 
 #include "brd_config.h"
 #include "brd_io.h"
-#include "brd_capture.h"
 
 static void input_without_pull(uint8_t pin) {
     pinMode(pin, INPUT);
@@ -18,8 +17,6 @@ static void input_without_pull(uint8_t pin) {
 }
 
 void brd_io_begin(void) {
-    /* [新增] BLE 等模組初始化前先取得 IRAM GPIO ISR service。 */
-    (void)brd_capture_prepare();
     input_without_pull(RPM_IR_GPIO);
     input_without_pull(LOAD_IR_GPIO);
 

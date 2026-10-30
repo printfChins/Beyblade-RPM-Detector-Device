@@ -47,8 +47,6 @@ static void apply(uint8_t param, uint32_t value) {
     assert(!brd_settings_model().pending());
 }
 static void fresh_auto() {
-    /* [修改] 獨立案例開始前先發布舊完成資料；產品不得再以 reset 丟棄它。 */
-    session.update(micros()+BBP_PUBLISH_MIN_DELAY_US,BBP_PUBLISH_MIN_DELAY_US);
     brd_measurement_stop();
     brd_settings_begin();
     apply(brd_settings::PARAM_MODE,1U);
@@ -76,7 +74,10 @@ int main() {
     assert(brd_measurement_get_display().show_max);
     assert(brd_measurement_get_display().value == 12000U);
     assert(brd_settings_get().finish_percent == 30U);
+    /* [V1.2.3 修改] HOLD 3 秒內不可套用尚未保存的設定，避免影響 MAX 鎖定。 */
     tick(1000001U); brd_settings_update();
+    assert(brd_settings_get().finish_percent == 30U);
+    tick(OLED_MAX_HOLD_MS * 1000U); brd_settings_update();
     assert(brd_settings_get().finish_percent == 50U);
     // 結束後保存並切換 LOAD，不可清掉凍結的 MAX / Session 曲線。
     assert(command(brd_settings::CMD_SET,brd_settings::PARAM_MODE,0U) == brd_settings::OK);
@@ -92,15 +93,19 @@ int main() {
     assert(test_interrupts[LOAD_IR_GPIO] != nullptr);
     session.update(micros()+BBP_PUBLISH_MIN_DELAY_US,BBP_PUBLISH_MIN_DELAY_US);
     assert(session.state().total == 1U && session.state().lifetime_max == 12000U);
-    // 真正 LOAD 流程：裝載去抖後 12000 -> 6000 等於 50%，仍不得結束。
+    /* [V1.2.3 修改] 真正 LOAD 流程：達到相等的結束百分比即完成。 */
     tick(3000000U);
+    /* [V1.2.2 測試修改] HOLD 已解鎖，先讓實體 LOW 滿去抖時間，才允許下一次 HIGH 裝載。 */
+    tick(LOAD_IR_DEBOUNCE_US);
     GPIO.in.val |= 1U << LOAD_IR_GPIO;
     test_interrupts[LOAD_IR_GPIO]();
     brd_measurement_update(); tick(LOAD_IR_DEBOUNCE_US);
-    edge(100U); edge(5000U); edge(10000U);
-    assert(!brd_measurement_get_display().show_max);
-    edge(12000U); // 5000 < 50%
+    edge(100U); edge(5000U); edge(10000U); // 6000 == 12000*50%，應立即進 HOLD。
+    assert(brd_measurement_get_display().show_max && brd_measurement_get_display().hold_active);
+    assert(brd_measurement_get_display().value == 12000U);
+    edge(12000U); // [V1.2.3 驗證] HOLD 期間 RPM 不得中斷 MAX。
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 12000U);
+    tick(LOAD_MAX_HOLD_MS * 1000U + 1000U); // [V1.4.2 修改] LOAD HOLD 2.5 秒後回 WAIT LOAD 才能修改設定。
     // Flash 失敗不切換模式；重啟仍載入最後成功保存值。
     test_flash_fail = true;
     assert(command(brd_settings::CMD_SET,brd_settings::PARAM_MODE,1U) == brd_settings::OK);
@@ -167,9 +172,9 @@ int main() {
     edge(2000U, LOW);
     assert(brd_measurement_get_display().value == 30000U);
     edge(10000U, LOW);
-    assert(!brd_measurement_get_display().show_max && brd_measurement_get_display().sample_loss);
-    /* [修改] 已知遺失事件的該輪不發布不完整 MAX。先待重新武裝才修改設定。 */
-    tick(400000U);
+    assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 30000U);
+    /* [V1.2.3 修改] HOLD 禁止修改設定；3 秒到期、回 WAIT LOAD 才可執行 CFG。 */
+    tick(OLED_MAX_HOLD_MS * 1000U + 1000U);
     /* [修改] 明確啟用後才驗證充電停用，避免測試依賴舊的預設啟用值。 */
     apply(brd_settings::PARAM_CHARGING_BLE_OFF,1U);
     charging = true;

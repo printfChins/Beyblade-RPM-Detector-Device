@@ -122,6 +122,3 @@ int main() {
     assert(!model.pending() && model.staged().mode==1U);
     puts("PASS: settings GATT packets, BUSY/GET, second gate, READ fallback and connection generations.");
 }
-
-/* [新增] 元件測試不限制主迴圈額度；整合測試另以真實 scheduler 驗證。 */
-bool brd_scheduler_take_notify_slot() { return true; }

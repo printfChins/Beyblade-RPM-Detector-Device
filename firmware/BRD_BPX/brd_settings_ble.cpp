@@ -10,7 +10,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "brd_config.h"
-#include "brd_scheduler.h"
 #include "brd_measurement.h"
 #include "brd_settings.h"
 #include "brd_settings_ble.h"
@@ -274,7 +273,6 @@ void brd_settings_ble_update(void) {
     }
     if (g_notify_pending && link.connected && link.subscribed &&
         static_cast<uint32_t>(now_ms - g_last_notify_ms) >= BBP_NOTIFY_INTERVAL_MS) {
-        if (!brd_scheduler_take_notify_slot()) { return; }
         g_last_notify_ms = now_ms;
         if (g_response->notify(g_packet, sizeof(g_packet), link.handle)) {
             g_notify_pending = false;

@@ -17,8 +17,8 @@ static uint8_t soc = 80;
 static unsigned resumes = 0;
 static bool disconnect_in_verify = false;
 bool brd_measurement_modifications_allowed() { return safe && !paused; }
-bool brd_measurement_pause_for_ota() { if (!safe || paused) { return false; } paused = true; return true; }
-void brd_measurement_resume_after_ota() { paused = false; resumes++; }
+bool brd_measurement_pause_for_settings() { if (!safe || paused) { return false; } paused = true; return true; }
+void brd_measurement_resume_after_settings(bool) { paused = false; resumes++; }
 bool brd_battery_measurement_allowed() { return power; }
 uint8_t brd_battery_get_percent() { return soc; }
 bool brd_io_is_charging() { return charging; }
@@ -148,6 +148,3 @@ int main() {
     assert(resumes >= 3);
     puts("PASS: OTA GATT MTU, safe start, reconnect generation, MD5/image verification, app-only boot switch and measurement lease.");
 }
-
-/* [新增] 元件測試不限制主迴圈額度；整合測試另以真實 scheduler 驗證。 */
-bool brd_scheduler_take_notify_slot() { return true; }

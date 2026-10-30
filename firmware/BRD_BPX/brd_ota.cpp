@@ -15,7 +15,6 @@
 #include "brd_battery.h"
 #include "brd_bbp.h"
 #include "brd_config.h"
-#include "brd_scheduler.h"
 #include "brd_io.h"
 #include "brd_measurement.h"
 #include "brd_oled.h"
@@ -55,7 +54,7 @@ public:
     bool begin(uint32_t size, const uint8_t md5[16]) override {
         /* [新增] 先完成歷史保存，再原子取得空 GPIO 佇列的量測安全窗口。 */
         if (capacity() < size || !brd_bbp_ota_ready() || !brd_bbp_prepare_restart() ||
-            !brd_measurement_pause_for_ota()) { return false; }
+            !brd_measurement_pause_for_settings()) { return false; }
         paused_ = true;
         generation_ = current_connection_generation();
         if (!generation_connected(generation_)) { return false; }
@@ -118,7 +117,7 @@ public:
         if (opened_) { (void)esp_ota_abort(handle_); opened_ = false; }
         page_used_ = 0U;
         if (hash_open_) { mbedtls_md5_free(&hash_); hash_open_ = false; }
-        if (paused_) { brd_measurement_resume_after_ota(); paused_ = false; }
+        if (paused_) { brd_measurement_resume_after_settings(false); paused_ = false; }
         g_verifying = false;
     }
 };
@@ -274,7 +273,7 @@ void brd_ota_update() {
     }
     link = link_snapshot();
     if (g_notify_pending && link.connected && link.subscribed && link.generation == g_reply_generation &&
-        brd_scheduler_take_notify_slot() && g_status->notify(g_reply, sizeof(g_reply), link.handle)) { g_notify_pending = false; }
+        g_status->notify(g_reply, sizeof(g_reply), link.handle)) { g_notify_pending = false; }
 }
 bool brd_ota_is_busy() { return g_session.busy(); }
 brd_ota_display_t brd_ota_get_display() {

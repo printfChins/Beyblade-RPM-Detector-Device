@@ -9,25 +9,19 @@ brd_ota_display_t brd_ota_get_display() { return test_ota_display; }
 uint64_t test_clock_us=100000U;
 void (*test_interrupts[32])(void)={};
 bool brd_battery_is_low_locked() { return false; }
-/* [V1.4 OLED UI 修改] 渲染 WAIT LOAD/LOADED、SP/MAX 與充電/滿電版面。 */
-static bool test_battery_full = false;
-static bool test_charging = false;
-static bool test_ble_connected = false;
-static uint8_t test_battery_percent = 80U;
-bool brd_battery_is_full() { return test_battery_full; }
 bool brd_battery_is_adc_fault() { return false; }
 bool brd_battery_measurement_allowed() { return true; }
 void brd_battery_update() {}
-uint8_t brd_battery_get_percent() { return test_battery_full ? 100U : test_battery_percent; }
+uint8_t brd_battery_get_percent() { return 80U; }
 /* [新增] 真正 IR TEST OLED 模組所需的唯讀 stub。 */
 uint16_t brd_battery_get_voltage_mv() { return 4021U; }
 uint8_t brd_settings_ble_display_page() { return BRD_DISPLAY_PAGE_MAIN; }
 bool brd_io_read_ir1() { return false; }
 bool brd_io_read_ir2() { return false; }
 /* [新增] 配合 OLED 的 BLE 啟動狀態唯讀介面；開機預覽尚未啟動 BLE。 */
-bool brd_bbp_is_started() { return test_ble_connected; }
-bool brd_bbp_is_connected() { return test_ble_connected; }
-bool brd_io_is_charging() { return test_charging; }
+bool brd_bbp_is_started() { return false; }
+bool brd_bbp_is_connected() { return false; }
+bool brd_io_is_charging() { return false; }
 const brd_settings::Values &brd_settings_get() {
     static const brd_settings::Values value={0U,1U,30U,2000U}; return value;
 }
@@ -37,9 +31,6 @@ void brd_measurement_max_frame_presented(uint32_t) {}
 int main(int argc,char **argv) {
     if(argc!=2 && argc!=3) { return 1; }
     brd_oled_begin();
-    /* [V1.3 新增] 保存真正開機畫面，供後面的測試完成後還原。 */
-    uint8_t boot_frame[sizeof(g_oled_buffer)];
-    memcpy(boot_frame, g_oled_buffer, sizeof(boot_frame));
     /* [V1.2 新增] 驗證扇形圓盤 0%、25%、50%、75%、100% 填充像素必須遞增。 */
     unsigned previous_pixels = 0U;
     for (unsigned percent = 0U; percent <= 100U; percent += 25U) {
@@ -58,129 +49,7 @@ int main(int argc,char **argv) {
         if (percent == 100U) { assert((g_oled_buffer[(23U / 8U) * 128U + 13U] & (1U << (23U % 8U))) != 0U); }
     }
 
-    /* [V1.3 修正] 扇形驗證會清除 buffer；預覽應輸出開機畫面而非 100% 圓盤。 */
-    memcpy(g_oled_buffer, boot_frame, sizeof(boot_frame));
     if (argc == 3) {
-        /* [V1.4 OLED UI 修改] 用真正的 brd_oled.cpp framebuffer 驗證主頁所有元素。
-           驗證狀態/數值/閃電/電池/藍牙，且右上不出現 SOC 數字；不更動韌體偵測程式。 */
-        const char *scenario = argv[2];
-        bool test_main = strcmp(scenario, "wait") == 0 ||
-                         strcmp(scenario, "loaded") == 0 ||
-                         strcmp(scenario, "max") == 0 ||
-                         strcmp(scenario, "hold") == 0 ||
-                         strcmp(scenario, "charging") == 0 ||
-                         strcmp(scenario, "full") == 0 ||
-                         strncmp(scenario, "charge", 6U) == 0;
-        if (test_main) {
-            test_ota_display = {};
-            test_charging = strcmp(scenario, "charging") == 0 ||
-                            strcmp(scenario, "full") == 0 ||
-                            strncmp(scenario, "charge", 6U) == 0;
-            test_battery_full = strcmp(scenario, "full") == 0;
-            test_ble_connected = strcmp(scenario, "wait") != 0;
-            test_battery_percent = test_charging && !test_battery_full ? 99U : 76U;
-            /* [V1.4 OLED 修改] 使用 13 個不同時間點回歸測試：
-               即使 millis() 改變，充電電池內容仍須完全一致、不再掃描。 */
-            int static_phase = -1;
-            if (strncmp(scenario, "charge", 6U) == 0) {
-                if (scenario[6] >= '0' && scenario[6] <= '9' && scenario[7] == '\0') {
-                    static_phase = scenario[6] - '0';
-                } else if (scenario[6] >= 'A' && scenario[6] <= 'C' && scenario[7] == '\0') {
-                    static_phase = 10 + scenario[6] - 'A';
-                }
-                if (static_phase >= 0) {
-                    test_clock_us = (static_cast<uint64_t>(static_phase) * 160ULL + 20ULL) * 1000ULL;
-                }
-            }
-            brd_display_t display = {};
-            display.loaded = strcmp(scenario, "loaded") == 0 || test_charging;
-            display.show_max = strcmp(scenario, "max") == 0 || strcmp(scenario, "hold") == 0;
-            display.hold_active = strcmp(scenario, "hold") == 0;
-            display.value = display.show_max ? 18800U :
-                            (strcmp(scenario, "wait") == 0 ? 0U :
-                            (strcmp(scenario, "full") == 0 ? 0U : 15800U));
-            const char *status = display.loaded ? "LOADED" : "WAIT LOAD";
-            char expected_speed[16];
-            /* [V1.4 OLED 刪除] 右上角百分比文字已移除，測試不再生成 expected_percent。 */
-            snprintf(expected_speed, sizeof(expected_speed), display.show_max ? "MAX %u" : "SP %u",
-                     static_cast<unsigned>(display.value));
-            oled_begin_frame(display, brd_battery_get_percent(), test_charging);
-            uint8_t actual[sizeof(g_oled_buffer)];
-            memcpy(actual, g_oled_buffer, sizeof(actual));
-            /* [V1.4 OLED 修改] 獨立驗證：SP 去掉多餘空格後數字在 x36，MAX 仍為 x48。 */
-            oled_clear_buffer();
-            const char first_digit = display.value == 0U ? '0' : '1';
-            const unsigned number_x = display.show_max ? 48U : 36U;
-            oled_draw_char(static_cast<uint8_t>(number_x), 16U, first_digit, 2U);
-            for (unsigned y = 16U; y <= 29U; ++y) {
-                for (unsigned x = number_x; x <= number_x + 9U; ++x) {
-                    const bool expected = (g_oled_buffer[(y / 8U) * 128U + x] & (1U << (y % 8U))) != 0U;
-                    const bool rendered = (actual[(y / 8U) * 128U + x] & (1U << (y % 8U))) != 0U;
-                    assert(expected == rendered);
-                }
-            }
-            /* [新增] 獨立建立預期位置；不使用主頁繪製流程重建期望值。 */
-            oled_clear_buffer();
-            oled_draw_text(0U, 0U, status, 1U);
-            oled_draw_text(0U, 16U, expected_speed, 2U);
-            if (test_ble_connected) { oled_draw_bluetooth_icon(); }
-            /* [V1.4 OLED 修改] 電池在任何時間點都依 SOC 靜態顯示。 */
-            oled_draw_battery_icon(105U, 0U, brd_battery_get_percent());
-            if (test_charging && !test_battery_full) {
-                oled_draw_charging_icon(96U, 1U);
-            }
-            assert(memcmp(actual, g_oled_buffer, sizeof(actual)) == 0);
-
-            auto lit = [&actual](unsigned x, unsigned y) {
-                return (actual[(y / 8U) * 128U + x] & (1U << (y % 8U))) != 0U;
-            };
-            /* [V1.4 OLED 修改] 狀態文字以右的 x62..95 區域全空白：已完全移除 SOC 數字。 */
-            for (unsigned x = 62U; x < 96U; ++x) {
-                for (unsigned y = 0U; y < 9U; ++y) { assert(!lit(x, y)); }
-            }
-            /* 閃電 x96..100、間距 x101..104、電池 x105..124；滿電/未充電閃電熄滅。 */
-            for (unsigned x = 101U; x < 105U; ++x) {
-                for (unsigned y = 0U; y < 9U; ++y) { assert(!lit(x, y)); }
-            }
-            for (unsigned x = 125U; x < 128U; ++x) {
-                for (unsigned y = 0U; y < 9U; ++y) { assert(!lit(x, y)); }
-            }
-            for (unsigned x = 96U; x <= 100U; ++x) {
-                for (unsigned y = 1U; y < 8U; ++y) {
-                    if (!test_charging || test_battery_full) { assert(!lit(x, y)); }
-                }
-            }
-            /* [V1.4 OLED 修改] 充電中及未充電時都只顯示 SOC 靜態填充。
-               特別驗證不同 millis() 下沒有動畫黑線。 */
-            const unsigned expected_inner_width = (static_cast<unsigned>(brd_battery_get_percent()) * 13U + 50U) / 100U;
-            for (unsigned x = 0U; x < 13U; ++x) {
-                for (unsigned y = 2U; y <= 6U; ++y) {
-                    assert(lit(107U + x, y) == (x < expected_inner_width));
-                }
-            }
-            /* 電池白色外框四角與端子必須保持完整。 */
-            assert(lit(105U, 0U) && lit(121U, 0U));
-            assert(lit(105U, 8U) && lit(121U, 8U));
-            assert(lit(122U, 2U) && lit(124U, 6U));
-            if (display.show_max) {
-                /* MAX + 五位數保持 2 倍字體，右側 BLE 圖示前保留間距。 */
-                for (unsigned x = 108U; x < 119U; ++x) {
-                    for (unsigned y = 16U; y < 32U; ++y) { assert(!lit(x, y)); }
-                }
-            }
-            memcpy(g_oled_buffer, actual, sizeof(actual));
-            FILE *file = fopen(argv[1], "wb"); assert(file);
-            fprintf(file, "P5\n128 32\n255\n");
-            for (unsigned y = 0U; y < 32U; ++y) {
-                for (unsigned x = 0U; x < 128U; ++x) {
-                    const uint8_t gray = lit(x, y) ? 255U : 0U;
-                    fwrite(&gray, 1, 1, file);
-                }
-            }
-            fclose(file);
-            puts("PASS: OLED V1.4 SP single space, no SOC text, lightning left, static battery during charging, FULL and BLE.");
-            return 0;
-        }
         test_ota_display = {true, false, brd_ota::RECEIVING, 50U};
         /* [V1.2 新增] 模擬 OTA 各個進度，與單色 OLED framebuffer 對照。 */
         if (strncmp(argv[2], "ota", 3) == 0 && argv[2][3] != '\0') {

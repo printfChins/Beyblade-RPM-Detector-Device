@@ -1,24 +1,3 @@
-<!-- [V1.4 OLED UI 新增] 最新 OLED 主頁變更說明；下方 V1.3 說明保留歷史資訊。 -->
-## V1.4 OLED 主頁最新排版（2026-10-27）
-
-- `WAIT LOAD` / `LOADED`；即時轉速 `SP`，最高值 `MAX`，第二行原版 2 倍字體。
-- 右上角 `閃電 → 電池 → 0%~100%`；確認 FULL 顯示 `100%`、不顯示 `FULL` 文字，閃電熄滅。
-- **只修改 OLED 顯示程式，RPM ISR、BLE Notify、電池演算法、Arduino 主程式均未修改。**
-- [詳細修改位置與畫面驗證](docs/OLED_V1_4_SP_MAX_LAYOUT.md)／[OLED 實際 framebuffer 預覽](docs/OLED_V1_4_SP_MAX_BATTERY_ACTUAL.png)。
-- 韌體版本維持 V1.4；本包不包含實機編譯後的 BIN。
-
----
-
-# BRD BPX V1.3：RPM 優先＋BLE 連線修正版
-
-本次先閱讀 [BLE_LINK_STABILITY_README.md](BLE_LINK_STABILITY_README.md)：移除 BBP 佇列滿／Notify 逾時的強制斷線，保留同頁節流重試；版本更新為 V1.3，RPM > OLED > 其餘功能。
-
-[V1.3 修改] `brd_config.h` 的韌體版本改為 `V1.3`；`PROJECT_VERSION` 自動為 `BPX V1.3`，OLED 開機文字自動為 `FW VER V1.3`。既有 V1.2 文件名稱、歷史註解及變更紀錄保留當時版本；目前編譯版本以 `brd_config.h` 為準。
-
-請先閱讀 [RPM_PRIORITY_README.md](RPM_PRIORITY_README.md)，其內容取代下列舊版關於 HOLD、暫停捕捉及編譯檔的描述。此包僅附原始碼，沒有新版 .bin。
-
----
-
 ## V1.2 BLE OTA
 
 [V1.2 新增] 完整更新方式、檔案放置、主程式修改位置及驗證限制，請先閱讀 [OTA_V1.2_README.md](OTA_V1.2_README.md)。本專案不含未更新的舊 BIN。
@@ -55,7 +34,7 @@ AUTO 與 LOAD 都在 `current_rpm * 100 < max_rpm * finish_percent` 時結束並
 
 充電開關預設停用（`BLE_OFF_WHILE_CHARGING=0U`），充電時保留 BLE。已有有效 Flash 設定時仍載入原設定；若之前保存為啟用，需透過設定 API 將參數 `04` 設為 `0` 後 SAVE，才會改為充電時保留 BLE。也可 DEFAULTS 後 SAVE，但會同步重設全部四項參數。
 
-充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方大字 `BRD BPX`，下方小字 `FW VER V1.3`；版本號集中由 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION` 設定。實際繪圖函式的 framebuffer 預覽：
+充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方大字 `BRD BPX`，下方小字 `FW VER V1.1`；版本號集中由 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION` 設定。實際繪圖函式的 framebuffer 預覽：
 
 ![OLED 開機畫面](docs/OLED_boot_preview.png)
 

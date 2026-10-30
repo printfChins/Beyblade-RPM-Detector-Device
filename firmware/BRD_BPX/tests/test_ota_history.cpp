@@ -49,6 +49,3 @@ int main() {
     assert(restored.total == 1U && test_flash_writes == 1U);
     puts("PASS: pending last-shot publication and NVS persistence gate OTA start, including 600ms delay.");
 }
-
-/* [新增] 元件測試不限制主迴圈額度；整合測試另以真實 scheduler 驗證。 */
-bool brd_scheduler_take_notify_slot() { return true; }

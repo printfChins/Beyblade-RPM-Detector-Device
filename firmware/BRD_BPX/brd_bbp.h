@@ -10,7 +10,7 @@ struct brd_bbp_diagnostics_t {
     uint32_t notify_failures;
     uint32_t storage_failures;
     uint32_t init_failures;
-    /* [新增] GAP 回報原值，只有本裝置接受的主連線斷線才更新。 */
+    /* [V1.2.1 新增] 唯讀 GAP 斷線診斷，不新增 BLE API。 */
     uint32_t disconnect_events;
     int32_t last_disconnect_reason;
 };

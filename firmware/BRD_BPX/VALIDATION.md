@@ -1,15 +1,5 @@
 # 專案驗證紀錄
 
-## V1.3 版本更新 — 2026-10-25
-
-- [修改] `brd_config.h`：韌體版本 `V1.3`，派生名稱 `BPX V1.3`、OLED 開機文字 `FW VER V1.3`。
-- [修正] `tests/render_boot.cpp`：保存並還原真正開機 framebuffer，避免 OTA 扇形驗證覆蓋開機預覽；韌體顯示流程沒有因此變更。
-- [驗證] 重新執行 `python3 tests/run_host_tests.py`，12 個 host executables、13 個 RPM 優先案例、六個 BLE 連線案例、主程式語法檢查全部通過，ASan/UBSan 啟用；完整輸出見 `docs/V1_3_TEST_RESULTS.txt`。
-- [驗證] 重新產生並目視檢查 `docs/OLED_boot_preview.png`，上方 BRD BPX、下方 FW VER V1.3 完整顯示。
-- [限制] 尚未以 ESP32-C3 工具鏈編譯或實機燒錄，不附新版 BIN。下方紀錄保留當時歷史版本。
-
----
-
 ## V1.1 充電關閉 BLE 預設停用 — 2026-10-07
 
 - [修改] `brd_config.h` 的 `BLE_OFF_WHILE_CHARGING` 改為 `0U`。

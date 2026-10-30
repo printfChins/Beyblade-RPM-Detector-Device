@@ -20,8 +20,6 @@
 #include "brd_settings_ble.h"
 /* [V1.2 新增] 放在 setup() 前的 include 區。 */
 #include "brd_ota.h"
-/* [新增] 讓三組 BLE 服務共用每輪傳送額度。 */
-#include "brd_scheduler.h"
 void setup(void) {
     /* [新增] 所有硬體與量測啟動前，先載入 Flash 設定。 */
     brd_settings_begin();
@@ -31,10 +29,7 @@ void setup(void) {
     brd_oled_begin();
     brd_battery_update();
     if (brd_battery_measurement_allowed()) {
-        /* [修改] BLE 初始化前先建立原生 IRAM 擷取；初始化後立即處理事件。 */
-        brd_measurement_begin();
         brd_bbp_begin();
-        brd_measurement_update();
         brd_battery_update();
     }
     if (brd_battery_measurement_allowed()) {
@@ -44,44 +39,41 @@ void setup(void) {
         brd_bbp_stop();
     }
 }
-/* [新增] 放在 loop() 前。每個背景操作之間優先服務 RPM。 */
-static void service_rpm(void) {
-    if (!brd_ota_is_busy() && brd_battery_measurement_allowed()) {
-        brd_measurement_begin();
-        brd_measurement_update();
-    }
-}
-/* [修改] 原 loop() 完整替換：RPM > OLED > OTA/BBP/設定/保存。 */
 void loop(void) {
-    brd_scheduler_begin_cycle();
-    service_rpm();
     brd_battery_update();
     if (!brd_battery_measurement_allowed()) {
         brd_measurement_stop();
         brd_bbp_stop();
-        if (brd_battery_restart_required() && brd_bbp_prepare_restart()) { esp_restart(); }
+        /* [修正] SOC 恢復穩定後先保存 dirty 紀錄，成功才重啟，避免清除被撤回。 */
+        if (brd_battery_restart_required() && brd_bbp_prepare_restart()) {
+            esp_restart();
+        }
         brd_oled_update();
         delay(BATTERY_LOW_LOOP_DELAY_MS);
         return;
     }
-    service_rpm();
-    brd_oled_update();
-    service_rpm();
+    /* [V1.2 修改] OTA 持有量測 pause，不重新處理 GPIO / RPM 事件。 */
+    if (!brd_ota_is_busy()) {
+        brd_measurement_begin();
+        brd_measurement_update();
+    }
+    /* [V1.2 新增] 量測安全窗口建立後，再處理 OTA 入列請求。 */
     brd_ota_update();
-    service_rpm();
+    /* [保留] 量測事件優先，其次 BLE，最後 OLED 一個區塊。 */
     bool ota_busy = brd_ota_is_busy();
     bool storage_allowed = !ota_busy && brd_measurement_storage_allowed();
+    /* [新增] 充電策略只關閉 BLE，量測與本機歷史仍持續運作。 */
     if (!ota_busy && !brd_settings_bluetooth_allowed(brd_io_is_charging())) {
         brd_bbp_stop();
     } else if (storage_allowed) {
         brd_bbp_begin();
     }
-    service_rpm();
     brd_bbp_update(storage_allowed);
-    service_rpm();
+    /* [新增] GET / 通知仍運作；修改指令由設定模組檢查安全窗口。 */
     brd_settings_ble_update();
-    service_rpm();
+    /* [新增] 只在量測結束或閒置時保存；保存成功後不需重啟。 */
+    /* [V1.2 修改] OTA 期間只回覆設定 GET / BUSY，不執行 NVS 保存。 */
     if (!ota_busy) { brd_settings_update(); }
-    service_rpm();
+    brd_oled_update();
     delay(MAIN_LOOP_DELAY_MS);
 }
