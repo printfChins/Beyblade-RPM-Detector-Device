@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
+/* [OTA 新增] 參考 BRD_BPX V1.2 的 BLE OTA 協定模組。 */
+#include "ir_test_ota.h"
+
 #define LED_GPIO                       8
 #define IR1_GPIO                       3
 #define IR2_GPIO                       1
@@ -13,7 +16,7 @@
 /*
  * [新增] 電池 ADC 分壓設定。
  *
- * BAT+ ---- 470k ----+---- GPIO4 / ADC
+ * BAT+ ---- 470k ----+---- GPIO0 / ADC
  *                    |
  *                   470k
  *                    |
@@ -55,6 +58,9 @@
 static uint8_t g_oled_buffer[OLED_BUFFER_SIZE];
 static bool g_oled_ready = false;
 static uint32_t g_oled_last_update_ms = 0UL;
+/* [OTA 新增] OTA 模式不每 50ms 量測 72 次 ADC，降低 Flash 更新期間 CPU 負載。 */
+static uint32_t g_battery_last_update_ms = 0UL;
+static uint32_t g_battery_cached_mv = 0UL;
 
 int ls_IR1 = -1;
 int ls_IR2 = -1;
@@ -194,6 +200,15 @@ static const uint8_t *oledGetGlyph(char c) {
   /* [新增] BAT 顯示需要 T。 */
   static const uint8_t glyphT[5]     = {0x01, 0x01, 0x7F, 0x01, 0x01};
   static const uint8_t glyphV[5]     = {0x1F, 0x20, 0x40, 0x20, 0x1F};
+  /* [OTA 新增] 限定增加 OTA UPDATE / VERIFY / DONE / ERROR / % 所需字元。 */
+  static const uint8_t glyphE[5]     = {0x7F, 0x49, 0x49, 0x49, 0x41};
+  static const uint8_t glyphF[5]     = {0x7F, 0x09, 0x09, 0x09, 0x01};
+  static const uint8_t glyphN[5]     = {0x7F, 0x02, 0x0C, 0x10, 0x7F};
+  static const uint8_t glyphO[5]     = {0x3E, 0x41, 0x41, 0x41, 0x3E};
+  static const uint8_t glyphP[5]     = {0x7F, 0x09, 0x09, 0x09, 0x06};
+  static const uint8_t glyphU[5]     = {0x3F, 0x40, 0x40, 0x40, 0x3F};
+  static const uint8_t glyphY[5]     = {0x07, 0x08, 0x70, 0x08, 0x07};
+  static const uint8_t glyphPercent[5] = {0x62, 0x64, 0x08, 0x13, 0x23};
 
   switch (c) {
     case '0': return glyph0;
@@ -210,10 +225,18 @@ static const uint8_t *oledGetGlyph(char c) {
     case 'B': return glyphB;
     case 'C': return glyphC;
     case 'D': return glyphD;
+    case 'E': return glyphE;
+    case 'F': return glyphF;
     case 'I': return glyphI;
+    case 'N': return glyphN;
+    case 'O': return glyphO;
+    case 'P': return glyphP;
     case 'R': return glyphR;
     case 'T': return glyphT;
+    case 'U': return glyphU;
     case 'V': return glyphV;
+    case 'Y': return glyphY;
+    case '%': return glyphPercent;
     case '.': return glyphDot;
     case ' ':
     default:
@@ -246,6 +269,103 @@ static void oledDrawText(uint8_t x, uint8_t y, const char *text) {
     oledDrawChar(cursorX, y, *text);
     cursorX = (uint8_t)(cursorX + 6U);
     text++;
+  }
+}
+
+/*
+ * [OTA 新增] 與參考 BRD_BPX 相同的 OLED 扇形圓盤及兩倍字級百分比。
+ * 只使用原有的 5x7 glyph，% 使用 10x14 空心圓圈筆畫，不新增函式庫。
+ */
+static void oledDrawCharScaled2(uint8_t x, uint8_t y, char c) {
+  if (c == '%') {
+    /* [OTA 沿用] 參考 BRD_BPX 的 10x14 專用空心 % glyph。 */
+    static const uint16_t rows[14] = {
+      0x206U, 0x209U, 0x109U, 0x106U,
+      0x080U, 0x080U, 0x040U, 0x020U,
+      0x020U, 0x010U, 0x188U, 0x248U,
+      0x244U, 0x184U
+    };
+    for (uint8_t row = 0U; row < 14U; row++) {
+      for (uint8_t column = 0U; column < 10U; column++) {
+        if ((rows[row] & (1U << column)) != 0U) {
+          oledSetPixel((uint8_t)(x + column), (uint8_t)(y + row), true);
+        }
+      }
+    }
+    return;
+  }
+  const uint8_t *glyph = oledGetGlyph(c);
+  for (uint8_t column = 0U; column < 5U; column++) {
+    for (uint8_t row = 0U; row < 7U; row++) {
+      if ((glyph[column] & (1U << row)) != 0U) {
+        for (uint8_t dx = 0U; dx < 2U; dx++) {
+          for (uint8_t dy = 0U; dy < 2U; dy++) {
+            oledSetPixel((uint8_t)(x + column * 2U + dx),
+                         (uint8_t)(y + row * 2U + dy), true);
+          }
+        }
+      }
+    }
+  }
+}
+
+static void oledDrawTextScaled2(uint8_t x, uint8_t y, const char *text) {
+  while (text != nullptr && *text != '\0') {
+    oledDrawCharScaled2(x, y, *text);
+    x = (uint8_t)(x + 12U);
+    text++;
+  }
+}
+
+static void oledDrawOtaSector(uint8_t cx, uint8_t cy, uint8_t radius, uint8_t percent) {
+  if (percent > 100U) {
+    percent = 100U;
+  }
+  const int16_t r = (int16_t)radius;
+  const int16_t outer = r * r;
+  const int16_t inner = (r - 1) * (r - 1);
+
+  for (int16_t dy = -r; dy <= r; dy++) {
+    for (int16_t dx = -r; dx <= r; dx++) {
+      int16_t dist = dx * dx + dy * dy;
+      if (dist > outer) {
+        continue;
+      }
+      bool filled = (dist >= inner);
+      if (percent == 100U || (percent != 0U && dx == 0 && dy == 0)) {
+        filled = true;
+      } else if (percent != 0U) {
+        uint8_t quarter;
+        int16_t numerator;
+        int16_t denominator;
+        if (dx >= 0 && dy < 0) {
+          quarter = 0U;
+          numerator = dx;
+          denominator = dx - dy;
+        } else if (dx > 0 && dy >= 0) {
+          quarter = 1U;
+          numerator = dy;
+          denominator = dx + dy;
+        } else if (dx <= 0 && dy > 0) {
+          quarter = 2U;
+          numerator = -dx;
+          denominator = -dx + dy;
+        } else {
+          quarter = 3U;
+          numerator = -dy;
+          denominator = -dx - dy;
+        }
+        if ((uint32_t)percent * (uint32_t)denominator >=
+            (uint32_t)quarter * 25U * (uint32_t)denominator +
+            25U * (uint32_t)numerator) {
+          filled = true;
+        }
+      }
+      if (filled) {
+        oledSetPixel((uint8_t)((int16_t)cx + dx),
+                     (uint8_t)((int16_t)cy + dy), true);
+      }
+    }
   }
 }
 
@@ -332,7 +452,7 @@ static uint32_t readAdcMilliVolts(void) {
 }
 
 /*
- * [新增] 將 GPIO4 ADC 電壓換算回電池端電壓。
+ * [OTA 校正註解] 將 GPIO0 ADC 電壓換算回電池端電壓，算法不修改。
  *
  * 470k / 470k：
  * VBAT = VADC * 2
@@ -353,6 +473,22 @@ static uint32_t readBatteryMilliVolts(void) {
   return (uint32_t)batteryMilliVolts;
 }
 
+/*
+ * [OTA 新增] ADC 週期更新與 OLED 有無初始化成功解耦。
+ * 一般模式仍每 50ms 取 72 筆（8 dummy + 64 average）；
+ * OTA 期間每 1000ms 更新，避免 Flash 傳輸時被 ADC 長時間占用。
+ */
+static void batteryUpdate(void) {
+  uint32_t nowMs = millis();
+  uint32_t intervalMs = irTestOtaBusy() ? 1000UL : OLED_UPDATE_INTERVAL_MS;
+  if ((uint32_t)(nowMs - g_battery_last_update_ms) < intervalMs) {
+    return;
+  }
+  g_battery_cached_mv = readBatteryMilliVolts();
+  g_battery_last_update_ms = millis();
+  irTestOtaSetBatteryMv(g_battery_cached_mv);
+}
+
 static void oledDrawIrState(uint8_t x, uint8_t y, bool triggered) {
   const uint8_t boxSize = 12U;
 
@@ -365,26 +501,60 @@ static void oledDrawIrState(uint8_t x, uint8_t y, bool triggered) {
   }
 }
 
-static void oledUpdate(int ir1, int ir2) {
+/* =========================================================
+ * [OTA 新增] 原來 OLED 的 IR/ADC 顯示原樣保留；OTA 時改為專用進度畫面。
+ * ========================================================= */
+static void oledDrawOtaDisplay(const IrTestOtaDisplay &ota) {
+  char percentText[8];
+
+  oledClearBuffer();
+  if (ota.phase == brd_ota::COMPLETE) {
+    oledDrawText(0U, 1U, "OTA DONE");
+  } else if (ota.verifying) {
+    oledDrawText(0U, 1U, "VERIFY");
+  } else if (ota.phase == brd_ota::ERROR) {
+    oledDrawText(0U, 1U, "OTA ERROR");
+  } else {
+    oledDrawText(0U, 1U, "OTA UPDATE");
+  }
+
+  /* [OTA 沿用] 17x17 左扇形圓盤，中央大字百分比，完全對齊 BPX 的 UI。 */
+  oledDrawOtaSector(13U, 23U, 8U, ota.percent);
+  snprintf(percentText, sizeof(percentText), "%u%%", (unsigned)ota.percent);
+  uint8_t textWidth = (uint8_t)(strlen(percentText) * 12U);
+  uint8_t textX = (uint8_t)((OLED_WIDTH - textWidth) / 2U);
+  oledDrawTextScaled2(textX, 16U, percentText);
+  (void)oledFlush();
+}
+
+static void oledUpdate(int ir1, int ir2, bool force = false) {
   uint32_t nowMs = millis();
   uint32_t batteryMilliVolts;
   bool ir1Triggered;
   bool ir2Triggered;
   char batteryText[16];
+  IrTestOtaDisplay ota;
 
   if (g_oled_ready == false) {
     return;
   }
 
-  if ((uint32_t)(nowMs - g_oled_last_update_ms) < OLED_UPDATE_INTERVAL_MS) {
+  /* [OTA 修改] 保留原本每 50ms 更新 OLED 的速率。 */
+  if (!force && (uint32_t)(nowMs - g_oled_last_update_ms) < OLED_UPDATE_INTERVAL_MS) {
+    return;
+  }
+  g_oled_last_update_ms = nowMs;
+
+  ota = irTestOtaGetDisplay();
+
+  if (ota.active) {
+    oledDrawOtaDisplay(ota);
     return;
   }
 
-  g_oled_last_update_ms = nowMs;
-
   ir1Triggered = (ir1 == IR_TRIGGER_LEVEL);
   ir2Triggered = (ir2 == IR_TRIGGER_LEVEL);
-  batteryMilliVolts = readBatteryMilliVolts();
+  batteryMilliVolts = g_battery_cached_mv;
 
   snprintf(batteryText,
            sizeof(batteryText),
@@ -394,17 +564,22 @@ static void oledUpdate(int ir1, int ir2) {
 
   oledClearBuffer();
 
-  /* 第一列：IR1 / IR2 狀態。 */
+  /* [保留] 第一列：IR1 / IR2 原本的觸發狀態及方塊。 */
   oledDrawText(0U, 3U, "IR1");
   oledDrawIrState(20U, 1U, ir1Triggered);
 
   oledDrawText(48U, 3U, "IR2");
   oledDrawIrState(68U, 1U, ir2Triggered);
 
-  /* [修改] 第二列：顯示 470k / 470k 分壓換算後的電池端電壓。 */
+  /* [保留] 第二列：原本的電池端電壓，未修改分壓倍率及小數位數。 */
   oledDrawText(0U, 21U, batteryText);
 
-  oledFlush();
+  (void)oledFlush();
+}
+
+/* [OTA 新增] 由 Flash 驗證流程同步呼叫，立即讓使用者看到 VERIFY。 */
+void irTestOtaRenderNow() {
+  oledUpdate(digitalRead(IR1_GPIO), digitalRead(IR2_GPIO), true);
 }
 
 void setup() {
@@ -423,13 +598,28 @@ void setup() {
   /* [新增] 初始化 OLED。 */
   g_oled_ready = oledBegin();
   g_oled_last_update_ms = 0UL;
+
+  /* [OTA 新增] BLE 初始化前先取得有效電池電壓，不允許低電誤啟動 OTA。 */
+  g_battery_cached_mv = readBatteryMilliVolts();
+  g_battery_last_update_ms = millis();
+  irTestOtaSetBatteryMv(g_battery_cached_mv);
+
+  /* [OTA 新增] 與 IR 獨立的 BLE OTA，沒有引入 BBP、RPM、NVS 驅動。 */
+  (void)irTestOtaBegin();
 }
 
 void loop() {
   int IR1 = digitalRead(IR1_GPIO);
   int IR2 = digitalRead(IR2_GPIO);
 
-  if (IR1 != ls_IR1 || IR2 != ls_IR2) {
+  /* [OTA 新增] 先更新電壓安全判斷，再處理入列的 OTA BEGIN。 */
+  batteryUpdate();
+
+  /* [OTA 新增] BLE 回呼只入列；本機 loop 優先處理傳輸/校驗。 */
+  irTestOtaUpdate();
+
+  /* [OTA 修改] OTA 中不切換 IR LED；非 OTA 時保留原本狀態變化邏輯。 */
+  if (!irTestOtaBusy() && (IR1 != ls_IR1 || IR2 != ls_IR2)) {
     digitalToggle(LED_GPIO);
     ls_IR1 = IR1;
     ls_IR2 = IR2;
@@ -438,5 +628,6 @@ void loop() {
   /* [修改] 更新 OLED：IR 方塊 + 電池端電壓。 */
   oledUpdate(IR1, IR2);
 
-  delay(10);
+  /* [OTA 修改] OTA 期間縮短 loop delay，改善 GATT 封包處理能力。 */
+  delay(irTestOtaBusy() ? 1 : 10);
 }
