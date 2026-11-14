@@ -10,7 +10,7 @@ uint64_t test_clock_us=1000000U;
 void (*test_interrupts[32])(void)={};
 bool test_notify_ok=true;
 static bool allowed=true;
-static brd_settings::Manager model({0U,1U,30U,2000U},60000U);
+static brd_settings::Manager model({0U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH},60000U);
 static bool completed=false;
 bool brd_measurement_modifications_allowed() { return allowed; }
 const brd_settings::Manager &brd_settings_model() { return model; }
@@ -120,5 +120,20 @@ int main() {
     test_queue_receive_hook = reconnect_and_save_during_dequeue;
     step(); // 新連線立即 SAVE，也不可繼承斷線前的草稿。
     assert(!model.pending() && model.staged().mode==1U);
-    puts("PASS: settings GATT packets, BUSY/GET, second gate, READ fallback and connection generations.");
+    /* [V1.4.3 新增] 真正 GATT 接受 300mAh uint24 設定，且回覆仍為 20 bytes。 */
+    const uint8_t capacity_request[8] = {0xC1U, 1U, brd_settings::CMD_SET, 13U,
+                                         brd_settings::PARAM_BATTERY_CAPACITY_MAH, 0x2CU, 0x01U, 0x00U};
+    rx->setValue(capacity_request, sizeof(capacity_request));
+    rx->getCallbacks()->onWrite(rx, peer);
+    step();
+    assert(model.staged().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
+    assert(model.active().battery_capacity_mah == BATTERY_CAPACITY_200_MAH);
+    assert(tx->getValue().size() == brd_settings::RESPONSE_SIZE &&
+           (tx->getValue()[6] & 0x18U) == 0x10U);
+    write(brd_settings::CMD_SAVE, 14U); step();
+    assert(model.pending());
+    model.complete_save(true); completed = true; step();
+    assert(model.active().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
+    assert((tx->getValue()[6] & 0x18U) == 0x18U);
+    puts("PASS: settings GATT, 300mAh save/flags, BUSY/GET, READ fallback and connection generations.");
 }

@@ -1,3 +1,12 @@
+## V1.4.3 電池 300mAh 檔位 — 2026-11-06
+
+- [驗證] `tests/run_host_tests.py` 全套主機端回歸測試通過。
+- [新增] `test_battery_curve.cpp`：200mAh/100mA 每 72s +1%；300mAh/100mA 每 108s +1%；充電途中切換容量時重設 1% 計時；端電壓 SOC 上限不變。
+- [新增] `test_model.cpp`：BLE 設定 ID `05` 的容量合法值 200/300，其他值拒絕；20-byte 回覆 Flags bit3/bit4，NVS v1 -> 200mAh 相容與 v2 CRC / 300mAh 保存。
+- [新增] `test_runtime.cpp`：300mAh SAVE 後經 Preferences/NVS 模擬重啟保留，RPM / MAX / HOLD 回歸測試維持通過。
+- [保留] 100mA 充電電流僅是現有硬體設計設定值；仍需量測實際涓流與恆壓階段，108s 為理論限速而非充滿時間保證。
+- [限制] 未執行 ESP32-C3 Arduino 目標編譯、實機充電驗證或現有手機 App 的 bit3/4 解碼測試；無新增 `.bin`。
+
 # 專案驗證紀錄
 
 ## V1.1 充電關閉 BLE 預設停用 — 2026-10-07

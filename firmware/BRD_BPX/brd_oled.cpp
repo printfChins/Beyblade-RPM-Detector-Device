@@ -844,8 +844,10 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
         oled_draw_ota_sector(13U, 23U, 8U, g_frame_ota.percent);
         oled_draw_centered_text(16U, value_line, 2U);
     } else {
+        /* [修改] 即時轉速標籤由 SP 改為 RPM；MAX 狀態與轉速數值來源維持原樣。
+           [刪減] 原本的 SP 文字，不改變 RPM 量測演算法或 OLED 刷新週期。 */
         snprintf(value_line, sizeof(value_line), "%s %u",
-                 display.show_max ? "MAX" : "SP", (unsigned int)display.value);
+                 display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
         oled_draw_text(0U, 16U, value_line, 2U);
     }
     /* [修改] 充電停用分兩行顯示 BLE / OFF 小字；一般連線沿用原生藍牙符號。

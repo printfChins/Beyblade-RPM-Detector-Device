@@ -58,9 +58,38 @@
 #define BATTERY_ADC_ATTENUATION           ADC_ATTEN_DB_12
 #define BATTERY_DIVIDER_R_TOP_OHM         470000UL
 #define BATTERY_DIVIDER_R_BOTTOM_OHM      470000UL
-#define BATTERY_MIN_MV                   3300U
+/* [本次修改] 對齊 BRD_BPX(10) 的 21 點曲線 0% 端點。 */
+#define BATTERY_MIN_MV                   3460U
+/* [本次修改] 參考版設定 4200mV；實際 4150mV 起已由曲線返回 100%。 */
 #define BATTERY_MAX_MV                   4200U
 #define BATTERY_SAMPLE_INTERVAL_MS        1000UL
+/*
+    [本次修改] 充電電流固定 100mA，容量檔位自動選擇 200/250/300mAh。
+    [刪減] 單一 200mAh 固定週期：改由 brd_battery.cpp 依學習檔位計算。
+    [保留] 新版 21 點電池曲線、ADC、原始 SOC 低電鎖定門檻。
+    注意：只靠 CHRG_DET + 電壓無法保證識別電池的真實容量。
+*/
+#define BATTERY_NOMINAL_CAPACITY_MAH      200U
+#define BATTERY_CAPACITY_MIN_MAH          200U
+#define BATTERY_CAPACITY_STEP_MAH         50U
+#define BATTERY_CAPACITY_MAX_MAH          300U
+#define BATTERY_CHARGE_CURRENT_MA         100U
+/* [本次新增] 只支援三檔，公式：容量(mAh) * 3600000 / (100 * 電流mA)。 */
+#define BATTERY_CHARGE_SOC_RISE_INTERVAL_MS \
+    ((3600000UL * BATTERY_NOMINAL_CAPACITY_MAH) / (100UL * BATTERY_CHARGE_CURRENT_MA))
+#define BATTERY_CHARGE_DET_EXIT_CONFIRM_MS 3000UL
+/* [本次新增] 99% 持續 20 分鐘才視為升檔候選；每次充電最多升一檔。 */
+#define BATTERY_CAPACITY_99_STALL_MS      1200000UL
+/* [本次修改] 提前結束充電降檔條件：充電中 VBAT >= 4.20V 連續 60 秒。
+   [刪減] 舊 4.15V/30 秒與退出時 4.12V 的額外門檻；退出需通過既有 3 秒 GPIO10 去抖。
+   [保留] 充電至少 20 分鐘，退出前顯示 <= 90%，且每次充電最多變更一檔。 */
+#define BATTERY_CAPACITY_FULL_VOLTAGE_MV  4200U
+#define BATTERY_CAPACITY_FULL_STABLE_MS   60000UL
+#define BATTERY_CAPACITY_MIN_SESSION_MS   1200000UL
+/* [本次新增] 可信充滿時若顯示 SOC <=90%，才自動下調一檔。 */
+#define BATTERY_CAPACITY_DOWN_SOC_MAX     90U
+/* [本次新增] 插線前 SOC >85% 的充電不適合學習容量。 */
+#define BATTERY_CAPACITY_LEARN_START_SOC_MAX 85U
 #define BATTERY_CALIBRATION_NUMERATOR     1000UL
 #define BATTERY_CALIBRATION_DENOMINATOR   1000UL
 
@@ -112,7 +141,7 @@
 #define BRD_MEASUREMENT_MODE_LOAD         0U
 #define BRD_MEASUREMENT_MODE_AUTO         1U
 #ifndef BRD_MEASUREMENT_MODE
-#define BRD_MEASUREMENT_MODE              BRD_MEASUREMENT_MODE_AUTO
+#define BRD_MEASUREMENT_MODE              BRD_MEASUREMENT_MODE_LOAD
 #endif
 #define AUTO_RPM_THRESHOLD                2000U
 /* [刪減] AUTO_LAUNCH_ZERO_MS：AUTO 不再等待零轉速滿一秒，改共用百分比結束。 */
@@ -148,6 +177,29 @@
 #define OLED_RETRY_INTERVAL_MS           1000UL
 
 /* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
+/* [本次新增] 參考專案的電池容量/充電補償計時編譯期檢查。 */
+static_assert(BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_MIN_MAH &&
+              BATTERY_CAPACITY_MIN_MAH == 200U && BATTERY_CAPACITY_STEP_MAH == 50U &&
+              BATTERY_CAPACITY_MAX_MAH == 300U && BATTERY_CHARGE_CURRENT_MA == 100U,
+              "Capacity range must be 200/250/300 mAh, charge current must be 100mA.");
+static_assert(BATTERY_CAPACITY_99_STALL_MS > BATTERY_CHARGE_SOC_RISE_INTERVAL_MS &&
+              BATTERY_CAPACITY_99_STALL_MS < 0x80000000UL,
+              "Invalid capacity learning 99%% stall time.");
+static_assert(BATTERY_CAPACITY_FULL_STABLE_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_CAPACITY_MIN_SESSION_MS >= BATTERY_CAPACITY_FULL_STABLE_MS &&
+              BATTERY_CAPACITY_MIN_SESSION_MS < 0x80000000UL,
+              "Invalid capacity learning full-confirm time.");
+static_assert(BATTERY_CAPACITY_FULL_VOLTAGE_MV <= BATTERY_MAX_MV &&
+              BATTERY_CAPACITY_DOWN_SOC_MAX < 99U &&
+              BATTERY_CAPACITY_LEARN_START_SOC_MAX < 99U,
+              "Invalid capacity learning voltage or SOC guards.");
+static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS < 0x80000000UL,
+              "Invalid charge compensation update interval.");
+static_assert(BATTERY_CHARGE_DET_EXIT_CONFIRM_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_CHARGE_DET_EXIT_CONFIRM_MS < 0x80000000UL,
+              "Invalid CHRG_DET exit confirmation interval.");
+
 static_assert(BATTERY_ADC_RESOLUTION_BITS == 12U, "ESP32-C3 ADC requires 12-bit configuration.");
 static_assert(BATTERY_ADC_STALE_TIMEOUT_MS > BATTERY_SAMPLE_INTERVAL_MS &&
               BATTERY_ADC_STALE_TIMEOUT_MS < 0x80000000UL, "Invalid ADC stale timeout.");

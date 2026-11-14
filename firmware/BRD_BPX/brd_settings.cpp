@@ -15,7 +15,9 @@
 
 static const brd_settings::Values g_defaults = {
     BRD_MEASUREMENT_MODE, BLE_OFF_WHILE_CHARGING,
-    POST_LAUNCH_FINISH_PERCENT, AUTO_RPM_THRESHOLD
+    POST_LAUNCH_FINISH_PERCENT, AUTO_RPM_THRESHOLD,
+    /* [V1.4.3 新增] 既有使用者維持 200mAh 預設，不因韌體更新改用 300mAh。 */
+    BATTERY_NOMINAL_CAPACITY_MAH
 };
 static brd_settings::Manager g_model(g_defaults, RPM_VALID_MAX);
 static bool g_write_attempted = false;

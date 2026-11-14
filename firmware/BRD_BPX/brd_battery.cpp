@@ -1,6 +1,6 @@
 /*
     [BRD_BBP 修改] 僅更新檔案路徑註解，原功能保留。
-    檔案位置: BRD_BBP/brd_battery.cpp
+    檔案位置: BRD_BPX/brd_battery.cpp
     [V0.12 刪減] analogReadMilliVolts() 無法區分錯誤回傳與有效 0 mV 的路徑。
     [V0.12 新增] ESP-IDF ADC oneshot 讀值、校正與明確 esp_err_t 診斷。
     [保留] 每秒最多單次 ADC 轉換，直接換算 470k / 470k 分壓與 SOC。
@@ -16,6 +16,8 @@
 #include "brd_battery.h"
 #include "brd_config.h"
 #include "brd_io.h" /* [V1.2.1 新增] GPIO10 充電狀態僅用於 SOC 補償，不偵測 FULL。 */
+/* [V1.4.3 新增] 讀取已成功保存並生效的電池容量，不存取草稿。 */
+#include "brd_settings.h"
 
 struct battery_soc_point_t {
     uint16_t voltage_mv;
@@ -52,13 +54,16 @@ static bool g_battery_low_locked = false;
 /*
     [V1.2.1 新增] V1.4.1 充電百分比補償（無 FULL）：
     - 插入充電不直接按端電壓跳升 SOC。
-    - 200mAh / 100mA 每 72 秒最多 +1%；端電壓 SOC 為上限。
+    - [V1.4.3 修改] 200mAh / 100mA 每 72 秒 +1%；300mAh / 100mA 每 108 秒 +1%。
+    - 僅使用已生效設定，端電壓 SOC 仍為上限；不改放電查表或低電保護。
     - 充電偵測短暫離開最多等待 3 秒，避免拔線電壓震盪跳值。
-    - 拔線後可立即下降，向上回歸仍按 72 秒限速。
+    - 拔線後可立即下降，向上回歸仍按所選容量檔位限速。
     [刪減] FULL 候選、FULL 鎖存、FULL API、99% 封頂及 4.15V/30 秒判定。
 */
 static bool g_battery_charge_soc_tracking = false;
 static uint32_t g_battery_charge_soc_last_step_ms = 0UL;
+/* [V1.4.3 新增] 用於偵測 SAVE 切換容量，避免沿用舊檔位的充電計時。 */
+static uint16_t g_battery_charge_soc_capacity_mah = BATTERY_NOMINAL_CAPACITY_MAH;
 static bool g_battery_charge_det_exit_active = false;
 static uint32_t g_battery_charge_det_exit_start_ms = 0UL;
 static bool g_battery_charge_soc_reconcile_after_unplug = false;
@@ -176,6 +181,7 @@ void brd_battery_begin(void) {
     /* [V1.2.1 新增] 開機重置充電補償計時，避免跨重啟補算。 */
     g_battery_charge_soc_tracking = false;
     g_battery_charge_soc_last_step_ms = 0UL;
+    g_battery_charge_soc_capacity_mah = brd_settings_get().battery_capacity_mah;
     g_battery_charge_det_exit_active = false;
     g_battery_charge_det_exit_start_ms = 0UL;
     g_battery_charge_soc_reconcile_after_unplug = false;
@@ -260,6 +266,17 @@ void brd_battery_update(void) {
         ADC 仍每秒讀取一筆，錯誤樣本不修改 SOC。
         V1.2 百分比低電鎖定與恢復機制仍位於下方，沒有被替換。
     */
+    /*
+        [V1.4.3 新增] 只依已生效的 200/300mAh 設定推進 SOC。
+        容量於充電途中 SAVE 後，重新計時一整個 1% 區間，不立即補跳。
+        同樣適用拔線後尚在以充電時間限速回歸的情況。
+    */
+    const uint16_t capacity_mah = brd_settings_get().battery_capacity_mah;
+    const uint32_t charge_rise_interval_ms = BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah);
+    if (g_battery_charge_soc_capacity_mah != capacity_mah) {
+        g_battery_charge_soc_capacity_mah = capacity_mah;
+        g_battery_charge_soc_last_step_ms = now_ms;
+    }
     const bool charging = brd_io_is_charging();
     if (charging) {
         g_battery_charge_det_exit_active = false;
@@ -275,7 +292,7 @@ void brd_battery_update(void) {
             uint8_t stable_percent = previous_percent;
             if (voltage_based_percent > stable_percent &&
                 (uint32_t)(now_ms - g_battery_charge_soc_last_step_ms) >=
-                    BATTERY_CHARGE_SOC_RISE_INTERVAL_MS) {
+                    charge_rise_interval_ms) {
                 stable_percent++;
                 g_battery_charge_soc_last_step_ms = now_ms;
             } else if (voltage_based_percent <= stable_percent) {
@@ -304,7 +321,7 @@ void brd_battery_update(void) {
                 }
                 g_battery_percent = previous_percent;
                 if ((uint32_t)(now_ms - g_battery_charge_soc_last_step_ms) >=
-                    BATTERY_CHARGE_SOC_RISE_INTERVAL_MS) {
+                    charge_rise_interval_ms) {
                     g_battery_percent++;
                     g_battery_charge_soc_last_step_ms = now_ms;
                 }

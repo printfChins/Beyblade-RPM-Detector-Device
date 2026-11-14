@@ -22,19 +22,23 @@ static void put_u16(uint8_t *out, uint16_t value) {
 }
 bool equal(const Values &first, const Values &second) {
     return first.mode == second.mode && first.charging_ble_off == second.charging_ble_off &&
-           first.finish_percent == second.finish_percent && first.auto_min_rpm == second.auto_min_rpm;
+           first.finish_percent == second.finish_percent && first.auto_min_rpm == second.auto_min_rpm &&
+           first.battery_capacity_mah == second.battery_capacity_mah;
 }
 bool valid(const Values &value, uint32_t rpm_limit) {
     return value.mode <= 1U && value.charging_ble_off <= 1U &&
            value.finish_percent >= 1U && value.finish_percent <= 100U &&
-           value.auto_min_rpm >= 1U && value.auto_min_rpm < rpm_limit;
+           value.auto_min_rpm >= 1U && value.auto_min_rpm < rpm_limit &&
+           (value.battery_capacity_mah == BATTERY_CAPACITY_200_MAH ||
+            value.battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
 }
 void encode_storage(const Values &value, uint8_t out[STORAGE_SIZE]) {
     out[0] = 'B'; out[1] = 'R'; out[2] = 'D'; out[3] = 'C';
-    out[4] = 1U; out[5] = value.mode; out[6] = value.charging_ble_off;
+    /* [V1.4.3 修改] 儲存版 2，原保留欄位 byte10-11 改存電池容量；16 bytes/CRC 不變。 */
+    out[4] = 2U; out[5] = value.mode; out[6] = value.charging_ble_off;
     out[7] = value.finish_percent;
     put_u16(out + 8U, value.auto_min_rpm);
-    out[10] = out[11] = 0U;
+    put_u16(out + 10U, value.battery_capacity_mah);
     uint32_t crc = crc32(out, 12U);
     for (uint8_t index = 0U; index < 4U; index++) {
         out[12U + index] = static_cast<uint8_t>(crc >> (8U * index));
@@ -43,15 +47,19 @@ void encode_storage(const Values &value, uint8_t out[STORAGE_SIZE]) {
 bool decode_storage(const uint8_t *data, size_t length, uint32_t rpm_limit, Values &out) {
     if (data == nullptr || length != STORAGE_SIZE ||
         data[0] != 'B' || data[1] != 'R' || data[2] != 'D' || data[3] != 'C' ||
-        data[4] != 1U || data[10] != 0U || data[11] != 0U) {
+        (data[4] != 1U && data[4] != 2U) ||
+        (data[4] == 1U && (data[10] != 0U || data[11] != 0U))) {
         return false;
     }
     uint32_t stored_crc = 0U;
     for (uint8_t index = 0U; index < 4U; index++) {
         stored_crc |= static_cast<uint32_t>(data[12U + index]) << (8U * index);
     }
+    /* [V1.4.3 新增] 兼容 V1 NVS：舊 16-byte blob 的保留欄位為 0，容量視為 200mAh。 */
     Values value = {data[5], data[6], data[7],
-                    static_cast<uint16_t>(data[8] | (static_cast<uint16_t>(data[9]) << 8U))};
+                    static_cast<uint16_t>(data[8] | (static_cast<uint16_t>(data[9]) << 8U)),
+                    static_cast<uint16_t>(data[4] == 1U ? BATTERY_CAPACITY_200_MAH :
+                        (data[10] | (static_cast<uint16_t>(data[11]) << 8U)))};
     if (stored_crc != crc32(data, 12U) || !valid(value, rpm_limit)) {
         return false;
     }
@@ -90,6 +98,13 @@ Status Manager::stage(uint8_t parameter, uint32_t value) {
         case PARAM_AUTO_MIN_RPM:
             if (value < 1U || value >= rpm_limit_ || value > UINT16_MAX) { return OUT_OF_RANGE; }
             next.auto_min_rpm = static_cast<uint16_t>(value);
+            break;
+        case PARAM_BATTERY_CAPACITY_MAH:
+            /* [V1.4.3 新增] 不接受任意容量，避免不支援的電池模型誤用。 */
+            if (value != BATTERY_CAPACITY_200_MAH && value != BATTERY_CAPACITY_300_MAH) {
+                return OUT_OF_RANGE;
+            }
+            next.battery_capacity_mah = static_cast<uint16_t>(value);
             break;
         default: return BAD_PARAMETER;
     }
@@ -139,8 +154,15 @@ void make_response(const Manager &model, uint8_t command, uint8_t sequence,
                    uint8_t parameter, Status status, uint8_t out[RESPONSE_SIZE]) {
     out[0] = 0xC2U; out[1] = 1U; out[2] = command; out[3] = sequence;
     out[4] = status; out[5] = parameter;
+    /*
+        [V1.4.3 新增] 在原 20-byte 回覆 Flags 的空位回報容量檔位，不改 GATT MTU 或原欄位。
+        bit3: 生效值 300mAh；bit4: 草稿值 300mAh；0 表示 200mAh。
+        [保留] bit0~2 原有 SAVE / dirty / fault 語意。
+    */
     out[6] = (model.pending() ? 1U : 0U) | (model.dirty() ? 2U : 0U) |
-             (model.storage_fault() ? 4U : 0U);
+             (model.storage_fault() ? 4U : 0U) |
+             (model.active().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 8U : 0U) |
+             (model.staged().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 16U : 0U);
     out[7] = model.active().mode;
     put_u16(out + 8U, model.active().auto_min_rpm);
     out[10] = model.active().charging_ble_off;

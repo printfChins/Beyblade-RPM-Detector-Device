@@ -4,7 +4,7 @@
 
 # BRD_BPX — BLE 設定與共用 RPM 結束條件
 
-本包以重新提供的 BRD_BPX 專案為基礎，完成四項 BLE 設定、Flash 保存、AUTO / LOAD 共用結束條件及 OLED 開機排版。修改位置已用 `[新增]`、`[修改]`、`[刪減]` 註解標記。
+本包以重新提供的 BRD_BPX 專案為基礎，完成五項 BLE 設定、Flash 保存、AUTO / LOAD 共用結束條件及 OLED 開機排版。修改位置已用 `[新增]`、`[修改]`、`[刪減]` 註解標記。
 
 ## 使用方式
 
@@ -12,8 +12,14 @@
 
 - 原專案使用 ESP32C3 Dev Module、CPU 80 MHz、Flash 4 MB、DIO / 80 MHz；[V1.2 修改] 使用同層的自訂 partitions.csv（雙 OTA App 各 1984 KiB），不可再使用舊版預設分割表。
 - 依原專案版本使用 Arduino-ESP32 3.3.11、NimBLE-Arduino 2.5.1；程式要求 ESP-IDF >= 5.3。
-- 本次尚未以 ESP32 工具鏈編譯，未附新韌體 BIN，也未帶入原 ZIP 的舊 BIN / build。請重新編譯並完成板子驗證後燒錄。
+- V1.4.3 已通過主機端回歸測試，但尚未以 ESP32 工具鏈編譯，未附新韌體 BIN，也未帶入原 ZIP 的舊 BIN / build。請重新編譯並完成板子驗證後燒錄。
 - 若要保留 NVS 設定與歷史，停用 Erase All Flash Before Sketch Upload。擴容第一次必須透過 USB 更新分割表；詳見 FLASH_APP_1984_README.md。
+
+## [V1.4.3 新增] 電池容量檔位
+
+- [新增] `200 / 300mAh` 設定由 BLE 自有設定服務 ID `05` 操作，SAVE 成功後立即生效並寫入 NVS；原 200mAh 設定維持預設。
+- [修改] 100mA 設計充電電流下，每上升 1% 的最短時間：200mAh=`72s`，300mAh=`108s`；端電壓 SOC 上限、21 點放電曲線及低電保護機制維持原樣。
+- [保留] 原 BLE 設定請求 8 bytes、回覆 20 bytes、既有 UUID 與 BBP 封包均不更動。詳細十六進位指令、byte6 Flags 與 NVS 相容性參見 `SETTINGS_API.md`。
 
 ## 本次功能
 
@@ -27,12 +33,13 @@
 | AUTO 最低有效 RPM | 2000 | 1～59999 |
 | RPM 結束百分比 | 30% | 1～100% |
 | 充電時自動關閉 BLE | 停用，充電時保留 BLE | 啟用 / 停用 |
+| 電池容量 | 200mAh | 200 / 300mAh |
 
 AUTO 與 LOAD 都在 `current_rpm * 100 < max_rpm * finish_percent` 時結束並顯示最終 MAX。30% 指下降到 MAX 的三成；MAX=30000 時，要低於 9000 才結束。AUTO 必須先達最低 RPM 門檻，未達門檻的轉動不發布 MAX。兩種模式達有效條件後皆有 300 ms 無脈衝歸零備援；AUTO 移除原本等待零轉速 1000 ms 的結束條件。
 
 設定在 RAM 草稿修改，SAVE 接受後於非量測時段寫入 Flash，讀回成功才套用，重開保留。量測期間仍可查詢與接收通知；修改設定及清除歷史會拒絕，不在結束後自動執行被拒絕的命令。已接受的 SAVE 若遇到量測開始，則延後保存。完成的 MAX、HOLD 及曲線不會因套用設定而清除。
 
-充電開關預設停用（`BLE_OFF_WHILE_CHARGING=0U`），充電時保留 BLE。已有有效 Flash 設定時仍載入原設定；若之前保存為啟用，需透過設定 API 將參數 `04` 設為 `0` 後 SAVE，才會改為充電時保留 BLE。也可 DEFAULTS 後 SAVE，但會同步重設全部四項參數。
+充電開關預設停用（`BLE_OFF_WHILE_CHARGING=0U`），充電時保留 BLE。已有有效 Flash 設定時仍載入原設定；若之前保存為啟用，需透過設定 API 將參數 `04` 設為 `0` 後 SAVE，才會改為充電時保留 BLE。也可 DEFAULTS 後 SAVE，但會同步重設全部五項參數。
 
 充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方大字 `BRD BPX`，下方小字 `FW VER V1.1`；版本號集中由 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION` 設定。實際繪圖函式的 framebuffer 預覽：
 
@@ -52,7 +59,7 @@ LOAD 去抖預設 **50 ms**、MAX HOLD **2500 ms**、OLED 更新 100 ms 保留�
 
 | 檔案 | 用途 |
 |---|---|
-| `SETTINGS_API.md` | 四項參數、UUID、8-byte 請求、20-byte 回覆、App 操作及保存流程 |
+| `SETTINGS_API.md` | 五項參數、UUID、8-byte 請求、20-byte 回覆、App 操作及保存流程 |
 | `MODIFICATION_NOTE.md` | 完整新增／修改檔案與主程式加入位置 |
 | `VALIDATION.md` | 實際驗證與尚未完成的板子驗證 |
 | `CHANGELOG.md` | 本次行為變更 |

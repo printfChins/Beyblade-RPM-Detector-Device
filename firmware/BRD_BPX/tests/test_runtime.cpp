@@ -181,5 +181,11 @@ int main() {
     assert(!brd_settings_bluetooth_allowed(charging));
     apply(brd_settings::PARAM_CHARGING_BLE_OFF,0U);
     assert(brd_settings_bluetooth_allowed(charging));
-    puts("PASS: AUTO/LOAD ratio, BUSY/GET, safe Flash, MAX/history, 30000 RPM, polarity, wrap/overflow and charging.");
+    /* [V1.4.3 新增] 電池容量 SAVE 不修改量測模式，重新啟動後從 NVS 回復。 */
+    apply(brd_settings::PARAM_BATTERY_CAPACITY_MAH, BATTERY_CAPACITY_300_MAH);
+    assert(brd_settings_get().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
+    brd_settings_begin();
+    assert(brd_settings_get().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
+    assert(brd_settings_get().finish_percent == 50U);
+    puts("PASS: AUTO/LOAD, NVS battery 300mAh, MAX/history, RPM unchanged and charging.");
 }

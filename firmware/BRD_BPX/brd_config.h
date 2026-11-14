@@ -11,6 +11,8 @@
 #include <Arduino.h>
 #include <esp_idf_version.h>
 #include <hal/adc_types.h>
+/* [V1.4.3 新增] 電池容量檔位的唯一常數來源。 */
+#include "brd_battery_capacity.h"
 
 #if !defined(CONFIG_IDF_TARGET_ESP32C3)
 #error "Select ESP32C3 Dev Module for this project."
@@ -22,7 +24,7 @@
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
 /* [V1.2 修改] 韌體版本更新為 V1.2；[刪減] 原 V1.1 版本字串。 */
-#define PROJECT_FIRMWARE_VERSION          "V1.4.2" /* [V1.2.2 修改] 修正 HOLD 後 LOAD 誤觸發；維持 V1.2.1 的 BLE 與電池設計。 */
+#define PROJECT_FIRMWARE_VERSION          "V1.4.3" /* [V1.4.3 修改] 新增 300mAh 電池檔位及充電百分比計時。 */
 #define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
 #define PROJECT_BOOT_NAME                 "BRD BPX"
 #define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
@@ -137,11 +139,16 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define BATTERY_MIN_MV                   3460U /* [V1.2.1 修改] 21 點放電曲線的 0% 電壓。 */
 #define BATTERY_MAX_MV                   4200U
 #define BATTERY_SAMPLE_INTERVAL_MS        1000UL
-/* [V1.2.1 新增] 僅移植充電 SOC 補償，不加入 FULL 判定。 */
-#define BATTERY_NOMINAL_CAPACITY_MAH      200U
+/*
+    [V1.4.3 修改] 新增 300mAh 檔位，預設仍是 200mAh；已保存的容量由 BLE/NVS 設定優先。
+    [保留] 固定 100mA 充電、現有放電 SOC 查表與 FULL 判定政策。
+    200mAh / 100mA = 72秒 / 1%；300mAh / 100mA = 108秒 / 1%。
+*/
+#define BATTERY_NOMINAL_CAPACITY_MAH      BATTERY_CAPACITY_200_MAH
 #define BATTERY_CHARGE_CURRENT_MA         100U
-#define BATTERY_CHARGE_SOC_RISE_INTERVAL_MS \
-    ((3600000UL * BATTERY_NOMINAL_CAPACITY_MAH) / (100UL * BATTERY_CHARGE_CURRENT_MA))
+/* [V1.4.3 修改] 舊版固定的計時間隔改成可依目前容量計算。 */
+#define BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah) \
+    ((3600000UL * (capacity_mah)) / (100UL * BATTERY_CHARGE_CURRENT_MA))
 #define BATTERY_CHARGE_DET_EXIT_CONFIRM_MS 3000UL
 #define BATTERY_CALIBRATION_NUMERATOR     1000UL
 #define BATTERY_CALIBRATION_DENOMINATOR   1000UL
@@ -234,10 +241,16 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define OLED_RETRY_INTERVAL_MS           1000UL
 
 /* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
-static_assert(BATTERY_NOMINAL_CAPACITY_MAH > 0U && BATTERY_CHARGE_CURRENT_MA > 0U,
-              "Invalid charging compensation capacity/current.");
-static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
-              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS < 0x80000000UL,
+static_assert(BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_200_MAH ||
+              BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_300_MAH,
+              "Invalid default battery capacity.");
+static_assert(BATTERY_CHARGE_CURRENT_MA > 0U,
+              "Invalid charging compensation current.");
+static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_200_MAH) == 72000UL &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) == 108000UL,
+              "Invalid battery charging compensation intervals.");
+static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) >= BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) < 0x80000000UL,
               "Invalid charge compensation update interval.");
 static_assert(BATTERY_CHARGE_DET_EXIT_CONFIRM_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
               BATTERY_CHARGE_DET_EXIT_CONFIRM_MS < 0x80000000UL,

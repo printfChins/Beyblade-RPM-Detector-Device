@@ -42,6 +42,8 @@ void brd_battery_update(void);
 /* [保留] 失敗時保存最後有效值；請配合診斷的 has_valid_sample 判斷。 */
 uint16_t brd_battery_get_voltage_mv(void);
 uint8_t brd_battery_get_percent(void);
+/* [本次新增] 查詢自動學習容量檔位：200 / 250 / 300 mAh（不更改 OLED）。 */
+uint16_t brd_battery_get_capacity_mah(void);
 bool brd_battery_is_low_locked(void);
 bool brd_battery_restart_required(void);
 /* [V0.12 新增] ADC 故障與低電鎖定分開；故障恢復無須等到 10%。 */

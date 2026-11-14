@@ -166,6 +166,8 @@ static const uint8_t *oled_get_glyph(char c) {
     static const uint8_t glyph_O[5] = {0x3E, 0x41, 0x41, 0x41, 0x3E};
     static const uint8_t glyph_P[5] = {0x7F, 0x09, 0x09, 0x09, 0x06};
     static const uint8_t glyph_R[5] = {0x7F, 0x09, 0x19, 0x29, 0x46};
+    /* [本次新增] 補齊主頁 SP 所需 5x7 S 字形，避免字庫回傳空白。 */
+    static const uint8_t glyph_S[5] = {0x46, 0x49, 0x49, 0x49, 0x31};
     static const uint8_t glyph_T[5] = {0x01, 0x01, 0x7F, 0x01, 0x01};
     /* [新增] AUTO READY 顯示所需 U 字元。 */
     static const uint8_t glyph_U[5] = {0x3F, 0x40, 0x40, 0x40, 0x3F};
@@ -205,6 +207,7 @@ static const uint8_t *oled_get_glyph(char c) {
         case 'O': return glyph_O;
         case 'P': return glyph_P;
         case 'R': return glyph_R;
+        case 'S': return glyph_S; /* [本次新增] 支援 SP 首字母 */
         case 'T': return glyph_T;
         case 'U': return glyph_U;
         case 'V': return glyph_V;
@@ -450,7 +453,7 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
          (display.loaded ? "LOADED READY" : "WAIT LOAD"));
     oled_draw_text(0U, 0U, status_line, 1U);
     snprintf(value_line, sizeof(value_line), "%s %u",
-             display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
+             display.show_max ? "MAX" : "SP", (unsigned int)display.value); /* [本次修改] 主頁即時數值標示 RPM -> SP；MAX 保留 */
     oled_draw_text(0U, 16U, value_line, 2U);
 
     /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */

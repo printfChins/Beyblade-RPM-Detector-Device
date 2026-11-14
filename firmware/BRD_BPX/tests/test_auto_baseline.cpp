@@ -9,7 +9,7 @@ uint64_t test_clock_us = 100000U;
 void (*test_interrupts[32])(void) = {};
 TestGPIO GPIO = {};
 const brd_settings::Values &brd_settings_get() {
-    static const brd_settings::Values value = {1U,1U,30U,2000U};
+    static const brd_settings::Values value = {1U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH};
     return value;
 }
 static unsigned launches = 0U;
