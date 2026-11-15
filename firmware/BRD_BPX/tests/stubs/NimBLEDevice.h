@@ -9,6 +9,13 @@
 namespace NIMBLE_PROPERTY { constexpr uint16_t READ=1U, WRITE=2U, WRITE_NR=4U, NOTIFY=8U; }
 extern bool test_notify_ok;
 inline unsigned test_notify_attempts=0U;
+/* [V1.4.5 新增] 僅在硬體邊界注入廣播失敗及 GAP 排程交錯。 */
+inline unsigned test_deinit_calls=0U;
+inline bool test_advertising_stop_ok=true, test_advertising_start_ok=true;
+inline bool test_scan_response_ok=true, test_device_name_ok=true;
+inline std::string test_gap_name, test_scan_name;
+inline void (*test_advertising_stop_hook)()=nullptr;
+inline void (*test_set_device_name_hook)()=nullptr;
 class NimBLECharacteristic;
 class NimBLEServer;
 inline uint16_t test_negotiated_mtu = 23U;
@@ -74,17 +81,32 @@ public:
 };
 class NimBLEAdvertisementData {
 public:
+    std::string name;
     bool setFlags(uint8_t) { return true; }
     bool addServiceUUID(const char *) { return true; }
-    bool setName(const char *) { return true; }
+    bool setName(const char *value) { name=value; return true; }
 };
 class NimBLEAdvertising {
     bool advertising_=false;
 public:
     void enableScanResponse(bool) {}
     bool setAdvertisementData(const NimBLEAdvertisementData &) { return true; }
-    bool setScanResponseData(const NimBLEAdvertisementData &) { return true; }
-    bool start() { advertising_=true; return true; }
+    bool setScanResponseData(const NimBLEAdvertisementData &value) {
+        if (!test_scan_response_ok) { return false; }
+        test_scan_name=value.name; return true;
+    }
+    bool start() {
+        if (!test_advertising_start_ok) { return false; }
+        advertising_=true; return true;
+    }
+    bool stop() {
+        if (test_advertising_stop_hook) {
+            auto hook=test_advertising_stop_hook; test_advertising_stop_hook=nullptr; hook();
+        }
+        if (!test_advertising_stop_ok) { return false; }
+        advertising_=false; return true;
+    }
+    void stopForTest() { advertising_=false; }
     bool isAdvertising() { return advertising_; }
 };
 class NimBLEDevice {
@@ -92,13 +114,20 @@ class NimBLEDevice {
     inline static std::unique_ptr<NimBLEServer> server_;
     inline static NimBLEAdvertising advertising_;
 public:
-    static bool init(const char *) { initialized_=true; return true; }
+    static bool init(const char *name) { initialized_=true; test_gap_name=name; return true; }
+    static bool setDeviceName(const std::string &name) {
+        if (test_set_device_name_hook) {
+            auto hook=test_set_device_name_hook; test_set_device_name_hook=nullptr; hook();
+        }
+        if (!test_device_name_ok) { return false; }
+        test_gap_name=name; return true;
+    }
     static NimBLEServer *getServer() { return server_.get(); }
     static bool setPower(int) { return true; }
     static bool setMTU(uint16_t) { return true; }
     static NimBLEServer *createServer() { server_=std::make_unique<NimBLEServer>(); return server_.get(); }
     static NimBLEAdvertising *getAdvertising() { return &advertising_; }
     static bool isInitialized() { return initialized_; }
-    static void deinit(bool) { initialized_=false; server_.reset(); }
+    static void deinit(bool) { ++test_deinit_calls; initialized_=false; server_.reset(); advertising_.stopForTest(); }
 };
 #endif

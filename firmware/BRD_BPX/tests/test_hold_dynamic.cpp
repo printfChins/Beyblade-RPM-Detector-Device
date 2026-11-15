@@ -29,8 +29,9 @@ static void pulse(uint32_t us) {
 int main() {
     brd_measurement_begin();
     pulse(100U);
-    pulse(5000U);
-    pulse(20000U);
+    // [V1.4.5 修改] 使用持續高轉／下降，HOLD 時間斷言保留。
+    for (unsigned i = 0U; i < 5U; ++i) { pulse(5000U); }
+    for (unsigned i = 0U; i < 4U; ++i) { pulse(20000U); }
     assert(brd_measurement_get_display().hold_active);
     test_clock_us += 3999ULL * 1000ULL;
     brd_measurement_update();

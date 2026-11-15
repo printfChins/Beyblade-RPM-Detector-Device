@@ -46,6 +46,8 @@ static NimBLECharacteristic *g_characteristic = nullptr;
 static bool g_started = false;
 static bool g_accept_connections = false;
 static bool g_storage_loaded = false;
+/* [V1.4.5 新增] 歷史可供 RAM 使用，與原 NVS 是否允許覆寫分開判斷。 */
+static bool g_storage_read_only = false;
 static uint32_t g_last_start_attempt_ms = 0U;
 static bool g_start_attempted = false;
 static uint32_t g_last_advertise_attempt_ms = 0U;
@@ -160,6 +162,22 @@ class BbpCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 static BbpServerCallbacks g_server_callbacks;
 static BbpCharacteristicCallbacks g_characteristic_callbacks;
 
+/* [V1.4.5 新增] 不刪除／覆寫無法解碼的歷史，也不讓它阻止 BLE 與本機量測。 */
+static void set_storage_read_only(bool read_only) {
+    g_storage_read_only = read_only;
+    portENTER_CRITICAL(&g_link_mux);
+    g_diagnostics.storage_read_only = read_only;
+    portEXIT_CRITICAL(&g_link_mux);
+}
+static bool use_volatile_storage(void) {
+    increment_diagnostic(g_diagnostics.storage_failures);
+    brd_bbp::State empty;
+    brd_bbp::clear(empty);
+    g_session.restore(empty);
+    set_storage_read_only(true);
+    g_storage_loaded = true;
+    return true;
+}
 /* [V1.4.4 刪減] 不再以 MAC 產生名稱；改由 brd_ble_identity 讀取 NVS。 */
 static bool load_storage(void) {
     if (g_storage_loaded) {
@@ -167,8 +185,7 @@ static bool load_storage(void) {
     }
     Preferences preferences;
     if (!preferences.begin(BBP_NVS_NAMESPACE, false)) {
-        increment_diagnostic(g_diagnostics.storage_failures);
-        return false;
+        return use_volatile_storage();
     }
     if (preferences.isKey(BBP_NVS_KEY)) {
         brd_bbp::State restored;
@@ -176,20 +193,20 @@ static bool load_storage(void) {
         if (length != sizeof(g_storage) ||
             preferences.getBytes(BBP_NVS_KEY, g_storage, sizeof(g_storage)) != sizeof(g_storage) ||
             !brd_bbp::decode_storage(g_storage, sizeof(g_storage), restored)) {
-            /* [修正] 未能確認舊歷史時禁止覆寫，包括短讀、CRC 或版本錯誤。 */
-            increment_diagnostic(g_diagnostics.storage_failures);
+            /* [V1.4.5 修改] 短讀、CRC、版本或長度錯誤：保留原 blob，改用 RAM。 */
             preferences.end();
-            return false;
+            return use_volatile_storage();
         }
         g_session.restore(restored);
     }
     preferences.end();
-    /* [修正] 成功讀取或確認新 namespace 後才標記 ready。 */
+    /* [V1.4.5 修改] 正常歷史可保存；讀取失敗已由 RAM 備援獨立處理。 */
+    set_storage_read_only(false);
     g_storage_loaded = true;
     return true;
 }
 static void save_storage(uint32_t now_ms, bool allowed) {
-    if (!g_storage_loaded || !allowed || !g_session.dirty() ||
+    if (!g_storage_loaded || g_storage_read_only || !allowed || !g_session.dirty() ||
         static_cast<uint32_t>(now_ms - g_last_storage_attempt_ms) < BBP_RETRY_INTERVAL_MS) {
         return;
     }
@@ -323,6 +340,41 @@ void brd_bbp_stop(void) {
     g_characteristic = nullptr;
 }
 /*
+    [V1.4.5 新增] 更名只更新 GAP 名稱／Scan Response，保留 Server、服務與連線。
+    [刪減] 更名使用 stop/deinit/begin 的路徑，避免 TOCTOU 切斷剛接受的連線。
+    停止廣播後再核對連線；即使 GAP callback 更晚到達，也不會刪除該連線。
+*/
+static void refresh_advertising_name(uint32_t now_ms, bool allowed) {
+    if (!allowed || !g_started || !brd_ble_identity_needs_advertising_refresh() ||
+        link_snapshot().connected || brd_settings_save_pending() ||
+        (!g_storage_read_only && g_session.dirty()) ||
+        !brd_measurement_modifications_allowed() ||
+        static_cast<uint32_t>(now_ms - g_last_advertise_attempt_ms) < BBP_RETRY_INTERVAL_MS) {
+        return;
+    }
+    g_last_advertise_attempt_ms = now_ms;
+    NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
+    if (advertising == nullptr || !advertising->stop()) {
+        increment_diagnostic(g_diagnostics.init_failures);
+        return;
+    }
+    if (link_snapshot().connected) {
+        return;
+    }
+    NimBLEAdvertisementData scan_response;
+    if (!scan_response.setName(brd_ble_identity_active_name()) ||
+        !NimBLEDevice::setDeviceName(brd_ble_identity_active_name()) ||
+        !advertising->setScanResponseData(scan_response)) {
+        increment_diagnostic(g_diagnostics.init_failures);
+        return;
+    }
+    brd_ble_identity_clear_advertising_refresh();
+    if (!link_snapshot().connected && !advertising->start()) {
+        /* [新增] 名稱已更新成功；一般重試路徑稍後再啟動廣播。 */
+        increment_diagnostic(g_diagnostics.init_failures);
+    }
+}
+/*
     [修正 新增] 命令與主動通知使用同一個封包建立入口。
     相容模式只以 LOAD 表示 A0 狀態，純輪詢模式保留文件的電量及轉動旗標。
 */
@@ -354,16 +406,7 @@ void brd_bbp_update(bool storage_allowed) {
     g_session.update(micros(), BBP_PUBLISH_MIN_DELAY_US);
     bool published = previous_total != g_session.state().total;
     save_storage(now_ms, storage_allowed);
-    /* [V1.4.4 新增] 自訂名稱存檔後，等現有連線結束再更新廣播。
-       並確認設定已存完、OTA 空閒，不會搶走 RPM / NVS 寫入窗口。 */
-    if (storage_allowed && g_started && !link_snapshot().connected &&
-        !brd_settings_save_pending() && !g_session.dirty() &&
-        brd_measurement_modifications_allowed() &&
-        brd_ble_identity_needs_advertising_refresh()) {
-        brd_bbp_stop();
-        (void)brd_bbp_begin();
-        return;
-    }
+    refresh_advertising_name(now_ms, storage_allowed);
     if (!g_started) {
         return;
     }
@@ -391,7 +434,7 @@ void brd_bbp_update(bool storage_allowed) {
         (!link.connected || !link.subscribed || link.generation != g_tx_generation)) {
         g_tx_count = g_tx_index = 0U;
     }
-    if (!link.connected &&
+    if (!link.connected && !brd_ble_identity_needs_advertising_refresh() &&
         static_cast<uint32_t>(now_ms - g_last_advertise_attempt_ms) >= BBP_RETRY_INTERVAL_MS) {
         g_last_advertise_attempt_ms = now_ms;
         NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
@@ -406,12 +449,15 @@ void brd_bbp_update(bool storage_allowed) {
                 return;
             }
             /* [新增] 入列後若量測開始，再次丟棄清除操作；查詢不受限制。 */
-            if (request.command == 0x75U && !brd_measurement_modifications_allowed()) {
+            if (request.command == 0x75U &&
+                (!brd_measurement_modifications_allowed() || g_session.pending())) {
                 increment_diagnostic(g_diagnostics.invalid_commands);
                 return;
             }
             prepare_response(request.command, link);
             if (request.command == 0x75U) {
+                /* [V1.4.5 新增] 只有使用者明確清除，才解除壞歷史的覆寫保護。 */
+                set_storage_read_only(false);
                 g_last_storage_attempt_ms = now_ms - BBP_RETRY_INTERVAL_MS;
                 save_storage(now_ms, storage_allowed);
             }
@@ -466,7 +512,7 @@ bool brd_bbp_is_connected(void) {
 }
 bool brd_bbp_prepare_restart(void) {
     /* [修正] 呼叫端已確認 >=10% 持續恢復穩定，才允許寫入並重啟。 */
-    if (!g_storage_loaded || !g_session.dirty()) {
+    if (!g_storage_loaded || g_storage_read_only || !g_session.dirty()) {
         return true;
     }
     save_storage(millis(), true);
@@ -474,7 +520,9 @@ bool brd_bbp_prepare_restart(void) {
 }
 bool brd_bbp_ota_ready(void) {
     /* [修正 新增] 包含 600ms 發布延遲與 NVS 寫入重試期間。 */
-    return g_storage_loaded && !g_session.pending() && !g_session.dirty();
+    /* [V1.4.5 修改] 唯讀備援不會永久阻擋 OTA；RAM 歷史會在重啟後消失。 */
+    return g_storage_loaded && !g_session.pending() &&
+           (g_storage_read_only || !g_session.dirty());
 }
 brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void) {
     portENTER_CRITICAL(&g_link_mux);

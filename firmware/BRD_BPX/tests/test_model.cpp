@@ -80,6 +80,33 @@ int main() {
     model.complete_save(true);
     make_response(model, CMD_GET, 23U, 0U, OK, reply);
     assert((reply[6] & 0x78U) == 0x18U);
+
+    /* [V1.4.4 新增] 新檔位可保存為 v3。混合新舊檔時保留舊容量旗標。 */
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 501U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 0x0101F4U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 500U) == OK);
+    make_response(model, CMD_GET, 24U, 0U, OK, reply);
+    assert((reply[6] & 0xF8U) == 0x88U); /* 生效為 300，草稿需查 READ。 */
+    assert(model.request_save(25U) == PENDING);
+    model.complete_save(true);
+    assert(model.active().battery_capacity_mah == 500U);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 1000U) == OK);
+    assert(model.request_save(26U) == PENDING);
+    model.complete_save(true);
+    make_response(model, CMD_GET, 27U, 0U, OK, reply);
+    assert((reply[6] & 0xF8U) == 0x80U);
+    encode_storage(model.active(), blob);
+    assert(blob[4] == 3U && blob[10] == 0xE8U && blob[11] == 0x03U);
+    assert(decode_storage(blob, sizeof(blob), 60000U, restored));
+    assert(restored.battery_capacity_mah == 1000U && restored.hold_ms == 4200U);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 250U) == OK);
+    make_response(model, CMD_GET, 28U, 0U, OK, reply);
+    assert((reply[6] & 0xF8U) == 0xC0U); /* 生效需查 READ，草稿為 250。 */
+    assert(model.request_save(29U) == PENDING);
+    model.complete_save(true);
+    make_response(model, CMD_GET, 30U, 0U, OK, reply);
+    assert((reply[6] & 0xF8U) == 0x60U); /* 切回原檔位後清除 bit7。 */
+
     Values bad = model.active(); bad.hold_ms = HOLD_MAX_MS + 1U;
     encode_storage(bad, blob);
     assert(!decode_storage(blob, sizeof(blob), 60000U, restored));
@@ -96,5 +123,5 @@ int main() {
     request[1] = 2U;
     assert(handle_request(model, request, sizeof(request), true, reply) == BAD_VERSION);
     assert(handle_request(model, request, 2U, true, reply) == BAD_LENGTH);
-    puts("PASS: v1/v2 NVS migration, v3 HOLD/250/300, CRC and settings protocol.");
+    puts("PASS: v1/v2 NVS migration, v3 HOLD and capacity profiles, CRC and settings protocol.");
 }

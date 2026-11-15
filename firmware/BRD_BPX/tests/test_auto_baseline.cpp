@@ -27,11 +27,14 @@ static void pulse(uint32_t delta) {
 int main() {
     brd_measurement_begin();
     pulse(100U);
-    pulse(5000U);   // 12000 RPM
-    pulse(20000U);  // 3000 RPM < 12000 * 30%
+    // [V1.4.5 修改] 單點低值不得結束，持續低於百分比仍須完成。
+    for (unsigned i = 0U; i < 5U; ++i) { pulse(5000U); }
+    pulse(20000U);
+    assert(!brd_measurement_get_display().show_max);
+    for (unsigned i = 0U; i < 3U; ++i) { pulse(20000U); }
     const brd_display_t display = brd_measurement_get_display();
     if (!display.show_max || display.value != 12000U || launches != 1U) {
-        fprintf(stderr, "FAIL: AUTO must immediately finish below MAX ratio; show_max=%u value=%u launches=%u\n",
+        fprintf(stderr, "FAIL: AUTO must finish after confirmed low periods; show_max=%u value=%u launches=%u\n",
                 display.show_max, display.value, launches);
         return 1;
     }

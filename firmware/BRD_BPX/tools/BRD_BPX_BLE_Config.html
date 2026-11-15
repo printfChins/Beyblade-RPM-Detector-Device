@@ -16,7 +16,18 @@ main{max-width:720px;margin:25px auto;padding:0 18px 45px}h1{font-size:25px;marg
  <section class="card"><div class="line"><div><h2>裝置連線</h2><span id="connection" class="pill">未連線</span></div><div class="line"><button id="connect">搜尋並連線</button><button class="secondary" id="disconnect" disabled>中斷</button></div></div><p id="notice" class="small">請使用 Chrome 或 Edge，於 HTTPS 或 localhost 開啟；需支援 Web Bluetooth 的裝置。</p></section>
  <section class="card"><h2>目前裝置資訊</h2><div class="data"><div><small>韌體版本</small><strong id="version">—</strong></div><div><small>目前 BLE 名稱</small><strong id="currentName">—</strong></div><div><small>電池容量</small><strong id="currentCapacity">—</strong></div><div><small>HOLD 時間</small><strong id="currentHold">—</strong></div></div><div class="line" style="margin-top:18px"><button class="secondary" id="refresh" disabled>重新讀取</button><span id="result" class="small"></span></div></section>
  <section class="card"><h2>設定</h2><div class="stack">
-  <div><label for="capacity">電池容量（mAh）</label><select id="capacity"><option value="200">200 mAh</option><option value="250">250 mAh</option><option value="300">300 mAh</option></select><p class="small">以 100mA 計算，約 72／90／108 秒增加 1%；不修改充電 IC 的實際電流。</p></div>
+  <div>
+   <label for="capacity">電池容量（mAh）</label>
+   <select id="capacity">
+    <option value="200">200 mAh</option>
+    <option value="250">250 mAh</option>
+    <option value="300">300 mAh</option>
+    <!-- [V1.4.4 新增] 500 / 1000 mAh 充電百分比估算檔位。 -->
+    <option value="500">500 mAh</option>
+    <option value="1000">1000 mAh</option>
+   </select>
+   <p class="small">按 100 mA 估算，依容量選項順序，每增加 1% 至少需 72／90／108／180／360 秒。</p>
+  </div>
   <div><label for="hold">HOLD 時間（ms，1000～10000）</label><input id="hold" type="number" min="1000" max="10000" step="100" value="2500"></div>
   <div><label for="name">藍牙名稱（1～20 字元，英數、底線、連字號）</label><input id="name" maxlength="20" spellcheck="false" value="BEYBLADE_TOOL01"></div>
   <button id="save" disabled>儲存全部設定至裝置</button>
@@ -95,8 +106,10 @@ el('connect').addEventListener('click',()=>withBusy(async()=>{
 el('disconnect').addEventListener('click',()=>{if(device?.gatt?.connected)device.gatt.disconnect();});
 el('refresh').addEventListener('click',()=>withBusy(async()=>{await readSnapshot(true);status('已重新讀取生效設定');}));
 el('save').addEventListener('click',()=>withBusy(async()=>{
- const cap=Number(el('capacity').value),hold=Number(el('hold').value),name=el('name').value.trim();
- if(![200,250,300].includes(cap))throw Error('電池容量只能選擇 200 / 250 / 300mAh');
+ /* [V1.4.4 修改] 直接檢查下拉選單，刪除重複的容量清單。 */
+ const capacity=el('capacity');
+ if(capacity.selectedIndex<0)throw Error('請選擇電池容量');
+ const cap=Number(capacity.value),hold=Number(el('hold').value),name=el('name').value.trim();
  if(!Number.isInteger(hold)||hold<1000||hold>10000)throw Error('HOLD 必須介於 1000～10000 ms');
  if(!/^[A-Za-z0-9_-]{1,20}$/.test(name))throw Error('名稱只能有 1～20 個英數字、_ 或 -');
  log(`暫存容量 ${cap}mAh ...`);await sendCommand(2,5,cap);

@@ -25,8 +25,8 @@
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
-/* [V1.2 修改] 韌體版本更新為 V1.2；[刪減] 原 V1.1 版本字串。 */
-#define PROJECT_FIRMWARE_VERSION          "V1.4.4" /* [V1.4.4 修改] BLE 電池 200/250/300、名稱、版本與 HOLD 設定。 */
+/* [V1.4.4 修改] BLE 版本查詢與 OLED 開機畫面共用此版本。 */
+#define PROJECT_FIRMWARE_VERSION          "V1.4.4"
 #define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
 #define PROJECT_BOOT_NAME                 "BRD BPX"
 #define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
@@ -149,15 +149,14 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define BATTERY_MAX_MV                   4200U
 #define BATTERY_SAMPLE_INTERVAL_MS        1000UL
 /*
-    [V1.4.3 修改] 新增 300mAh 檔位，預設仍是 200mAh；已保存的容量由 BLE/NVS 設定優先。
-    [保留] 固定 100mA 充電、現有放電 SOC 查表與 FULL 判定政策。
-    200mAh / 100mA = 72秒 / 1%；300mAh / 100mA = 108秒 / 1%。
+    [V1.4.4 修改] 充電百分比依已保存生效的容量與 100 mA 估算電流計時。
+    200 / 250 / 300 / 500 / 1000 mAh 對應每 1% 至少 72 / 90 / 108 / 180 / 360 秒。
 */
 #define BATTERY_NOMINAL_CAPACITY_MAH      BATTERY_CAPACITY_200_MAH
 #define BATTERY_CHARGE_CURRENT_MA         100U
-/* [V1.4.3 修改] 舊版固定的計時間隔改成可依目前容量計算。 */
+/* [V1.4.4 修改] 3,600,000 ms/h 除以 100 後再乘容量，縮小 32-bit 中間值。 */
 #define BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah) \
-    ((3600000UL * (capacity_mah)) / (100UL * BATTERY_CHARGE_CURRENT_MA))
+    ((36000UL * (capacity_mah)) / BATTERY_CHARGE_CURRENT_MA)
 #define BATTERY_CHARGE_DET_EXIT_CONFIRM_MS 3000UL
 #define BATTERY_CALIBRATION_NUMERATOR     1000UL
 #define BATTERY_CALIBRATION_DENOMINATOR   1000UL
@@ -227,6 +226,15 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define RPM_MIN_PERIOD_US                500UL
 #define RPM_MAX_PERIOD_US                1000000UL
 #define RPM_VALID_MAX                    60000UL
+/*
+    [V1.4.5 新增] 固定 5 筆週期中位數：單一額外邊沿可切成兩筆短週期，
+    故不能只用 3 點中位數。啟動至少 3 筆，未滿 5 筆時保守選最長週期。
+    [保留] 不平均 RPM、不提高最短週期、不修改 GPIO／ISR 參考極性。
+    [新增] 百分比結束需連續 2 個確認值；無脈衝逾時另行直接結算。
+*/
+#define RPM_PERIOD_FILTER_SIZE           5U
+#define RPM_PERIOD_STARTUP_COUNT         3U
+#define RPM_FINISH_CONFIRM_COUNT         2U
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
 #define POST_LAUNCH_NO_RPM_TIMEOUT_MS      1200UL
@@ -251,18 +259,19 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define OLED_RETRY_INTERVAL_MS           1000UL
 
 /* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
-static_assert(BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_200_MAH ||
-              BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_250_MAH ||
-              BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_300_MAH,
+/* [V1.4.4 修改] 預設容量使用共用驗證，並檢查五個檔位的計時間隔。 */
+static_assert(brd_battery_capacity_is_supported(BATTERY_NOMINAL_CAPACITY_MAH),
               "Invalid default battery capacity.");
 static_assert(BATTERY_CHARGE_CURRENT_MA > 0U,
               "Invalid charging compensation current.");
 static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_200_MAH) == 72000UL &&
               BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_250_MAH) == 90000UL &&
-              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) == 108000UL,
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) == 108000UL &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_500_MAH) == 180000UL &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_1000_MAH) == 360000UL,
               "Invalid battery charging compensation intervals.");
-static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) >= BATTERY_SAMPLE_INTERVAL_MS &&
-              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) < 0x80000000UL,
+static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_200_MAH) >= BATTERY_SAMPLE_INTERVAL_MS &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_1000_MAH) < 0x80000000UL,
               "Invalid charge compensation update interval.");
 static_assert(BATTERY_CHARGE_DET_EXIT_CONFIRM_MS >= BATTERY_SAMPLE_INTERVAL_MS &&
               BATTERY_CHARGE_DET_EXIT_CONFIRM_MS < 0x80000000UL,
@@ -314,6 +323,10 @@ static_assert(PULSES_PER_REV == 1UL, "Each same-polarity interval must equal one
 static_assert(RPM_ISR_QUEUE_SIZE >= 2U && RPM_ISR_QUEUE_SIZE <= 256U,
               "RPM queue size must be between 2 and 256.");
 static_assert(RPM_VALID_MAX > 0UL && RPM_VALID_MAX <= 65535UL, "Invalid RPM limit.");
+static_assert(RPM_PERIOD_FILTER_SIZE == 5U && RPM_PERIOD_STARTUP_COUNT == 3U,
+              "RPM single-extra-edge rejection requires the 5/3 period window.");
+static_assert(RPM_FINISH_CONFIRM_COUNT >= 2U && RPM_FINISH_CONFIRM_COUNT <= 255U,
+              "RPM finish must require at least two confirmed periods.");
 static_assert(POST_LAUNCH_FINISH_PERCENT > 0U && POST_LAUNCH_FINISH_PERCENT <= 100U,
               "Invalid finish percentage.");
 static_assert(LOAD_IR_DEBOUNCE_US >= 10000UL && LOAD_IR_DEBOUNCE_US < 0x80000000UL,

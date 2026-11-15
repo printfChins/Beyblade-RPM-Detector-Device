@@ -29,12 +29,11 @@ bool equal(const Values &first, const Values &second) {
            first.hold_ms == second.hold_ms;
 }
 bool valid(const Values &value, uint32_t rpm_limit) {
+    /* [V1.4.4 修改] 設定驗證共用容量檔位清單。 */
     return value.mode <= 1U && value.charging_ble_off <= 1U &&
            value.finish_percent >= 1U && value.finish_percent <= 100U &&
            value.auto_min_rpm >= 1U && value.auto_min_rpm < rpm_limit &&
-           (value.battery_capacity_mah == BATTERY_CAPACITY_200_MAH ||
-            value.battery_capacity_mah == BATTERY_CAPACITY_250_MAH ||
-            value.battery_capacity_mah == BATTERY_CAPACITY_300_MAH) &&
+           brd_battery_capacity_is_supported(value.battery_capacity_mah) &&
            value.hold_ms >= HOLD_MIN_MS && value.hold_ms <= HOLD_MAX_MS;
 }
 void encode_storage(const Values &value, uint8_t out[STORAGE_SIZE]) {
@@ -116,9 +115,8 @@ Status Manager::stage(uint8_t parameter, uint32_t value) {
             next.auto_min_rpm = static_cast<uint16_t>(value);
             break;
         case PARAM_BATTERY_CAPACITY_MAH:
-            /* [V1.4.3 新增] 不接受任意容量，避免不支援的電池模型誤用。 */
-            if (value != BATTERY_CAPACITY_200_MAH && value != BATTERY_CAPACITY_250_MAH &&
-                value != BATTERY_CAPACITY_300_MAH) {
+            /* [V1.4.4 修改] 使用共用檔位驗證，取代個別比對。 */
+            if (!brd_battery_capacity_is_supported(value)) {
                 return OUT_OF_RANGE;
             }
             next.battery_capacity_mah = static_cast<uint16_t>(value);
@@ -176,18 +174,18 @@ void make_response(const Manager &model, uint8_t command, uint8_t sequence,
                    uint8_t parameter, Status status, uint8_t out[RESPONSE_SIZE]) {
     out[0] = 0xC2U; out[1] = 1U; out[2] = command; out[3] = sequence;
     out[4] = status; out[5] = parameter;
-    /*
-        [V1.4.3 新增] 在原 20-byte 回覆 Flags 的空位回報容量檔位，不改 GATT MTU 或原欄位。
-        bit3: 生效值 300mAh；bit4: 草稿值 300mAh；0 表示 200mAh。
-        [保留] bit0~2 原有 SAVE / dirty / fault 語意。
-    */
+    /* [V1.4.4 新增] bit7 表示生效或草稿含 500 / 1000 mAh，讀取 c7570008 取得完整容量。 */
+    const uint16_t active_capacity_mah = model.active().battery_capacity_mah;
+    const uint16_t staged_capacity_mah = model.staged().battery_capacity_mah;
+    const bool extended_capacity = active_capacity_mah >= BATTERY_CAPACITY_500_MAH ||
+                                   staged_capacity_mah >= BATTERY_CAPACITY_500_MAH;
     out[6] = (model.pending() ? 1U : 0U) | (model.dirty() ? 2U : 0U) |
              (model.storage_fault() ? 4U : 0U) |
-             (model.active().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 8U : 0U) |
-             (model.staged().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 16U : 0U) |
-             /* [V1.4.4 新增] bit5/6 回報 250mAh；200mAh 時四個容量 bit 都為 0。 */
-             (model.active().battery_capacity_mah == BATTERY_CAPACITY_250_MAH ? 32U : 0U) |
-             (model.staged().battery_capacity_mah == BATTERY_CAPACITY_250_MAH ? 64U : 0U);
+             (active_capacity_mah == BATTERY_CAPACITY_300_MAH ? 8U : 0U) |
+             (staged_capacity_mah == BATTERY_CAPACITY_300_MAH ? 16U : 0U) |
+             (active_capacity_mah == BATTERY_CAPACITY_250_MAH ? 32U : 0U) |
+             (staged_capacity_mah == BATTERY_CAPACITY_250_MAH ? 64U : 0U) |
+             (extended_capacity ? 128U : 0U);
     out[7] = model.active().mode;
     put_u16(out + 8U, model.active().auto_min_rpm);
     out[10] = model.active().charging_ble_off;

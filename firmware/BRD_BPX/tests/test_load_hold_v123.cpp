@@ -1,7 +1,7 @@
 /*
     檔案：BRD_BPX/tests/test_load_hold_v123.cpp
     [V1.2.3 新增] 使用真實 LOAD/RPM 量測 + BBP Session 驗證五階段流程。
-    [驗證] 30% 等號立即結束、HOLD 先停 ISR、3 秒不檢查 LOAD、不清 MAX；
+    [驗證] 30% 等號連續確認後結束、HOLD 先停 ISR、3 秒不檢查 LOAD、不清 MAX；
            HOLD 才封存 MAX/曲線；結束後 WAIT LOAD -> LOW -> HIGH 才歸零。
 */
 #include <cassert>
@@ -54,12 +54,17 @@ static void rpm(uint32_t us) {
     brd_measurement_update();
 }
 static void shot_10000_then_3000() {
+    const uint32_t previous_total = session.state().total;
     rpm(100U);
-    rpm(6000U); // 10000 SP
+    // [V1.4.5 修改] 連續有效週期建立 10000 RPM，避免測試依賴單筆峰值。
+    for (unsigned i = 0U; i < 5U; ++i) { rpm(6000U); }
     assert(!brd_measurement_get_display().show_max);
     assert(!session.pending());
-    assert(session.state().total == 0U);
-    rpm(20000U); // exactly 10000 x 30% = 3000 SP
+    assert(session.state().total == previous_total);
+    // [V1.4.5 修改] 3000 == 10000 x 30%，單點不結束，連續確認後結束。
+    rpm(20000U);
+    assert(!brd_measurement_get_display().hold_active);
+    for (unsigned i = 0U; i < 3U; ++i) { rpm(20000U); }
     assert(brd_measurement_get_display().show_max);
     assert(brd_measurement_get_display().value == 10000U);
     assert(brd_measurement_get_display().hold_active);
@@ -118,7 +123,7 @@ int main() {
     assert(brd_measurement_get_display().loaded);
     assert(!brd_measurement_get_display().show_max); // only real LOADED clears old MAX
     assert(brd_measurement_get_display().value == 0U);
-    rpm(100U); rpm(6000U); rpm(20000U);
+    shot_10000_then_3000();
     assert(finish_calls == 2U);
     assert(session.state().total == 1U); // second record is not published until HOLD
     assert(brd_measurement_get_display().hold_active);

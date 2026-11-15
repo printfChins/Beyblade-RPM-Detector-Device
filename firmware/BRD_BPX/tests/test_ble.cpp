@@ -83,8 +83,10 @@ int main() {
     assert(page->getValue()[0]==0U);
 
     tx->getCallbacks()->onSubscribe(tx,peer,1U); step();
-    auto write=[&](uint8_t op,uint8_t seq,uint8_t param=0U,uint8_t value=0U) {
-        uint8_t bytes[8]={0xC1U,1U,op,seq,param,value,0U,0U};
+    auto write=[&](uint8_t op,uint8_t seq,uint8_t param=0U,uint32_t value=0U) {
+        /* [V1.4.4 修改] 依原 uint24 指令格式送出高位元組。 */
+        uint8_t bytes[8]={0xC1U,1U,op,seq,param,static_cast<uint8_t>(value),
+                          static_cast<uint8_t>(value >> 8U),static_cast<uint8_t>(value >> 16U)};
         rx->setValue(bytes,sizeof(bytes)); rx->getCallbacks()->onWrite(rx,peer);
     };
     allowed=false;
@@ -188,5 +190,28 @@ int main() {
     name->getCallbacks()->onRead(name,peer);
     auto new_name=name->getValue();
     assert(std::string(new_name.begin(),new_name.end())==renamed);
-    puts("PASS: settings GATT, fw/read, 250mAh, HOLD, name save, READ fallback and link generations.");
+
+    /* [V1.4.4 新增] 大容量 SET 與 SAVE 前後都以實際 GATT READ 檢查 LE 格式。 */
+    auto assert_capacity_read = [&](uint8_t active_low, uint8_t active_high,
+                                    uint8_t staged_low, uint8_t staged_high) {
+        capacity->getCallbacks()->onRead(capacity, peer);
+        const auto bytes = capacity->getValue();
+        assert(bytes.size() == 4U && bytes[0] == active_low && bytes[1] == active_high &&
+               bytes[2] == staged_low && bytes[3] == staged_high);
+    };
+    write(brd_settings::CMD_SET, 18U, brd_settings::PARAM_BATTERY_CAPACITY_MAH, 500U); step();
+    assert(tx->getValue()[4] == brd_settings::OK);
+    assert_capacity_read(0xFAU, 0x00U, 0xF4U, 0x01U);
+    write(brd_settings::CMD_SAVE, 19U); step();
+    assert(model.pending()); model.complete_save(true); completed = true; step();
+    assert(tx->getValue()[4] == brd_settings::SAVED);
+    assert_capacity_read(0xF4U, 0x01U, 0xF4U, 0x01U);
+    write(brd_settings::CMD_SET, 20U, brd_settings::PARAM_BATTERY_CAPACITY_MAH, 1000U); step();
+    assert(tx->getValue()[4] == brd_settings::OK);
+    assert_capacity_read(0xF4U, 0x01U, 0xE8U, 0x03U);
+    write(brd_settings::CMD_SAVE, 21U); step();
+    assert(model.pending()); model.complete_save(true); completed = true; step();
+    assert(tx->getValue()[4] == brd_settings::SAVED);
+    assert_capacity_read(0xE8U, 0x03U, 0xE8U, 0x03U);
+    puts("PASS: settings GATT, fw/read, capacity SET/SAVE/READ, HOLD, name save and link generations.");
 }

@@ -66,4 +66,6 @@ run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
      "-Itests/battery_stubs", "-Itests/stubs", "-I.",
      "tests/test_battery_curve.cpp", "brd_battery.cpp", "-o", str(BIN / "battery_curve")])
 run([str(BIN / "battery_curve")])
-print("PASS: V1.4.4 LOAD/HOLD / BLE/OTA / 200/250/300mAh battery host regression tests.")
+# [V1.4.5 新增] 四項缺陷回歸與原有全部測試使用同一個入口。
+run(["python3", "tests/run_fix_regressions.py"])
+print("PASS: LOAD/HOLD / BLE/OTA / 200/250/300/500/1000mAh battery host regression tests.")

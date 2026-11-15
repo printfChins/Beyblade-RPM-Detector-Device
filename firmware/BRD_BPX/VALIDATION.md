@@ -1,3 +1,16 @@
+## V1.4.4（500／1000 mAh）— 2026-11-15
+
+- `python3 tests/run_host_tests.py` 通過。充電測試確認 500／1000 mAh 在第 180／360 秒才可增加 1%，並涵蓋 ADC 電壓限制、切換容量後重新計時及 `millis()` 回繞。
+- BLE 主機測試驗證兩個檔位的 SET／SAVE 及 4-byte 容量 READ。NVS 主機測試驗證重啟保留容量與其他設定，並涵蓋舊版 v1／v2 設定載入。
+- 網頁設定工具在模擬 GATT 連線中送出 `F4 01 00`／`E8 03 00` 容量值，收到 `SAVED` 後讀回並顯示正確容量。
+- ESP32-C3 目標編譯、實機 BLE 與電池充電曲線仍待驗證。此 ZIP 提供完整原始碼。
+
+## V1.4.5 — 2026-11-15
+
+- `python3 tests/run_host_tests.py` 執行既有主機測試與 140 個新回歸場景，全部通過。新場景也可用 `python3 tests/run_fix_regressions.py` 單獨重跑，使用 ASan / UBSan。
+- V1.4.4 對照版已重現額外脈衝假 MAX／提前 HOLD、單次低值提前 HOLD、CRC 使 BLE 啟動失敗、清歷史漏首發、改名與新連線交錯時停用 BLE。
+- 模擬驗證使用實際量測、Session、封包與 BLE 排程程式，GPIO、時鐘、NVS、NimBLE 使用主機替身。GPIO3 波形、手機重連與 ESP32-C3 目標編譯仍待實機環境驗證。
+
 ## V1.4.3 電池 300mAh 檔位 — 2026-11-06
 
 - [驗證] `tests/run_host_tests.py` 全套主機端回歸測試通過。

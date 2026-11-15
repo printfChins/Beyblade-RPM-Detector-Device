@@ -1,8 +1,7 @@
-[V1.4.4 全部原始碼／測試／文件清單]
-[修改] 移除原附件中過期的 ESP32-C3 BIN、ELF、MAP 與 build；新版本須重新編譯，避免誤燒。
+[BRD BPX V1.4.4 ZIP 檔案清單]
+以下路徑皆位於 BRD_BPX/。
 
 BRD_BPX.ino
-BRD_BPX.ino.esp32c3.bin
 CHANGELOG.md
 CHARGING_BLE_ICON_NOTE.md
 CLEAN_INSTALL_V1.4.2.md
@@ -23,6 +22,7 @@ V1.2.1_MIGRATION_README.md
 V1.2.3_LOAD_HOLD_README.md
 V1.4.3_BATTERY_300MAH_README.md
 V1.4.4_修改清單.md
+V1.4.5_CHANGES.md
 VALIDATION.md
 brd_battery.cpp
 brd_battery.h
@@ -81,6 +81,7 @@ tests/battery_stubs/esp_adc/adc_cali.h
 tests/battery_stubs/esp_adc/adc_cali_scheme.h
 tests/battery_stubs/esp_adc/adc_oneshot.h
 tests/render_boot.cpp
+tests/run_fix_regressions.py
 tests/run_host_tests.py
 tests/stubs/Arduino.h
 tests/stubs/NimBLEDevice.h
@@ -100,12 +101,14 @@ tests/stubs/soc/gpio_struct.h
 tests/test_auto_baseline.cpp
 tests/test_battery_curve.cpp
 tests/test_bbp_link.cpp
+tests/test_bbp_recovery.cpp
 tests/test_ble.cpp
 tests/test_ble_identity.cpp
 tests/test_hold_dynamic.cpp
 tests/test_hold_guard.cpp
 tests/test_ir_dxf_geometry.py
 tests/test_load_hold_v123.cpp
+tests/test_measurement_fixes.cpp
 tests/test_model.cpp
 tests/test_ota_history.cpp
 tests/test_ota_protocol.cpp

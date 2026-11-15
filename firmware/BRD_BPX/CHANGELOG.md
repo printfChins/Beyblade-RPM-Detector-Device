@@ -1,4 +1,18 @@
-# V1.4.4 — 2026-11-15
+# V1.4.4（500／1000 mAh）— 2026-11-15
+
+- [新增] BLE 設定及網頁工具支援 500 mAh、1000 mAh。以 100 mA 估算，顯示每增加 1% 至少需 180 秒、360 秒。
+- [修改] BLE SET 與 NVS 讀取共用容量驗證。已保存的容量在下一筆有效 ADC 重新開始計時。
+- [新增] 20-byte 回覆的 `FLAGS` bit7 指示生效／草稿容量包含新檔位。實際數值由 `c7570008` 讀取。
+
+# V1.4.5 — 2026-11-15
+
+- [修改] `brd_measurement.cpp` 採用 5 筆週期確認，額外脈衝及孤立低值測試涵蓋 LOAD、AUTO、兩種參考極性與 RPM ISR 佇列溢位後重同步。
+- [新增] `brd_bbp.cpp` 允許壞歷史使用 RAM 並繼續啟動 BLE。原 NVS 內容保留到使用者清除歷史。
+- [修改] `brd_bbp_session.cpp` 清除歷史後允許 READY 第一發進入 Session。
+- [刪減] `brd_bbp.cpp` 移除改名時停止並重新初始化 BLE 的路徑，由原廣播物件更新名稱。
+- [修改] `brd_config.h` 韌體版號更新為 V1.4.5。
+
+# 舊版 V1.4.4（250 mAh 與 HOLD 設定）— 2026-11-15
 
 - [修改] `brd_battery_capacity.h` 與設定模型新增 250mAh；充電 SOC 限速每 1%=90 秒（100mA 估算）。200/300mAh 仍為 72/108 秒。
 - [修改] `brd_config.h` 預設 BLE 名稱 `BEYBLADE_TOOL01`、版本 V1.4.4；不再以 MAC 形成廣播名稱，但 BBP 硬體 UID 仍保留原 eFuse MAC。

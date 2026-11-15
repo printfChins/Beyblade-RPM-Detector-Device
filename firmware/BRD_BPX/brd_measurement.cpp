@@ -4,14 +4,14 @@
     [V0.12 新增] 有界 LOAD 佇列、固定大小快照、溢位診斷與重新同步。
     [V0.12 刪減] LOAD 僅保存最後一次電位及 sequence 的處理方式。
     [V0.12 修改] 發射後門檻使用 cfg 的 MAX 設定百分比。
-    [保留] 不加入相鄰 RPM 週期合理性檢查或候選峰值濾波。
+    [V1.4.5 修改] 以固定 5 筆週期確認後才更新即時、MAX 與曲線，抑制孤立假峰值。
     [V1.4.2 修改] LOAD HOLD 恢復 2.5 秒（AUTO 原本 2.5 秒）；HOLD 不接收 LOAD/RPM 事件，發射結果於 HOLD 階段發布。
     [修改] RPM 使用 CHANGE；每次量測以第一個實際觸發邊沿固定參考極性。
     [修改] 先正緣則正緣到正緣計算 RPM；先負緣則負緣到負緣計算 RPM，中途不切換。
     [修改] LOAD 只負責裝載後歸零/啟動量測；卸載不參與發射成功判定。
-    [修改] 第一筆非 0 RPM 起即保存曲線，BLE Profile 只保留最早 32 點。
+    [V1.4.5 修改] 第一筆已確認非 0 RPM 起保存曲線，BLE Profile 只保留最早 32 點。
     [修改] MAX 與 32 點曲線獨立；32 點之後仍持續更新 MAX。
-    [V1.2.3 修改] LOAD 發射完成由即時 SP <= MAX × 結束百分比判定；AUTO 保留原嚴格小於規則。
+    [V1.4.5 修改] LOAD <= / AUTO < 的百分比規則不變，需連續兩個確認低值才結束。
     [修正] SPINNING 後 LOAD 變化與 LOAD Queue overflow 不得重置 RPM / MAX / 曲線。
     [修正] RPM Queue overflow 保留已取樣資料與本次參考極性，只重新建立同極性週期基準，不誤觸發 300 ms 結算。
     [新增] 可由 cfg 切換 LOAD / AUTO；AUTO 不以 LOAD 決定開始、發射或歸零。
@@ -68,6 +68,11 @@ static uint32_t g_launch_us = 0UL;
 static bool g_has_valid_rpm = false;
 static uint16_t g_current_rpm = 0U;
 static uint16_t g_max_rpm = 0U;
+/* [V1.4.5 新增] 只在主迴圈使用固定 RAM，ISR 不排序、不浮點、不配置記憶體。 */
+static uint32_t g_period_window[RPM_PERIOD_FILTER_SIZE] = {};
+static uint8_t g_period_window_count = 0U;
+static uint8_t g_period_window_next = 0U;
+static uint8_t g_finish_confirm_count = 0U;
 /* [新增] AUTO 達到執行時最低 RPM 後保存資格，共用百分比結束。 */
 static bool g_auto_launch_candidate = false;
 /* [刪減] AUTO 不再保存一秒零轉速候選時間戳記。 */
@@ -96,6 +101,50 @@ static bool time_before(uint32_t first, uint32_t second) {
 
 static bool measurement_uses_load(void) {
     return brd_settings_get().mode == BRD_MEASUREMENT_MODE_LOAD;
+}
+
+/* [V1.4.5 新增] 新量測／設定切換／缺失事件重同步，都不能沿用舊候選週期。 */
+static void reset_period_confirmation(void) {
+    g_period_window_count = 0U;
+    g_period_window_next = 0U;
+    g_finish_confirm_count = 0U;
+}
+
+static bool confirm_period(uint32_t period_us, uint32_t &confirmed_us) {
+    g_period_window[g_period_window_next] = period_us;
+    g_period_window_next = static_cast<uint8_t>((g_period_window_next + 1U) % RPM_PERIOD_FILTER_SIZE);
+    if (g_period_window_count < RPM_PERIOD_FILTER_SIZE) {
+        g_period_window_count++;
+    }
+    if (g_period_window_count < RPM_PERIOD_STARTUP_COUNT) {
+        return false;
+    }
+    /*
+        [V1.4.5 修正] 已有有效 RPM（含 queue overflow 後重同步）時，等滿 5 筆再輸出。
+        否則起始 3/4 筆「取最長」可能連續兩次選中同一筆孤立低值，誤觸發 HOLD。
+        首次量測仍可在 3 筆時建立保守估計；其後等待完整窗口，不重複確認候選。
+    */
+    if (g_has_valid_rpm && g_period_window_count < RPM_PERIOD_FILTER_SIZE) {
+        return false;
+    }
+    uint32_t sorted[RPM_PERIOD_FILTER_SIZE];
+    for (uint8_t i = 0U; i < g_period_window_count; ++i) {
+        uint8_t j = i;
+        while (j > 0U && sorted[j - 1U] > g_period_window[i]) {
+            sorted[j] = sorted[j - 1U];
+            --j;
+        }
+        sorted[j] = g_period_window[i];
+    }
+    /*
+        [新增] 額外一個參考邊沿最多把一圈切成兩個短週期。
+        已滿 5 筆選中位數；起始 3/4 筆選最長，避免啟動就採認這兩個短週期。
+        輸出仍是實際觀察過的整圈週期，不使用平均值製造新數值。
+    */
+    const uint8_t selected = g_period_window_count < RPM_PERIOD_FILTER_SIZE ?
+                             g_period_window_count - 1U : RPM_PERIOD_FILTER_SIZE / 2U;
+    confirmed_us = sorted[selected];
+    return true;
 }
 
 /* [新增] WAIT / READY / 完成後 HOLD 可修改；SPINNING 不可修改。 */
@@ -182,6 +231,7 @@ static void restart_input_capture(void) {
 }
 
 static void reset_measurement(bool loaded) {
+    reset_period_confirmation();
     /* [BRD_BBP 新增] 只重置本次曲線，不清除已發布歷史。 */
     brd_bbp_capture_reset();
     /*
@@ -239,20 +289,21 @@ static void finish_measurement(void) {
     brd_bbp_capture_finish();
 }
 
-static void check_launch_threshold(uint32_t event_us) {
+static void check_launch_threshold(uint32_t event_us, bool quiet_timeout = false) {
     /*
-        [修改] LOAD / AUTO 共用嚴格百分比結束條件。
+        [V1.4.5 修改] LOAD / AUTO 共用百分比連續確認；不變更各自比較符號。
         [新增] AUTO 必須先達最低 RPM 門檻，才可發布有效結果。
         [刪減] AUTO 等待 RPM=0 滿一秒的獨立發射邏輯。
-        使用交叉乘法保留百分比小數邊界，相等時不結束。
+        使用交叉乘法保留百分比小數邊界；LOAD <=，AUTO <。
     */
     if (g_state != BRD_STATE_SPINNING_LOADED || !g_has_valid_rpm || g_max_rpm == 0U ||
         (!measurement_uses_load() && !g_auto_launch_candidate)) {
+        g_finish_confirm_count = 0U;
         return;
     }
     /*
         [V1.2.3 修改] LOAD 在「等於」結束百分比時也完成。
-        範例 MAX 10000 / EndPercent 30：降到 3000 時即進入 HOLD。
+        [V1.4.5 修改] MAX 10000 / EndPercent 30：確認值連續兩點 <= 3000 才進入 HOLD。
         [保留] AUTO 原先的嚴格小於邏輯，不擅自改動 AUTO 模式。
     */
     const uint32_t current_scaled = static_cast<uint32_t>(g_current_rpm) * 100UL;
@@ -261,6 +312,14 @@ static void check_launch_threshold(uint32_t event_us) {
     const bool reached_finish = measurement_uses_load() ?
                                 (current_scaled <= finish_scaled) :
                                 (current_scaled < finish_scaled);
+    if (!reached_finish) {
+        g_finish_confirm_count = 0U;
+        return;
+    }
+    /* [V1.4.5 新增] 單次低值不能結束；300ms 無脈衝已由時間確認，無須再等一圈。 */
+    if (!quiet_timeout && ++g_finish_confirm_count < RPM_FINISH_CONFIRM_COUNT) {
+        return;
+    }
     if (reached_finish) {
         g_launch_us = event_us;
         g_state = BRD_STATE_SPINNING_LAUNCHED;
@@ -308,7 +367,7 @@ static void process_rpm_edge(const input_edge_t &edge) {
     }
 
     if (!g_period_valid[polarity]) {
-        /* [修改] 第一個參考邊沿只建立基準，下一個同極性邊沿才產生第一筆 RPM。 */
+        /* [V1.4.5 修改] 第一個參考邊沿只建立基準；後續週期須通過確認窗口。 */
         g_last_edge_us[polarity] = edge_us;
         g_last_activity_us = edge_us;
         g_period_valid[polarity] = true;
@@ -329,23 +388,29 @@ static void process_rpm_edge(const input_edge_t &edge) {
         return;
     }
 
-    const uint32_t rpm = 60000000UL / period_us / PULSES_PER_REV;
-    if (rpm == 0U || rpm > RPM_VALID_MAX) {
+    const uint32_t raw_rpm = 60000000UL / period_us / PULSES_PER_REV;
+    if (raw_rpm == 0U || raw_rpm > RPM_VALID_MAX) {
         return;
     }
 
     g_last_edge_us[polarity] = edge_us;
     g_last_activity_us = edge_us;
     g_quiet_expired = false;
+    /* [V1.4.5 新增] 原始有效邊沿可維持活動時間，只有確認後才可更新 MAX／曲線。 */
+    uint32_t confirmed_period_us;
+    if (!confirm_period(period_us, confirmed_period_us)) {
+        return;
+    }
+    const uint32_t rpm = 60000000UL / confirmed_period_us / PULSES_PER_REV;
     g_current_rpm = static_cast<uint16_t>(rpm);
     g_has_valid_rpm = true;
 
     /*
-        [修改] 每一筆「參考極性同極性週期」產生的非 0 RPM 都送入 Session。
+        [V1.4.5 修改] 每一筆已確認的參考極性週期才送入 Session。
         Profile 自己只保存最早 32 點；即使 Profile 已滿，Session 仍會以後續參考週期更新 representative/MAX。
         因此 BLE 取線與 MAX 完全獨立，另一極性不參與 RPM/MAX/曲線計算。
     */
-    brd_bbp_capture_period(period_us, edge_us, true);
+    brd_bbp_capture_period(confirmed_period_us, edge_us, true);
     if (g_current_rpm > g_max_rpm) {
         g_max_rpm = g_current_rpm;
     }
@@ -485,7 +550,8 @@ static void advance_input_time(uint32_t until_us, bool include_equal_timeouts,
             g_current_rpm = 0U;
             g_period_valid[LOW] = g_period_valid[HIGH] = false;
             g_quiet_expired = true;
-            check_launch_threshold(deadline);
+            reset_period_confirmation();
+            check_launch_threshold(deadline, true);
         } else if (timer == INPUT_TIMER_IDLE) {
             reset_measurement(!measurement_uses_load() || g_load_stable == LOAD_ACTIVE_LEVEL);
         } else if (timer == INPUT_TIMER_EMPTY_LAUNCH) {
@@ -595,6 +661,7 @@ void brd_measurement_update(void) {
             下一輪必須觀察 LOW 穩定 50ms，再收到 HIGH 穩定 50ms。
         */
         g_max_lock = false;
+        reset_period_confirmation();
         g_state = BRD_STATE_WAIT_LOAD;
         g_rpm_reference_level = -1;
         if (measurement_uses_load()) {
@@ -675,6 +742,7 @@ void brd_measurement_update(void) {
             同時把 quiet timeout 起點移到本次重新同步時間，避免立即觸發 300 ms 歸零。
         */
         g_period_valid[LOW] = g_period_valid[HIGH] = false;
+        reset_period_confirmation();
         if (g_state == BRD_STATE_SPINNING_LOADED && g_has_valid_rpm) {
             g_last_activity_us = now_us;
             g_quiet_expired = false;
@@ -752,6 +820,7 @@ bool brd_measurement_pause_for_settings(void) {
 void brd_measurement_resume_after_settings(bool applied) {
     if (!g_settings_paused) { return; }
     if (applied && g_measurement_enabled) {
+        reset_period_confirmation();
         /* [新增] 模式切換更新 LOAD 中斷，但不呼叫 stop/reset_capture 清除已完成曲線。 */
         if (g_load_interrupt_attached && !measurement_uses_load()) {
             detachInterrupt(digitalPinToInterrupt(LOAD_IR_GPIO));

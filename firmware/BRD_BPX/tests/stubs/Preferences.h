@@ -7,13 +7,15 @@
 extern std::map<std::string, std::vector<uint8_t>> test_nvs;
 extern unsigned test_flash_writes;
 extern bool test_flash_fail;
+inline bool test_preferences_begin_ok=true, test_preferences_read_ok=true;
 class Preferences {
     std::string prefix_;
 public:
-    bool begin(const char *name, bool = false) { prefix_ = std::string(name) + "/"; return true; }
+    bool begin(const char *name, bool = false) { prefix_ = std::string(name) + "/"; return test_preferences_begin_ok; }
     bool isKey(const char *key) { return test_nvs.count(prefix_ + key) != 0U; }
     size_t getBytesLength(const char *key) { return test_nvs[prefix_ + key].size(); }
     size_t getBytes(const char *key, void *out, size_t size) {
+        if (!test_preferences_read_ok) { return 0U; }
         const auto &data = test_nvs[prefix_ + key];
         size_t length = data.size() < size ? data.size() : size;
         if (length != 0U) { std::memcpy(out, data.data(), length); }

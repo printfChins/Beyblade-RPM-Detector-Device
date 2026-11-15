@@ -32,6 +32,10 @@ static void edge(uint32_t delta, int level = HIGH) {
     if (test_interrupts[RPM_IR_GPIO] != nullptr) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }
+// [V1.4.5 新增] 持續輸入真實相鄰週期，保留原設定／HOLD／回繞／溢位斷言。
+static void periods(uint32_t period, unsigned count, int level = HIGH) {
+    for (unsigned i = 0U; i < count; ++i) { edge(period, level); }
+}
 static brd_settings::Status command(uint8_t op, uint8_t param = 0U, uint32_t value = 0U) {
     uint8_t bytes[8] = {0xC1U,1U,op,3U,param,static_cast<uint8_t>(value),
                        static_cast<uint8_t>(value >> 8U),static_cast<uint8_t>(value >> 16U)};
@@ -61,7 +65,7 @@ int main() {
     // 閒置接受 SAVE 後量測立即開始：Flash 必須延後，當次仍使用舊 30%。
     assert(command(brd_settings::CMD_SET,brd_settings::PARAM_FINISH_PERCENT,50U) == brd_settings::OK);
     assert(command(brd_settings::CMD_SAVE) == brd_settings::PENDING);
-    edge(100U); edge(5000U); // MAX 12000
+    edge(100U); periods(5000U, 5U); // 已確認 MAX 12000
     assert(!brd_measurement_modifications_allowed());
     assert(command(brd_settings::CMD_SET,brd_settings::PARAM_FINISH_PERCENT,50U) == brd_settings::BUSY);
     assert(command(brd_settings::CMD_GET) == brd_settings::OK);
@@ -70,7 +74,7 @@ int main() {
     assert(test_flash_writes == before);
     edge(10000U); // 6000 > 30%
     assert(!brd_measurement_get_display().show_max);
-    edge(20000U); // 3000 < 30%
+    periods(20000U, 4U); // 3000 < 30%，連續確認
     assert(brd_measurement_get_display().show_max);
     assert(brd_measurement_get_display().value == 12000U);
     assert(brd_settings_get().finish_percent == 30U);
@@ -100,7 +104,7 @@ int main() {
     GPIO.in.val |= 1U << LOAD_IR_GPIO;
     test_interrupts[LOAD_IR_GPIO]();
     brd_measurement_update(); tick(LOAD_IR_DEBOUNCE_US);
-    edge(100U); edge(5000U); edge(10000U); // 6000 == 12000*50%，應立即進 HOLD。
+    edge(100U); periods(5000U, 5U); periods(10000U, 4U); // 6000 == 50%，確認後 HOLD。
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().hold_active);
     assert(brd_measurement_get_display().value == 12000U);
     edge(12000U); // [V1.2.3 驗證] HOLD 期間 RPM 不得中斷 MAX。
@@ -125,10 +129,10 @@ int main() {
     brd_measurement_stop(); brd_settings_begin();
     assert(brd_settings_get().mode == 0U && brd_settings_get().finish_percent == 50U);
     fresh_auto();
-    edge(100U); edge(40000U); // 1500 < 2000，無效結果。
+    edge(100U); periods(40000U, 5U); // 1500 < 2000，無效結果。
     tick(AUTO_RESET_ZERO_MS * 1000U + 1U);
     assert(!brd_measurement_get_display().show_max);
-    edge(100U); edge(5000U); // 達門檻後無脈衝，共同 300ms 備援。
+    edge(100U); periods(5000U, 5U); // 達門檻後無脈衝，共同 300ms 備援。
     tick(RPM_ZERO_TIMEOUT_MS * 1000U + 1U);
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 12000U);
     // 三萬 RPM、負緣先觸發、micros 回繞：32 點滿後 MAX 仍獨立更新。
@@ -141,12 +145,12 @@ int main() {
     edge(5000U, LOW); // 6000 RPM，跨越 micros() 回繞。
     for (unsigned index = 1U; index < 40U; index++) {
         edge(5000U, HIGH);
-        assert(brd_measurement_get_display().value == 6000U);
+        if (index >= 3U) { assert(brd_measurement_get_display().value == 6000U); }
         edge(5000U, LOW);
     }
-    edge(2000U, LOW); // 曲線已滿，MAX 仍更新到 30000。
+    periods(2000U, 5U, LOW); // 曲線已滿，持續新高仍更新到 30000。
     assert(brd_measurement_get_display().value == 30000U);
-    edge(10000U, LOW);
+    periods(10000U, 4U, LOW);
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 30000U);
     uint32_t previous_total = session.state().total;
     session.update(micros() + BBP_PUBLISH_MIN_DELAY_US, BBP_PUBLISH_MIN_DELAY_US);
@@ -169,9 +173,9 @@ int main() {
     edge(1000U, HIGH);
     edge(1000U, LOW); // overflow 後只重建同極性基準。
     assert(!brd_measurement_get_display().show_max);
-    edge(2000U, LOW);
+    periods(2000U, 5U, LOW);
     assert(brd_measurement_get_display().value == 30000U);
-    edge(10000U, LOW);
+    periods(10000U, 4U, LOW);
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 30000U);
     /* [V1.2.3 修改] HOLD 禁止修改設定；3 秒到期、回 WAIT LOAD 才可執行 CFG。 */
     tick(OLED_MAX_HOLD_MS * 1000U + 1000U);
@@ -181,11 +185,15 @@ int main() {
     assert(!brd_settings_bluetooth_allowed(charging));
     apply(brd_settings::PARAM_CHARGING_BLE_OFF,0U);
     assert(brd_settings_bluetooth_allowed(charging));
-    /* [V1.4.3 新增] 電池容量 SAVE 不修改量測模式，重新啟動後從 NVS 回復。 */
-    apply(brd_settings::PARAM_BATTERY_CAPACITY_MAH, BATTERY_CAPACITY_300_MAH);
-    assert(brd_settings_get().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
-    brd_settings_begin();
-    assert(brd_settings_get().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
-    assert(brd_settings_get().finish_percent == 50U);
-    puts("PASS: AUTO/LOAD, NVS battery 300mAh, MAX/history, RPM unchanged and charging.");
+    /* [V1.4.4 修改] 涵蓋 300/500/1000mAh，確認 SAVE 與重啟還原其他設定。 */
+    const uint16_t capacities[] = {BATTERY_CAPACITY_300_MAH, 500U, 1000U};
+    brd_settings::Values expected = brd_settings_get();
+    for (uint16_t capacity_mah : capacities) {
+        apply(brd_settings::PARAM_BATTERY_CAPACITY_MAH, capacity_mah);
+        expected.battery_capacity_mah = capacity_mah;
+        assert(brd_settings::equal(brd_settings_get(), expected));
+        brd_settings_begin();
+        assert(brd_settings::equal(brd_settings_get(), expected));
+    }
+    puts("PASS: AUTO/LOAD, NVS battery 300/500/1000mAh, MAX/history, confirmed RPM and charging.");
 }

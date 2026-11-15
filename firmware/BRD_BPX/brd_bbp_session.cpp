@@ -55,7 +55,7 @@ void Session::finish() {
 }
 void Session::abort() {
     reset_capture();
-    /* [新增] 清除、溢位或低電之後，不把同一發剩餘脈衝另算一筆。 */
+    /* [V1.4.5 修改] 中止或已發布後，不把同一發剩餘脈衝另算一筆；清歷史另用 reset_capture。 */
     blocked_ = true;
 }
 void Session::update(uint32_t now_us, uint32_t minimum_delay_us) {
@@ -88,7 +88,9 @@ uint8_t Session::command(uint8_t command, uint8_t battery_raw, const uint8_t uid
             return static_cast<uint8_t>(PAGE_COUNT);
         case 0x75:
             clear(state_);
-            abort();
+            /* [V1.4.5 修改] 清歷史後仍可接收 READY 的第一發；不得留下 blocked。
+               [保留] 由 BBP adapter 拒絕 SPINNING／待發布時的清除命令。 */
+            reset_capture();
             dirty_ = true;
             return 0U;
         case 0x61:

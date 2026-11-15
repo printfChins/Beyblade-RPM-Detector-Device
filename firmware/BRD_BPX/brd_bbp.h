@@ -13,6 +13,8 @@ struct brd_bbp_diagnostics_t {
     /* [V1.2.1 新增] 唯讀 GAP 斷線診斷，不新增 BLE API。 */
     uint32_t disconnect_events;
     int32_t last_disconnect_reason;
+    /* [V1.4.5 新增] 壞歷史保留原 blob，暫以 RAM 記錄；0x75 明確清除後恢復寫入。 */
+    bool storage_read_only;
 };
 bool brd_bbp_begin(void);
 void brd_bbp_stop(void);
@@ -25,7 +27,7 @@ bool brd_bbp_is_started(void);
 bool brd_bbp_is_connected(void);
 brd_bbp_diagnostics_t brd_bbp_get_diagnostics(void);
 void brd_bbp_capture_reset(void);
-// [R3 修改] 非參考邊沿只更新代表 MAX，不增加曲線點數。
+// [V1.4.5 修改] 僅接收量測模組已確認的同極性週期，代表 MAX 與曲線使用相同資料。
 void brd_bbp_capture_period(uint32_t period_us, uint32_t event_us, bool record_profile = true);
 // [R3 修改] 只標記發射；曲線從裝載後第一筆有效參考週期開始，不在發射時清除。
 void brd_bbp_capture_launch(uint32_t launch_us);

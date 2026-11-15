@@ -49,8 +49,9 @@ static void rpm_edge(uint32_t delta_us) {
 }
 static void shot() {
     rpm_edge(100U);
-    rpm_edge(5000U);   // 12000 RPM
-    rpm_edge(20000U);  // 3000 RPM < 12000*30%; finish
+    // [V1.4.5 修改] HOLD 測試改用已確認高轉與持續下降。
+    for (unsigned i = 0U; i < 5U; ++i) { rpm_edge(5000U); }
+    for (unsigned i = 0U; i < 4U; ++i) { rpm_edge(20000U); }
 }
 static void start_loaded() {
     brd_measurement_stop();

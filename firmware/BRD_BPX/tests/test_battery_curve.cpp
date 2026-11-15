@@ -133,6 +133,43 @@ static void test_charge_capacity_switch() {
     sample(4070, true);
     assert(brd_battery_get_percent() == 51U);
 }
+
+/* [V1.4.4 新增] 驗證兩檔的時間門檻，且到期仍須電壓 SOC 高於目前顯示。 */
+static void test_large_capacity_charging(uint16_t capacity_mah, unsigned interval_seconds) {
+    start(3721, false, capacity_mah);
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 50U);
+    for (unsigned second = 1U; second < interval_seconds; ++second) {
+        sample(4070, true);
+        assert(brd_battery_get_percent() == 50U);
+    }
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 51U);
+    for (unsigned second = 0U; second < interval_seconds; ++second) {
+        sample(3721, true);
+    }
+    assert(brd_battery_get_percent() == 51U);
+}
+
+/* [V1.4.4 新增] 新檔位切換後要重算完整區間，即使舊計時已超過新檔門檻。 */
+static void test_charge_switch_to_faster_profile() {
+    start(3721, false, 1000U);
+    sample(4070, true);
+    for (unsigned second = 0U; second < 200U; ++second) {
+        sample(4070, true);
+    }
+    assert(brd_battery_get_percent() == 50U);
+    test_settings.battery_capacity_mah = 500U;
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 50U);
+    for (unsigned second = 1U; second < 180U; ++second) {
+        sample(4070, true);
+        assert(brd_battery_get_percent() == 50U);
+    }
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 51U);
+}
+
 int main() {
     test_discharge_curve();
     test_charging_compensation();
@@ -140,5 +177,9 @@ int main() {
     test_250mah_charging_compensation();
     test_300mah_charging_compensation();
     test_charge_capacity_switch();
-    puts("PASS: 21-point discharge SOC, low-lock, 200mAh/72s, 250mAh/90s, 300mAh/108s, capacity switching, no FULL.");
+    test_large_capacity_charging(500U, 180U);
+    test_clock_us = (static_cast<uint64_t>(UINT32_MAX) - 120000U) * 1000U;
+    test_large_capacity_charging(1000U, 360U); /* 計時跨越 millis() 回繞。 */
+    test_charge_switch_to_faster_profile();
+    puts("PASS: discharge SOC, low-lock, 72/90/108/180/360s charge intervals, capacity switching and millis wrap.");
 }

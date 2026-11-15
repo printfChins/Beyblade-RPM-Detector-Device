@@ -22,7 +22,7 @@ enum Parameter : uint8_t {
     PARAM_AUTO_MIN_RPM = 2U,
     PARAM_FINISH_PERCENT = 3U,
     PARAM_CHARGING_BLE_OFF = 4U,
-    /* [V1.4.3 新增] BLE SET ID=05，僅允許 200 / 300 mAh。 */
+    /* [V1.4.4 修改] BLE SET ID=05，容量檔位定義於 brd_battery_capacity.h。 */
     PARAM_BATTERY_CAPACITY_MAH = 5U,
     /* [V1.4.4 新增] LOAD/AUTO 共用 HOLD 自鎖時間 (ms)。 */
     PARAM_HOLD_MS = 6U
