@@ -152,7 +152,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
     [V1.4.4 修改] 充電百分比依已保存生效的容量與 100 mA 估算電流計時。
     200 / 250 / 300 / 500 / 1000 mAh 對應每 1% 至少 72 / 90 / 108 / 180 / 360 秒。
 */
-#define BATTERY_NOMINAL_CAPACITY_MAH      BATTERY_CAPACITY_200_MAH
+#define BATTERY_NOMINAL_CAPACITY_MAH      BATTERY_CAPACITY_300_MAH
 #define BATTERY_CHARGE_CURRENT_MA         100U
 /* [V1.4.4 修改] 3,600,000 ms/h 除以 100 後再乘容量，縮小 32-bit 中間值。 */
 #define BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah) \
