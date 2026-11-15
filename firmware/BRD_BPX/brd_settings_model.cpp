@@ -5,6 +5,8 @@
     [新增] 保存失敗維持舊執行設定；NVS 使用明確序列化，避免 struct padding。
 */
 #include "brd_settings_model.h"
+/* [V1.4.4 新增] 保留純 C++ 設定模型，不依賴 Arduino / ESP-IDF。 */
+#include "brd_hold_limits.h"
 namespace brd_settings {
 static uint32_t crc32(const uint8_t *data, size_t length) {
     uint32_t crc = UINT32_MAX;
@@ -23,44 +25,58 @@ static void put_u16(uint8_t *out, uint16_t value) {
 bool equal(const Values &first, const Values &second) {
     return first.mode == second.mode && first.charging_ble_off == second.charging_ble_off &&
            first.finish_percent == second.finish_percent && first.auto_min_rpm == second.auto_min_rpm &&
-           first.battery_capacity_mah == second.battery_capacity_mah;
+           first.battery_capacity_mah == second.battery_capacity_mah &&
+           first.hold_ms == second.hold_ms;
 }
 bool valid(const Values &value, uint32_t rpm_limit) {
     return value.mode <= 1U && value.charging_ble_off <= 1U &&
            value.finish_percent >= 1U && value.finish_percent <= 100U &&
            value.auto_min_rpm >= 1U && value.auto_min_rpm < rpm_limit &&
            (value.battery_capacity_mah == BATTERY_CAPACITY_200_MAH ||
-            value.battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
+            value.battery_capacity_mah == BATTERY_CAPACITY_250_MAH ||
+            value.battery_capacity_mah == BATTERY_CAPACITY_300_MAH) &&
+           value.hold_ms >= HOLD_MIN_MS && value.hold_ms <= HOLD_MAX_MS;
 }
 void encode_storage(const Values &value, uint8_t out[STORAGE_SIZE]) {
     out[0] = 'B'; out[1] = 'R'; out[2] = 'D'; out[3] = 'C';
-    /* [V1.4.3 修改] 儲存版 2，原保留欄位 byte10-11 改存電池容量；16 bytes/CRC 不變。 */
-    out[4] = 2U; out[5] = value.mode; out[6] = value.charging_ble_off;
+    /* [V1.4.4 修改] v3 為 20 bytes；前 12 bytes 維持舊版資料欄位位置。 */
+    out[4] = 3U; out[5] = value.mode; out[6] = value.charging_ble_off;
     out[7] = value.finish_percent;
     put_u16(out + 8U, value.auto_min_rpm);
     put_u16(out + 10U, value.battery_capacity_mah);
-    uint32_t crc = crc32(out, 12U);
+    put_u16(out + 12U, value.hold_ms);
+    out[14] = 0U; out[15] = 0U;
+    uint32_t crc = crc32(out, 16U);
     for (uint8_t index = 0U; index < 4U; index++) {
-        out[12U + index] = static_cast<uint8_t>(crc >> (8U * index));
+        out[16U + index] = static_cast<uint8_t>(crc >> (8U * index));
     }
 }
 bool decode_storage(const uint8_t *data, size_t length, uint32_t rpm_limit, Values &out) {
-    if (data == nullptr || length != STORAGE_SIZE ||
-        data[0] != 'B' || data[1] != 'R' || data[2] != 'D' || data[3] != 'C' ||
-        (data[4] != 1U && data[4] != 2U) ||
-        (data[4] == 1U && (data[10] != 0U || data[11] != 0U))) {
+    if (data == nullptr ||
+        (length != LEGACY_STORAGE_SIZE && length != STORAGE_SIZE) ||
+        data[0] != 'B' || data[1] != 'R' || data[2] != 'D' || data[3] != 'C') {
         return false;
     }
+    /* [V1.4.4 新增] 既有 v1/v2 的 CRC offset=12；新版 v3 offset=16。 */
+    bool legacy = length == LEGACY_STORAGE_SIZE && (data[4] == 1U || data[4] == 2U);
+    bool current = length == STORAGE_SIZE && data[4] == 3U;
+    if ((!legacy && !current) ||
+        (data[4] == 1U && (data[10] != 0U || data[11] != 0U)) ||
+        (current && (data[14] != 0U || data[15] != 0U))) {
+        return false;
+    }
+    const size_t crc_offset = legacy ? 12U : 16U;
     uint32_t stored_crc = 0U;
     for (uint8_t index = 0U; index < 4U; index++) {
-        stored_crc |= static_cast<uint32_t>(data[12U + index]) << (8U * index);
+        stored_crc |= static_cast<uint32_t>(data[crc_offset + index]) << (8U * index);
     }
-    /* [V1.4.3 新增] 兼容 V1 NVS：舊 16-byte blob 的保留欄位為 0，容量視為 200mAh。 */
     Values value = {data[5], data[6], data[7],
                     static_cast<uint16_t>(data[8] | (static_cast<uint16_t>(data[9]) << 8U)),
                     static_cast<uint16_t>(data[4] == 1U ? BATTERY_CAPACITY_200_MAH :
-                        (data[10] | (static_cast<uint16_t>(data[11]) << 8U)))};
-    if (stored_crc != crc32(data, 12U) || !valid(value, rpm_limit)) {
+                        (data[10] | (static_cast<uint16_t>(data[11]) << 8U))),
+                    static_cast<uint16_t>(legacy ? HOLD_DEFAULT_MS :
+                        (data[12] | (static_cast<uint16_t>(data[13]) << 8U)))};
+    if (stored_crc != crc32(data, crc_offset) || !valid(value, rpm_limit)) {
         return false;
     }
     out = value;
@@ -101,10 +117,16 @@ Status Manager::stage(uint8_t parameter, uint32_t value) {
             break;
         case PARAM_BATTERY_CAPACITY_MAH:
             /* [V1.4.3 新增] 不接受任意容量，避免不支援的電池模型誤用。 */
-            if (value != BATTERY_CAPACITY_200_MAH && value != BATTERY_CAPACITY_300_MAH) {
+            if (value != BATTERY_CAPACITY_200_MAH && value != BATTERY_CAPACITY_250_MAH &&
+                value != BATTERY_CAPACITY_300_MAH) {
                 return OUT_OF_RANGE;
             }
             next.battery_capacity_mah = static_cast<uint16_t>(value);
+            break;
+        case PARAM_HOLD_MS:
+            /* [V1.4.4 新增] 只在 SAVE 成功後生效，不改動量測中 HOLD。 */
+            if (value < HOLD_MIN_MS || value > HOLD_MAX_MS) { return OUT_OF_RANGE; }
+            next.hold_ms = static_cast<uint16_t>(value);
             break;
         default: return BAD_PARAMETER;
     }
@@ -162,7 +184,10 @@ void make_response(const Manager &model, uint8_t command, uint8_t sequence,
     out[6] = (model.pending() ? 1U : 0U) | (model.dirty() ? 2U : 0U) |
              (model.storage_fault() ? 4U : 0U) |
              (model.active().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 8U : 0U) |
-             (model.staged().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 16U : 0U);
+             (model.staged().battery_capacity_mah == BATTERY_CAPACITY_300_MAH ? 16U : 0U) |
+             /* [V1.4.4 新增] bit5/6 回報 250mAh；200mAh 時四個容量 bit 都為 0。 */
+             (model.active().battery_capacity_mah == BATTERY_CAPACITY_250_MAH ? 32U : 0U) |
+             (model.staged().battery_capacity_mah == BATTERY_CAPACITY_250_MAH ? 64U : 0U);
     out[7] = model.active().mode;
     put_u16(out + 8U, model.active().auto_min_rpm);
     out[10] = model.active().charging_ble_off;

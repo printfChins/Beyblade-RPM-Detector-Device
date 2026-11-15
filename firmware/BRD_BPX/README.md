@@ -1,3 +1,7 @@
+## V1.4.4 BLE 參數與名稱設定（2026-11-15）
+
+[修改] 出廠 BLE 名稱 `BEYBLADE_TOOL01`。新增 200/250/300mAh 電池容量選項、可透過 BLE SET/SAVE 設定 1000～10000ms HOLD、韌體版本 READ、藍牙名稱 READ/WRITE 及 NVS 保存狀態查詢。保持既有 BBP 17-byte 封包、OLED、RPM ISR、OTA 與充電硬體 100mA 不變。詳見 `SETTINGS_API.md`；純 HTML 設定頁為 `tools/BRD_BPX_BLE_Config.html`。新版本 **尚未編譯為可燒錄 bin**；請使用 Arduino-ESP32 與 NimBLE-Arduino 編譯 `.ino`，勿使用上傳 ZIP 裡的舊 `.bin`。
+
 ## V1.2 BLE OTA
 
 [V1.2 新增] 完整更新方式、檔案放置、主程式修改位置及驗證限制，請先閱讀 [OTA_V1.2_README.md](OTA_V1.2_README.md)。本專案不含未更新的舊 BIN。

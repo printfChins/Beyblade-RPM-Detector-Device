@@ -1,18 +1,20 @@
-[V1.4.3 完整原始碼交付清單] 已移除原附件過期的 ESP32-C3 BIN 與 build。
-主程式與所有 .cpp/.h 位於 BRD_BPX/ 根目錄。
+[V1.4.4 全部原始碼／測試／文件清單]
+[修改] 移除原附件中過期的 ESP32-C3 BIN、ELF、MAP 與 build；新版本須重新編譯，避免誤燒。
 
-FILE_MANIFEST.txt
 BRD_BPX.ino
+BRD_BPX.ino.esp32c3.bin
 CHANGELOG.md
 CHARGING_BLE_ICON_NOTE.md
 CLEAN_INSTALL_V1.4.2.md
 DISPLAY_IR_TEST_API.md
+FILE_MANIFEST.txt
 FLASH_APP_1984_README.md
 HOLD_FIX_V1.2.2.md
 IR_TEST_INTEGRATION_README.md
 IR_TEST_REMOVE_BAT.md
 IR_TEST_VOLTAGE_2DP.md
 MODIFICATION_NOTE.md
+OLED_SP_TO_RPM_CHANGELOG.md
 OTA_PERCENT_GLYPH_FIX.md
 OTA_V1.2_README.md
 README.md
@@ -20,6 +22,7 @@ SETTINGS_API.md
 V1.2.1_MIGRATION_README.md
 V1.2.3_LOAD_HOLD_README.md
 V1.4.3_BATTERY_300MAH_README.md
+V1.4.4_修改清單.md
 VALIDATION.md
 brd_battery.cpp
 brd_battery.h
@@ -30,7 +33,10 @@ brd_bbp_protocol.cpp
 brd_bbp_protocol.h
 brd_bbp_session.cpp
 brd_bbp_session.h
+brd_ble_identity.cpp
+brd_ble_identity.h
 brd_config.h
+brd_hold_limits.h
 brd_io.cpp
 brd_io.h
 brd_measurement.cpp
@@ -68,6 +74,7 @@ docs/OTA_OLED_SECTOR_UI.md
 docs/OTA_V1.2_DESIGN.md
 docs/OTA_V1.2_PLAN.md
 docs/OTA_V1.2_PROGRESS.md
+docs/SETTINGS_API_V1.4.3.md
 partitions.csv
 partitions_legacy_1280k.csv
 tests/battery_stubs/esp_adc/adc_cali.h
@@ -94,6 +101,8 @@ tests/test_auto_baseline.cpp
 tests/test_battery_curve.cpp
 tests/test_bbp_link.cpp
 tests/test_ble.cpp
+tests/test_ble_identity.cpp
+tests/test_hold_dynamic.cpp
 tests/test_hold_guard.cpp
 tests/test_ir_dxf_geometry.py
 tests/test_load_hold_v123.cpp
@@ -102,3 +111,4 @@ tests/test_ota_history.cpp
 tests/test_ota_protocol.cpp
 tests/test_ota_runtime.cpp
 tests/test_runtime.cpp
+tools/BRD_BPX_BLE_Config.html

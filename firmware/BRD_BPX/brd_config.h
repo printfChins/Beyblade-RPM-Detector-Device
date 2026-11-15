@@ -13,6 +13,8 @@
 #include <hal/adc_types.h>
 /* [V1.4.3 新增] 電池容量檔位的唯一常數來源。 */
 #include "brd_battery_capacity.h"
+/* [V1.4.4 新增] 無 Arduino 相依的 HOLD 上下限。 */
+#include "brd_hold_limits.h"
 
 #if !defined(CONFIG_IDF_TARGET_ESP32C3)
 #error "Select ESP32C3 Dev Module for this project."
@@ -24,18 +26,19 @@
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
 /* [V1.2 修改] 韌體版本更新為 V1.2；[刪減] 原 V1.1 版本字串。 */
-#define PROJECT_FIRMWARE_VERSION          "V1.4.3" /* [V1.4.3 修改] 新增 300mAh 電池檔位及充電百分比計時。 */
+#define PROJECT_FIRMWARE_VERSION          "V1.4.4" /* [V1.4.4 修改] BLE 電池 200/250/300、名稱、版本與 HOLD 設定。 */
 #define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
 #define PROJECT_BOOT_NAME                 "BRD BPX"
 #define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
 #define CPU_FIXED_FREQ_MHZ                80U
 #define MAIN_LOOP_DELAY_MS                1UL
 
-/*
-    [修改] BLE 裝置名稱改為固定前綴 + ESP32 eFuse MAC 最後 2 bytes。
-    實際名稱由 brd_bbp.cpp 在啟動時建立，例如 eFuse MAC 尾碼 0x12AF -> BEYBLADE_TOOL_BRD_12AF。
-*/
-#define BBP_DEVICE_NAME_PREFIX            "BEYBLADE_TOOL_BRD_"
+/* [V1.4.4 修改] 預設名稱固定，BLE 更名後以 NVS 有效名稱優先。 */
+#define BBP_DEVICE_NAME_DEFAULT           "BEYBLADE_TOOL01"
+/* [V1.4.4 新增] 避免傳統 ATT MTU 23 下單包寫入長度超過 20 bytes。 */
+#define BBP_DEVICE_NAME_MAX_LENGTH        20U
+#define BBP_IDENTITY_NVS_NAMESPACE        "brd_identity"
+#define BBP_IDENTITY_NVS_KEY              "name_v1"
 #define BBP_SERVICE_UUID                  "55c40000-f8eb-11ec-b939-0242ac120002"
 #define BBP_CHARACTERISTIC_UUID           "55c4f002-f8eb-11ec-b939-0242ac120002"
 #define BBP_TX_POWER_DBM                  0
@@ -81,6 +84,12 @@ static_assert(BBP_COMPAT_AUTONOTIFY == 0 || BBP_COMPAT_AUTONOTIFY == 1,
 #define SETTINGS_RESPONSE_UUID           "c7570003-9040-4c7b-87b1-086ef858ace7"
 /* [新增] 獨立 1-byte OLED 頁面 BLE characteristic，不改舊設定封包與 NVS。 */
 #define SETTINGS_DISPLAY_PAGE_UUID       "c7570004-9040-4c7b-87b1-086ef858ace7"
+/* [V1.4.4 新增] 額外 READ 特徵，不更動既有 8/20 bytes 設定封包。 */
+#define SETTINGS_FW_VERSION_UUID         "c7570005-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_DEVICE_NAME_UUID        "c7570006-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_DEVICE_NAME_STATUS_UUID "c7570007-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_BATTERY_CAPACITY_UUID   "c7570008-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_HOLD_DURATION_UUID      "c7570009-9040-4c7b-87b1-086ef858ace7"
 #define BRD_DISPLAY_PAGE_MAIN            0U
 #define BRD_DISPLAY_PAGE_IR_TEST         1U
 /* [新增] IR TEST 觸發 HIGH 為實心，沿用原 IR_Test 的觸發邏輯。 */
@@ -186,9 +195,10 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define LOAD_ISR_QUEUE_SIZE              32U
 #define LOAD_IR_DEBOUNCE_US             50000UL
 /* [V1.2.3 保留] AUTO 原本 2.5 秒 HOLD，不影響非 LOAD 模式。 */
-#define OLED_MAX_HOLD_MS                  2500UL
+/* [V1.4.4 修改] 動態 HOLD 由設定模型讀取，此值只做原廠預設。 */
+#define OLED_MAX_HOLD_MS                  HOLD_DEFAULT_MS
 /* [V1.4.2 修改] LOAD 發射完成後的 HOLD 時間恢復 V1.2 的 2500ms；僅改時間，不變更狀態機。 */
-#define LOAD_MAX_HOLD_MS                  2500UL
+#define LOAD_MAX_HOLD_MS                  HOLD_DEFAULT_MS
 
 /*
     [新增] 量測模式選擇。
@@ -242,11 +252,13 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 
 /* [V0.12 新增] ADC、事件佇列及計時參數的編譯期檢查。 */
 static_assert(BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_200_MAH ||
+              BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_250_MAH ||
               BATTERY_NOMINAL_CAPACITY_MAH == BATTERY_CAPACITY_300_MAH,
               "Invalid default battery capacity.");
 static_assert(BATTERY_CHARGE_CURRENT_MA > 0U,
               "Invalid charging compensation current.");
 static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_200_MAH) == 72000UL &&
+              BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_250_MAH) == 90000UL &&
               BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) == 108000UL,
               "Invalid battery charging compensation intervals.");
 static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) >= BATTERY_SAMPLE_INTERVAL_MS &&
@@ -306,7 +318,9 @@ static_assert(POST_LAUNCH_FINISH_PERCENT > 0U && POST_LAUNCH_FINISH_PERCENT <= 1
               "Invalid finish percentage.");
 static_assert(LOAD_IR_DEBOUNCE_US >= 10000UL && LOAD_IR_DEBOUNCE_US < 0x80000000UL,
               "LOAD state must remain unchanged for at least 10 ms.");
-static_assert(LOAD_MAX_HOLD_MS == OLED_MAX_HOLD_MS, "LOAD HOLD must match original V1.2 2500ms.");
+static_assert(LOAD_MAX_HOLD_MS == OLED_MAX_HOLD_MS, "Default LOAD/AUTO HOLD must match.");
+static_assert(OLED_MAX_HOLD_MS >= HOLD_MIN_MS && OLED_MAX_HOLD_MS <= HOLD_MAX_MS,
+              "Default HOLD must be in BLE setting range.");
 static_assert(OLED_MAX_HOLD_MS >= 2000UL && OLED_MAX_HOLD_MS < 0x80000000UL,
               "MAX display hold must be at least 2000 ms.");
 static_assert(OLED_I2C_DATA_CHUNK_SIZE > 0U && OLED_I2C_DATA_CHUNK_SIZE <= 128U,

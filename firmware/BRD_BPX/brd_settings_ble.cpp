@@ -13,6 +13,8 @@
 #include "brd_measurement.h"
 #include "brd_settings.h"
 #include "brd_settings_ble.h"
+/* [V1.4.4 新增] BLE 名稱設定使用獨立 NVS；callback 只操作 RAM。 */
+#include "brd_ble_identity.h"
 
 struct settings_request_t {
     uint32_t generation;
@@ -43,6 +45,24 @@ static uint8_t g_packet[brd_settings::RESPONSE_SIZE] = {};
 static uint32_t g_packet_generation = 0U, g_save_generation = UINT32_MAX;
 static uint32_t g_last_notify_ms = 0U;
 static uint32_t g_notify_started_ms = 0U;
+/* [V1.4.4 新增] 主 loop 更新 4-byte 快照；BLE callback 不直接讀設定模型避免跨 task 資料競爭。 */
+static uint8_t g_capacity_snapshot[4] = {};
+static uint8_t g_hold_snapshot[4] = {};
+static void update_read_snapshots(void) {
+    const brd_settings::Manager &model = brd_settings_model();
+    const uint16_t ca = model.active().battery_capacity_mah;
+    const uint16_t cs = model.staged().battery_capacity_mah;
+    const uint16_t ha = model.active().hold_ms;
+    const uint16_t hs = model.staged().hold_ms;
+    const uint8_t capacity[4] = {static_cast<uint8_t>(ca), static_cast<uint8_t>(ca >> 8U),
+                                 static_cast<uint8_t>(cs), static_cast<uint8_t>(cs >> 8U)};
+    const uint8_t hold[4] = {static_cast<uint8_t>(ha), static_cast<uint8_t>(ha >> 8U),
+                             static_cast<uint8_t>(hs), static_cast<uint8_t>(hs >> 8U)};
+    portENTER_CRITICAL(&g_mux);
+    memcpy(g_capacity_snapshot, capacity, sizeof(capacity));
+    memcpy(g_hold_snapshot, hold, sizeof(hold));
+    portEXIT_CRITICAL(&g_mux);
+}
 
 static settings_link_t link_snapshot(void) {
     portENTER_CRITICAL(&g_mux);
@@ -114,6 +134,60 @@ class DisplayPageCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 static DisplayPageCallbacks g_display_page_callbacks;
+/* [V1.4.4 新增] READ 韌體版本（UTF-8 ASCII，無結尾 NUL）。 */
+class FirmwareVersionCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        constexpr size_t len = sizeof(PROJECT_FIRMWARE_VERSION) - 1U;
+        characteristic->setValue(reinterpret_cast<const uint8_t *>(PROJECT_FIRMWARE_VERSION), len);
+    }
+};
+/* [V1.4.4 新增] 透過 READ 查詢實際執行/草稿容量，解決 250mAh 需完整數值的問題。 */
+class CapacityCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        uint8_t packet[4];
+        portENTER_CRITICAL(&g_mux);
+        memcpy(packet, g_capacity_snapshot, sizeof(packet));
+        portEXIT_CRITICAL(&g_mux);
+        characteristic->setValue(packet, sizeof(packet));
+    }
+};
+/* [V1.4.4 新增] 透過 READ 查詢實際執行/草稿 HOLD (uint16 LE, ms)。 */
+class HoldDurationCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        uint8_t packet[4];
+        portENTER_CRITICAL(&g_mux);
+        memcpy(packet, g_hold_snapshot, sizeof(packet));
+        portEXIT_CRITICAL(&g_mux);
+        characteristic->setValue(packet, sizeof(packet));
+    }
+};
+/* [V1.4.4 新增] WRITE 名稱提交 RAM 待寫入；READ 只回已保存生效名稱。 */
+class DeviceNameCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &info) override {
+        settings_link_t link = link_snapshot();
+        if (!link.connected || link.handle != info.getConnHandle()) { return; }
+        const auto name = characteristic->getValue();
+        (void)brd_ble_identity_request_name(reinterpret_cast<const uint8_t *>(name.data()), name.size());
+    }
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        char name[BBP_DEVICE_NAME_MAX_LENGTH + 1U] = {};
+        brd_ble_identity_read_name(name, sizeof(name));
+        characteristic->setValue(reinterpret_cast<const uint8_t *>(name), strlen(name));
+    }
+};
+/* [V1.4.4 新增] READ 1-byte 更名狀態；失敗/忙碌時 App 可正確辨識。 */
+class DeviceNameStatusCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        uint8_t status = static_cast<uint8_t>(brd_ble_identity_status());
+        characteristic->setValue(&status, 1U);
+    }
+};
+static FirmwareVersionCallbacks g_fw_version_callbacks;
+static CapacityCallbacks g_capacity_callbacks;
+static HoldDurationCallbacks g_hold_callbacks;
+static DeviceNameCallbacks g_name_callbacks;
+static DeviceNameStatusCallbacks g_name_status_callbacks;
+
 
 uint8_t brd_settings_ble_display_page(void) {
     portENTER_CRITICAL(&g_mux);
@@ -142,7 +216,26 @@ bool brd_settings_ble_create(NimBLEServer *server) {
     /* [新增] 單 byte READ/WRITE，APP 寫入後可立即 READ 確認。 */
     g_display_page_characteristic = service->createCharacteristic(
         SETTINGS_DISPLAY_PAGE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE, 1U);
-    if (request == nullptr || g_response == nullptr || g_display_page_characteristic == nullptr) { return false; }
+    /* [V1.4.4 新增] 新特徵皆在原設定服務；既有 BBP/OTA UUID 不變。 */
+    NimBLECharacteristic *firmware = service->createCharacteristic(
+        SETTINGS_FW_VERSION_UUID, NIMBLE_PROPERTY::READ, sizeof(PROJECT_FIRMWARE_VERSION));
+    NimBLECharacteristic *name = service->createCharacteristic(
+        SETTINGS_DEVICE_NAME_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE,
+        BBP_DEVICE_NAME_MAX_LENGTH);
+    NimBLECharacteristic *name_status = service->createCharacteristic(
+        SETTINGS_DEVICE_NAME_STATUS_UUID, NIMBLE_PROPERTY::READ, 1U);
+    NimBLECharacteristic *capacity = service->createCharacteristic(
+        SETTINGS_BATTERY_CAPACITY_UUID, NIMBLE_PROPERTY::READ, 4U);
+    NimBLECharacteristic *hold = service->createCharacteristic(
+        SETTINGS_HOLD_DURATION_UUID, NIMBLE_PROPERTY::READ, 4U);
+    if (request == nullptr || g_response == nullptr || g_display_page_characteristic == nullptr ||
+        firmware == nullptr || name == nullptr || name_status == nullptr ||
+        capacity == nullptr || hold == nullptr) { return false; }
+    firmware->setCallbacks(&g_fw_version_callbacks);
+    name->setCallbacks(&g_name_callbacks);
+    name_status->setCallbacks(&g_name_status_callbacks);
+    capacity->setCallbacks(&g_capacity_callbacks);
+    hold->setCallbacks(&g_hold_callbacks);
     request->setCallbacks(&g_request_callbacks);
     g_display_page_characteristic->setCallbacks(&g_display_page_callbacks);
     g_display_page = BRD_DISPLAY_PAGE_MAIN;
@@ -150,6 +243,7 @@ bool brd_settings_ble_create(NimBLEServer *server) {
     g_response->setCallbacks(&g_response_callbacks);
     brd_settings::make_response(brd_settings_model(), brd_settings::CMD_GET, 0U, 0U,
                                brd_settings::OK, g_packet);
+    update_read_snapshots();
     g_response->setValue(g_packet, sizeof(g_packet));
     g_notify_pending = false;
     g_last_notify_ms = millis() - BBP_NOTIFY_INTERVAL_MS;
@@ -201,6 +295,8 @@ static void publish(const settings_link_t &link) {
 }
 void brd_settings_ble_update(void) {
     if (g_response == nullptr) { return; }
+    /* [V1.4.4 新增] 每次主 loop 更新生效/草稿快照，不在 callback 觸碰模型。 */
+    update_read_snapshots();
     settings_link_t link = link_snapshot();
     portENTER_CRITICAL(&g_mux);
     bool discard = g_discard_pending;
@@ -262,7 +358,10 @@ void brd_settings_ble_update(void) {
                 publish_response = true;
             }
             portEXIT_CRITICAL(&g_mux);
-            if (publish_response) { publish(link); }
+            if (publish_response) {
+                update_read_snapshots();
+                publish(link);
+            }
         }
     }
     uint32_t now_ms = millis();

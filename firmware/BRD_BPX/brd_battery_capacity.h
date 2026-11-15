@@ -7,6 +7,8 @@
 #define BRD_BATTERY_CAPACITY_H
 
 #define BATTERY_CAPACITY_200_MAH          200U
+/* [V1.4.4 新增] 250mAh 容量選項。 */
+#define BATTERY_CAPACITY_250_MAH          250U
 #define BATTERY_CAPACITY_300_MAH          300U
 
 #endif

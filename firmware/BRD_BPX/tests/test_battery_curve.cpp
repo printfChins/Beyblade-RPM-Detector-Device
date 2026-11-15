@@ -11,7 +11,7 @@
 #include "brd_settings.h"
 
 /* [V1.4.3 新增] 電池測試提供生效中的容量設定，模擬 BLE SAVE 後切換。 */
-static brd_settings::Values test_settings = {0U, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH};
+static brd_settings::Values test_settings = {0U, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS};
 const brd_settings::Values &brd_settings_get(void) { return test_settings; }
 
 uint64_t test_clock_us = 100000U;
@@ -87,6 +87,20 @@ static void test_no_full_and_slow_100() {
     start(4200, true);
     assert(brd_battery_get_percent() == 100U); /* 開機充電沒有先前 SOC 基準 */
 }
+/* [V1.4.4 新增] 250mAh / 100mA 僅在第 90 秒增加 1%。 */
+static void test_250mah_charging_compensation() {
+    static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_250_MAH) == 90000UL,
+                  "250mAh / 100mA must take 90 seconds per percent.");
+    start(3721, false, BATTERY_CAPACITY_250_MAH);
+    assert(brd_battery_get_percent() == 50U);
+    sample(4070, true);
+    for (int i = 1; i < 90; ++i) {
+        sample(4070, true);
+        assert(brd_battery_get_percent() == 50U);
+    }
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 51U);
+}
 /* [V1.4.3 新增] 300mAh 必須每 108 秒才增加 1%，且保留電壓 SOC 上限。 */
 static void test_300mah_charging_compensation() {
     static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_300_MAH) == 108000UL,
@@ -123,7 +137,8 @@ int main() {
     test_discharge_curve();
     test_charging_compensation();
     test_no_full_and_slow_100();
+    test_250mah_charging_compensation();
     test_300mah_charging_compensation();
     test_charge_capacity_switch();
-    puts("PASS: 21-point discharge SOC, low-lock, 200mAh/72s, 300mAh/108s, capacity switching, no FULL.");
+    puts("PASS: 21-point discharge SOC, low-lock, 200mAh/72s, 250mAh/90s, 300mAh/108s, capacity switching, no FULL.");
 }

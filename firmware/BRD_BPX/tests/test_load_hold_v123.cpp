@@ -20,7 +20,7 @@ static brd_bbp::Session session;
 static unsigned finish_calls = 0U;
 
 const brd_settings::Values &brd_settings_get() {
-    static const brd_settings::Values value = {BRD_MEASUREMENT_MODE_LOAD, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH};
+    static const brd_settings::Values value = {BRD_MEASUREMENT_MODE_LOAD, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS};
     return value;
 }
 void brd_bbp_capture_reset() { session.reset_capture(); }

@@ -584,9 +584,8 @@ void brd_measurement_update(void) {
         return;
     }
     if (g_max_lock) {
-        /* [V1.4.2 修改] LOAD HOLD 恢復原 V1.2 的 2.5 秒；AUTO 仍為 2.5 秒。 */
-        const uint32_t hold_interval_ms = measurement_uses_load() ?
-                                         LOAD_MAX_HOLD_MS : OLED_MAX_HOLD_MS;
+        /* [V1.4.4 修改] LOAD/AUTO 共用 SAVE 成功後生效的 HOLD 時間。 */
+        const uint32_t hold_interval_ms = brd_settings_get().hold_ms;
         if ((uint32_t)(millis() - g_max_lock_start_ms) < hold_interval_ms) {
             return;
         }

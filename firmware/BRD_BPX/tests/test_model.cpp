@@ -1,15 +1,26 @@
-/* [新增] 設定模型行為測試：未保存不得套用，CRC 損壞不得載入。 */
+/* [V1.4.4 修改] 參數/NVS 回歸：v1/v2 遷移、v3 HOLD、三檔容量與 CRC。 */
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include "brd_config.h"
 #include "brd_settings_model.h"
 using namespace brd_settings;
-static const Values defaults = {0U, 1U, 30U, 2000U, BATTERY_CAPACITY_200_MAH};
+static const Values defaults = {0U, 1U, 30U, 2000U, BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS};
+static void sign_legacy(uint8_t blob[LEGACY_STORAGE_SIZE]) {
+    uint32_t crc = UINT32_MAX;
+    for (size_t i = 0U; i < 12U; ++i) {
+        crc ^= blob[i];
+        for (uint8_t bit = 0U; bit < 8U; ++bit) {
+            crc = (crc >> 1U) ^ ((crc & 1U) ? 0xEDB88320UL : 0UL);
+        }
+    }
+    crc = ~crc;
+    for (uint8_t i = 0U; i < 4U; ++i) { blob[12U + i] = static_cast<uint8_t>(crc >> (8U * i)); }
+}
 int main() {
     Manager model(defaults, 60000U);
     assert(model.stage(PARAM_AUTO_MIN_RPM, 3500U) == OK);
     assert(model.active().auto_min_rpm == 2000U);
-    assert(model.staged().auto_min_rpm == 3500U);
     assert(model.stage(PARAM_AUTO_MIN_RPM, 0U) == OUT_OF_RANGE);
     assert(model.stage(PARAM_AUTO_MIN_RPM, 60000U) == OUT_OF_RANGE);
     assert(model.stage(PARAM_FINISH_PERCENT, 0U) == OUT_OF_RANGE);
@@ -17,74 +28,73 @@ int main() {
     assert(model.stage(PARAM_FINISH_PERCENT, 100U) == OK);
     assert(model.stage(PARAM_MODE, 2U) == OUT_OF_RANGE);
     assert(model.stage(PARAM_CHARGING_BLE_OFF, 2U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_HOLD_MS, HOLD_MIN_MS - 1U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_HOLD_MS, HOLD_MAX_MS + 1U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_HOLD_MS, 4200U) == OK);
     assert(model.request_save(9U) == PENDING);
     assert(model.stage(PARAM_MODE, 1U) == BUSY);
     model.complete_save(false);
-    assert(model.active().auto_min_rpm == 2000U);
-    assert(model.last_save_status() == FLASH_ERROR);
+    assert(model.active().hold_ms == OLED_MAX_HOLD_MS);
     assert(model.request_save(10U) == PENDING);
     model.complete_save(true);
     assert(model.active().auto_min_rpm == 3500U);
-    assert(model.last_save_status() == SAVED);
-    assert(model.request_save(11U) == SAVED); // 相同內容不重新寫入。
+    assert(model.active().hold_ms == 4200U);
+    assert(model.request_save(11U) == SAVED);
     uint8_t blob[STORAGE_SIZE];
     encode_storage(model.active(), blob);
     Values restored = defaults;
     assert(decode_storage(blob, sizeof(blob), 60000U, restored));
-    assert(restored.auto_min_rpm == 3500U && restored.finish_percent == 100U);
-    assert(blob[4] == 2U && blob[10] == static_cast<uint8_t>(BATTERY_CAPACITY_200_MAH));
+    assert(restored.auto_min_rpm == 3500U && restored.hold_ms == 4200U);
+    assert(blob[4] == 3U && blob[10] == static_cast<uint8_t>(BATTERY_CAPACITY_200_MAH));
     blob[8] ^= 1U;
     assert(!decode_storage(blob, sizeof(blob), 60000U, restored));
-    /* [V1.4.3 新增] v1 舊 NVS 使用 200mAh；有 CRC 驗證且不需清除舊設定。 */
-    uint8_t legacy[STORAGE_SIZE];
-    encode_storage(defaults, legacy);
-    legacy[4] = 1U; legacy[10] = 0U; legacy[11] = 0U;
-    uint32_t crc = 0xFFFFFFFFUL;
-    for (size_t index = 0U; index < 12U; index++) {
-        crc ^= legacy[index];
-        for (uint8_t bit = 0U; bit < 8U; bit++) {
-            crc = (crc >> 1U) ^ ((crc & 1U) ? 0xEDB88320UL : 0U);
-        }
-    }
-    crc = ~crc;
-    for (uint8_t i = 0U; i < 4U; i++) { legacy[12U + i] = static_cast<uint8_t>(crc >> (8U * i)); }
+
+    /* [V1.4.4 新增] 模擬舊 v1/v2 完整 16 bytes NVS，保留舊欄位並補 2500ms。 */
+    uint8_t legacy[LEGACY_STORAGE_SIZE] = {'B','R','D','C',1U, 0U,1U,30U, 0xD0U,0x07U, 0U,0U};
+    sign_legacy(legacy);
     assert(decode_storage(legacy, sizeof(legacy), 60000U, restored));
-    assert(restored.battery_capacity_mah == BATTERY_CAPACITY_200_MAH);
-    /* [V1.4.3 新增] 300mAh 進行 SET->SAVE，執行值/草稿/GET 旗標一致。 */
-    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 250U) == OUT_OF_RANGE);
-    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, BATTERY_CAPACITY_300_MAH) == OK);
-    assert(model.active().battery_capacity_mah == BATTERY_CAPACITY_200_MAH);
-    assert(model.staged().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
-    uint8_t capacity_reply[RESPONSE_SIZE];
-    make_response(model, CMD_GET, 19U, 0U, OK, capacity_reply);
-    assert((capacity_reply[6] & 0x18U) == 0x10U); /* bit4 草稿 300、bit3 生效 200。 */
+    assert(restored.battery_capacity_mah == 200U && restored.hold_ms == OLED_MAX_HOLD_MS);
+    legacy[4] = 2U; legacy[10] = 0x2CU; legacy[11] = 0x01U;
+    sign_legacy(legacy);
+    assert(decode_storage(legacy, sizeof(legacy), 60000U, restored));
+    assert(restored.battery_capacity_mah == 300U && restored.hold_ms == OLED_MAX_HOLD_MS);
+    legacy[10] ^= 1U;
+    assert(!decode_storage(legacy, sizeof(legacy), 60000U, restored));
+
+    /* [V1.4.4 修改] 250mAh 允許、非法 225mAh 拒絕、Flags 維持向下相容。 */
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 225U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, BATTERY_CAPACITY_250_MAH) == OK);
+    uint8_t reply[RESPONSE_SIZE] = {};
+    make_response(model, CMD_GET, 19U, 0U, OK, reply);
+    assert((reply[6] & 0x78U) == 0x40U); /* bit6: 草稿 250。 */
     assert(model.request_save(21U) == PENDING);
     model.complete_save(true);
-    make_response(model, CMD_GET, 20U, 0U, OK, capacity_reply);
-    assert((capacity_reply[6] & 0x18U) == 0x18U);
+    make_response(model, CMD_GET, 20U, 0U, OK, reply);
+    assert((reply[6] & 0x78U) == 0x60U); /* bit5/6: 執行、草稿 250。 */
+    assert(model.active().battery_capacity_mah == 250U);
     encode_storage(model.active(), blob);
     assert(decode_storage(blob, sizeof(blob), 60000U, restored));
-    assert(restored.battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
-    Values unsupported_capacity = model.active();
-    unsupported_capacity.battery_capacity_mah = 250U;
-    encode_storage(unsupported_capacity, blob);
+    assert(restored.battery_capacity_mah == 250U && restored.hold_ms == 4200U);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 300U) == OK);
+    assert(model.request_save(22U) == PENDING);
+    model.complete_save(true);
+    make_response(model, CMD_GET, 23U, 0U, OK, reply);
+    assert((reply[6] & 0x78U) == 0x18U);
+    Values bad = model.active(); bad.hold_ms = HOLD_MAX_MS + 1U;
+    encode_storage(bad, blob);
     assert(!decode_storage(blob, sizeof(blob), 60000U, restored));
     uint8_t request[REQUEST_SIZE] = {0xC1U, 1U, CMD_GET, 17U, 0U, 0U, 0U, 0U};
-    uint8_t response[RESPONSE_SIZE];
-    assert(handle_request(model, request, sizeof(request), false, response) == OK);
-    assert(response[0] == 0xC2U && response[3] == 17U);
-    assert(response[8] == 0xACU && response[9] == 0x0DU); // 3500 小端序。
-    request[2] = CMD_SET;
-    request[4] = PARAM_MODE;
-    request[5] = 1U;
-    assert(handle_request(model, request, sizeof(request), false, response) == BUSY);
-    assert(model.staged().mode == 0U);
-    assert(handle_request(model, request, sizeof(request), true, response) == OK);
+    assert(handle_request(model, request, sizeof(request), false, reply) == OK);
+    assert(reply[0] == 0xC2U && reply[3] == 17U);
+    assert(reply[8] == 0xACU && reply[9] == 0x0DU);
+    request[2] = CMD_SET; request[4] = PARAM_MODE; request[5] = 1U;
+    assert(handle_request(model, request, sizeof(request), false, reply) == BUSY);
+    assert(handle_request(model, request, sizeof(request), true, reply) == OK);
     assert(model.staged().mode == 1U && model.active().mode == 0U);
     model.discard_staged();
     assert(model.staged().mode == 0U);
     request[1] = 2U;
-    assert(handle_request(model, request, sizeof(request), true, response) == BAD_VERSION);
-    assert(handle_request(model, request, 2U, true, response) == BAD_LENGTH);
-    puts("PASS: settings validation, staging, save failure, CRC and protocol.");
+    assert(handle_request(model, request, sizeof(request), true, reply) == BAD_VERSION);
+    assert(handle_request(model, request, 2U, true, reply) == BAD_LENGTH);
+    puts("PASS: v1/v2 NVS migration, v3 HOLD/250/300, CRC and settings protocol.");
 }

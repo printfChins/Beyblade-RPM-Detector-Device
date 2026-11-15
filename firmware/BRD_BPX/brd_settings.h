@@ -14,4 +14,6 @@ void brd_settings_discard_draft(void);
 void brd_settings_update(void);
 bool brd_settings_take_completion(uint8_t out[brd_settings::RESPONSE_SIZE]);
 bool brd_settings_bluetooth_allowed(bool charging);
+/* [V1.4.4 新增] BLE 更名重新廣播前，確認設定 Flash 交易已完成。 */
+bool brd_settings_save_pending(void);
 #endif

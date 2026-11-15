@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BRD BPX · BLE 設定工具 V1.4.4</title>
+<style>
+:root{color-scheme:dark;--bg:#140905;--panel:#28160e;--line:#684831;--orange:#ff9b40;--text:#f1dfc7;--muted:#baa58e;--good:#c9e8a5;--bad:#ffa29a}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,"Microsoft JhengHei",sans-serif}
+main{max-width:720px;margin:25px auto;padding:0 18px 45px}h1{font-size:25px;margin:4px 0 0;letter-spacing:.7px}h2{font-size:16px;margin:0 0 18px;color:var(--orange)}p{color:var(--muted);margin:8px 0 18px}.small{font-size:12px}.header{margin-bottom:26px}.eyebrow{font-size:11px;letter-spacing:3px;color:var(--orange)}.card{padding:20px;border:1px solid var(--line);border-radius:13px;background:var(--panel);margin:13px 0}.line{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:14px}label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}input,select{background:#1b0e09;color:var(--text);border:1px solid #927356;border-radius:8px;padding:11px 12px;font:inherit;width:100%}input:focus,select:focus{outline:2px solid var(--orange)}button{font:600 14px system-ui,sans-serif;background:var(--orange);color:#1c0e05;border:0;border-radius:8px;padding:11px 16px;cursor:pointer}button.secondary{background:#4d3020;color:var(--text)}button:disabled{opacity:.45;cursor:default}.pill{background:#4f2714;color:var(--orange);border-radius:20px;padding:5px 10px;font-size:12px}pre{margin:0;max-height:185px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.6 ui-monospace,monospace;color:#ddc8b1}.data{display:grid;grid-template-columns:1fr 1fr;gap:8px 15px}.data>div{padding:10px 0;border-bottom:1px solid #533828}.data small{display:block;color:var(--muted)}.data strong{font-size:17px}#notice{color:var(--muted)}.ok{color:var(--good)!important}.err{color:var(--bad)!important}@media(max-width:460px){.data{grid-template-columns:1fr}.line>button{flex:1}}
+</style>
+</head>
+<body>
+<main>
+ <header class="header"><span class="eyebrow">BEYBLADE RPM DETECTOR</span><h1>BRD BPX 藍牙設定</h1><p>V1.4.4 · 容量、充電百分比估算、HOLD、裝置名稱及韌體版本</p></header>
+ <section class="card"><div class="line"><div><h2>裝置連線</h2><span id="connection" class="pill">未連線</span></div><div class="line"><button id="connect">搜尋並連線</button><button class="secondary" id="disconnect" disabled>中斷</button></div></div><p id="notice" class="small">請使用 Chrome 或 Edge，於 HTTPS 或 localhost 開啟；需支援 Web Bluetooth 的裝置。</p></section>
+ <section class="card"><h2>目前裝置資訊</h2><div class="data"><div><small>韌體版本</small><strong id="version">—</strong></div><div><small>目前 BLE 名稱</small><strong id="currentName">—</strong></div><div><small>電池容量</small><strong id="currentCapacity">—</strong></div><div><small>HOLD 時間</small><strong id="currentHold">—</strong></div></div><div class="line" style="margin-top:18px"><button class="secondary" id="refresh" disabled>重新讀取</button><span id="result" class="small"></span></div></section>
+ <section class="card"><h2>設定</h2><div class="stack">
+  <div><label for="capacity">電池容量（mAh）</label><select id="capacity"><option value="200">200 mAh</option><option value="250">250 mAh</option><option value="300">300 mAh</option></select><p class="small">以 100mA 計算，約 72／90／108 秒增加 1%；不修改充電 IC 的實際電流。</p></div>
+  <div><label for="hold">HOLD 時間（ms，1000～10000）</label><input id="hold" type="number" min="1000" max="10000" step="100" value="2500"></div>
+  <div><label for="name">藍牙名稱（1～20 字元，英數、底線、連字號）</label><input id="name" maxlength="20" spellcheck="false" value="BEYBLADE_TOOL01"></div>
+  <button id="save" disabled>儲存全部設定至裝置</button>
+  <p class="small">容量及 HOLD 使用原設定服務的 SET → SAVE；BLE 名稱另行安全儲存。更名成功後，原連線中斷才會更新廣播名稱。請在未旋轉、電量正常時操作。</p>
+ </div></section>
+ <section class="card"><h2>通訊紀錄</h2><pre id="log">尚未連線。</pre></section>
+</main>
+<script>
+'use strict';
+/* [V1.4.4 新增] 單檔 HTML，使用原 GATT 設定 UUID，不依賴第三方庫。 */
+const SERVICE='c7570001-9040-4c7b-87b1-086ef858ace7';
+const uuid=n=>`c757${String(n).padStart(4,'0')}-9040-4c7b-87b1-086ef858ace7`;
+const el=id=>document.getElementById(id);
+const encoder=new TextEncoder(),decoder=new TextDecoder();
+let device=null,server=null,chars={},sequence=0,busy=false;
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function log(message){let node=el('log');if(node.textContent==='尚未連線。')node.textContent='';node.textContent+=`[${new Date().toLocaleTimeString()}] ${message}\n`;node.scrollTop=node.scrollHeight;}
+function status(message,isError=false){el('result').textContent=message;el('result').className=isError?'small err':'small ok';if(message)log(message);}
+function setControls(){const connected=Boolean(server?.connected);el('connection').textContent=connected?(device?.name||'已連線'):'未連線';el('connect').disabled=connected||busy;el('disconnect').disabled=!connected||busy;el('refresh').disabled=!connected||busy;el('save').disabled=!connected||busy;}
+function textValue(view){return decoder.decode(new Uint8Array(view.buffer,view.byteOffset,view.byteLength));}
+function u16(view,offset){return view.getUint16(offset,true);}
+function failIfDisconnected(){if(!server?.connected)throw Error('BLE 已中斷連線');}
+async function read(id){failIfDisconnected();return chars[id].readValue();}
+async function write(id,bytes){failIfDisconnected();let c=chars[id];if(c.writeValueWithResponse)await c.writeValueWithResponse(bytes);else await c.writeValue(bytes);}
+function nextSeq(){sequence=(sequence+1)&255;return sequence;}
+async function sendCommand(op,parameter=0,value=0){
+ const seq=nextSeq(),packet=new Uint8Array([0xC1,1,op,seq,parameter,value&255,(value>>8)&255,(value>>16)&255]);
+ await write(2,packet);
+ let response=null;
+ for(let i=0;i<80;i++){
+  await sleep(60);response=await read(3);
+  if(response.byteLength>=20&&response.getUint8(0)===0xC2&&response.getUint8(2)===op&&response.getUint8(3)===seq)break;
+  response=null;
+ }
+ if(!response)throw Error(`命令 ${op} 未收到符合序號的回覆`);
+ const code=response.getUint8(4);
+ if(code!==0&&code!==1&&code!==2)throw Error(`裝置拒絕命令 ${op}：狀態碼 ${code}（08=BUSY）`);
+ return {seq,code};
+}
+async function waitSaved(seq,firstCode){
+ if(firstCode===2)return;
+ for(let i=0;i<120;i++){
+  await sleep(250);
+  const reply=await read(3);
+  if(reply.byteLength>=20&&reply.getUint8(2)===3&&reply.getUint8(3)===seq){
+   const code=reply.getUint8(4);
+   if(code===2)return;
+   if(code===9)throw Error('NVS 保存失敗 (FLASH_ERROR)');
+  }
+ }
+ throw Error('保存仍未確認。停止轉動後可按「重新讀取」確認，勿當作已儲存。');
+}
+async function readSnapshot(updateForm=true){
+ await sendCommand(1);
+ /* [V1.4.4 修正] Web Bluetooth 不允許同一裝置同時進行多筆 GATT Read。 */
+ const ver=await read(5),name=await read(6),cap=await read(8),hold=await read(9);
+ const activeCapacity=u16(cap,0),activeHold=u16(hold,0),currentName=textValue(name);
+ el('version').textContent=textValue(ver);
+ el('currentName').textContent=currentName;
+ el('currentCapacity').textContent=`${activeCapacity} mAh`;
+ el('currentHold').textContent=`${activeHold} ms`;
+ if(updateForm){el('capacity').value=String(activeCapacity);el('hold').value=String(activeHold);el('name').value=currentName;}
+ return {activeCapacity,activeHold,currentName};
+}
+async function withBusy(task){if(busy)return;busy=true;setControls();try{await task();}catch(error){status(`操作失敗：${error.message}`,true);}finally{busy=false;setControls();}}
+el('connect').addEventListener('click',()=>withBusy(async()=>{
+ if(!navigator.bluetooth)throw Error('瀏覽器不支援 Web Bluetooth；請改用 Chrome/Edge HTTPS 或 localhost');
+ device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
+ device.addEventListener('gattserverdisconnected',()=>{server=null;chars={};setControls();status('裝置已斷線（更名後請重新搜尋）',false);});
+ server=await device.gatt.connect();
+ const service=await server.getPrimaryService(SERVICE);
+ for(const id of [2,3,5,6,7,8,9])chars[id]=await service.getCharacteristic(uuid(id));
+ await readSnapshot(true);
+ status('藍牙已連線，設定已讀取');
+}));
+el('disconnect').addEventListener('click',()=>{if(device?.gatt?.connected)device.gatt.disconnect();});
+el('refresh').addEventListener('click',()=>withBusy(async()=>{await readSnapshot(true);status('已重新讀取生效設定');}));
+el('save').addEventListener('click',()=>withBusy(async()=>{
+ const cap=Number(el('capacity').value),hold=Number(el('hold').value),name=el('name').value.trim();
+ if(![200,250,300].includes(cap))throw Error('電池容量只能選擇 200 / 250 / 300mAh');
+ if(!Number.isInteger(hold)||hold<1000||hold>10000)throw Error('HOLD 必須介於 1000～10000 ms');
+ if(!/^[A-Za-z0-9_-]{1,20}$/.test(name))throw Error('名稱只能有 1～20 個英數字、_ 或 -');
+ log(`暫存容量 ${cap}mAh ...`);await sendCommand(2,5,cap);
+ log(`暫存 HOLD ${hold}ms ...`);await sendCommand(2,6,hold);
+ log('要求保存電池及 HOLD ...');const saveResult=await sendCommand(3);
+ await waitSaved(saveResult.seq,saveResult.code);
+ let currentName=textValue(await read(6));
+ if(name!==currentName){
+  log(`提交藍牙名稱 ${name} ...`);await write(6,encoder.encode(name));
+  let final=1;
+  for(let i=0;i<100;i++){
+   await sleep(120);final=(await read(7)).getUint8(0);
+   if(final!==1)break;
+  }
+  if(final!==2)throw Error(`名稱未保存，狀態 ${final}；1=等待、3=非法、4=忙碌、5=Flash錯誤`);
+ }
+ await readSnapshot(true);status('電池容量、HOLD 與 BLE 名稱均已完成保存');
+}));
+setControls();
+</script>
+</body>
+</html>

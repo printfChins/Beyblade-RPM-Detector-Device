@@ -20,9 +20,12 @@
 #include "brd_settings_ble.h"
 /* [V1.2 新增] 放在 setup() 前的 include 區。 */
 #include "brd_ota.h"
+/* [V1.4.4 新增] BLE 名稱 NVS 啟動與安全窗口存檔。 */
+#include "brd_ble_identity.h"
 void setup(void) {
     /* [新增] 所有硬體與量測啟動前，先載入 Flash 設定。 */
     brd_settings_begin();
+    brd_ble_identity_begin(); /* [V1.4.4 新增] 首次使用預設 BEYBLADE_TOOL01。 */
     setCpuFrequencyMhz(CPU_FIXED_FREQ_MHZ);
     brd_io_begin();
     brd_battery_begin();
@@ -73,7 +76,11 @@ void loop(void) {
     brd_settings_ble_update();
     /* [新增] 只在量測結束或閒置時保存；保存成功後不需重啟。 */
     /* [V1.2 修改] OTA 期間只回覆設定 GET / BUSY，不執行 NVS 保存。 */
-    if (!ota_busy) { brd_settings_update(); }
+    if (!ota_busy) {
+        brd_settings_update();
+        /* [V1.4.4 新增] 名稱存檔由主 loop 在 RPM 空閒窗口執行。 */
+        if (!brd_settings_model().pending()) { brd_ble_identity_update(); }
+    }
     brd_oled_update();
     delay(MAIN_LOOP_DELAY_MS);
 }

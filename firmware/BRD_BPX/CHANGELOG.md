@@ -1,3 +1,15 @@
+# V1.4.4 — 2026-11-15
+
+- [修改] `brd_battery_capacity.h` 與設定模型新增 250mAh；充電 SOC 限速每 1%=90 秒（100mA 估算）。200/300mAh 仍為 72/108 秒。
+- [修改] `brd_config.h` 預設 BLE 名稱 `BEYBLADE_TOOL01`、版本 V1.4.4；不再以 MAC 形成廣播名稱，但 BBP 硬體 UID 仍保留原 eFuse MAC。
+- [新增] `brd_ble_identity.cpp/.h` 將名稱寫入獨立 NVS，callback 僅暫存，不在 RPM ISR 或藍牙回呼執行 Flash；安全寫入成功後，等斷線才刷新廣播。
+- [新增] 設定 GATT `c7570005`～`c7570009` 分別查詢版本、名稱、名稱儲存狀態、容量及 HOLD；原設定封包大小維持 8-byte/20-byte。
+- [新增] 原設定 SET PARAM=06 設定 HOLD 1000～10000ms（LOAD/AUTO 共用，預設 2500ms）；量測狀態機取用已保存生效值。
+- [修改] 設定 NVS 升級 v3/20 bytes、保留 v1/v2 16-byte 讀取遷移；CRC 檢查與完整寫後讀回仍保留。
+- [新增] `brd_hold_limits.h` 保持設定模型不依賴 Arduino，提供 HOLD 上下限與預設值。
+- [新增] `tools/BRD_BPX_BLE_Config.html`，純 HTML Web Bluetooth 設定工具及 V1.4.4 host regression tests。
+- [保留] RPM 量測算法、BBP 17-byte 封包、歷史格式、OTA、OLED、電池放電曲線、低電保護。
+
 ## V1.4.3 — 2026-11-06：新增 300mAh 電池容量檔位
 
 - [新增] BLE 設定 ID `05`，支援 200/300mAh，預設仍 200mAh；GET 回覆保留原 20 bytes，byte6 bit3/bit4 回傳執行與草稿的 300mAh 檔位。

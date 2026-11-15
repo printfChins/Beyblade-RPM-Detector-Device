@@ -23,7 +23,7 @@ bool brd_bbp_is_started() { return false; }
 bool brd_bbp_is_connected() { return false; }
 bool brd_io_is_charging() { return false; }
 const brd_settings::Values &brd_settings_get() {
-    static const brd_settings::Values value={0U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH}; return value;
+    static const brd_settings::Values value={0U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS}; return value;
 }
 #include "../brd_oled.cpp"
 brd_display_t brd_measurement_get_display() { return {}; }

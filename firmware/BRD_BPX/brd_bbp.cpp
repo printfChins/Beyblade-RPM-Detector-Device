@@ -22,6 +22,8 @@
 #include "brd_settings_ble.h"
 /* [V1.2 新增] OTA 與既有服務共用單一 NimBLE Server。 */
 #include "brd_ota.h"
+/* [V1.4.4 新增] 預設/自訂 BLE 名稱及延後更新廣播。 */
+#include "brd_ble_identity.h"
 
 struct bbp_command_t {
     uint32_t generation;
@@ -48,9 +50,8 @@ static uint32_t g_last_start_attempt_ms = 0U;
 static bool g_start_attempted = false;
 static uint32_t g_last_advertise_attempt_ms = 0U;
 static uint32_t g_last_storage_attempt_ms = 0U;
+/* [V1.4.4 保留] BBP 原封包的 6-byte 硬體 UID，與新版廣播名稱無關。 */
 static uint8_t g_uid[6] = {};
-/* [修改] 固定名稱前綴 + ESP32 eFuse MAC 最後 2 bytes 的 4 位 HEX + \0。 */
-static char g_device_name[sizeof(BBP_DEVICE_NAME_PREFIX) + 4U] = {};
 static brd_bbp::Session g_session;
 static uint8_t g_storage[brd_bbp::STORAGE_SIZE];
 static uint8_t g_tx_pages[brd_bbp::PAGE_COUNT][brd_bbp::PACKET_SIZE];
@@ -159,28 +160,7 @@ class BbpCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 static BbpServerCallbacks g_server_callbacks;
 static BbpCharacteristicCallbacks g_characteristic_callbacks;
 
-/*
-    [修改] 建立 BLE 裝置名稱。
-    g_uid 來源為 esp_efuse_mac_get_default()；取最後 2 bytes，轉成四位大寫 HEX。
-    例如 g_uid[4] = 0x12、g_uid[5] = 0xAF -> BEYBLADE_TOOL_BRD_12AF。
-*/
-static void build_device_name(void) {
-    static const char hex[] = "0123456789ABCDEF";
-    const size_t prefix_length = sizeof(BBP_DEVICE_NAME_PREFIX) - 1U;
-    for (size_t index = 0U; index < prefix_length; index++) {
-        g_device_name[index] = BBP_DEVICE_NAME_PREFIX[index];
-    }
-
-    /* [修改] ESP32 ID 尾碼 XXXX = eFuse MAC 最後 2 bytes。 */
-    const uint8_t suffix_high = g_uid[4];
-    const uint8_t suffix_low = g_uid[5];
-    g_device_name[prefix_length] = hex[(suffix_high >> 4U) & 0x0FU];
-    g_device_name[prefix_length + 1U] = hex[suffix_high & 0x0FU];
-    g_device_name[prefix_length + 2U] = hex[(suffix_low >> 4U) & 0x0FU];
-    g_device_name[prefix_length + 3U] = hex[suffix_low & 0x0FU];
-    g_device_name[prefix_length + 4U] = '\0';
-}
-
+/* [V1.4.4 刪減] 不再以 MAC 產生名稱；改由 brd_ble_identity 讀取 NVS。 */
 static bool load_storage(void) {
     if (g_storage_loaded) {
         return true;
@@ -258,9 +238,8 @@ bool brd_bbp_begin(void) {
         return false;
     }
     xQueueReset(g_command_queue);
-    /* [新增] eFuse MAC 已取得，BLE 初始化前先建立本機唯一的兩碼名稱尾碼。 */
-    build_device_name();
-    if (!NimBLEDevice::init(g_device_name)) {
+    /* [V1.4.4 修改] 使用 NVS 自訂名稱，尚未設定則固定 BEYBLADE_TOOL01。 */
+    if (!NimBLEDevice::init(brd_ble_identity_active_name())) {
         increment_diagnostic(g_diagnostics.init_failures);
         brd_bbp_stop();
         return false;
@@ -294,7 +273,7 @@ bool brd_bbp_begin(void) {
     NimBLEAdvertisementData scan_response;
     success = advertisement.setFlags(0x06U) && success;
     success = advertisement.addServiceUUID(BBP_SERVICE_UUID) && success;
-    success = scan_response.setName(g_device_name) && success;
+    success = scan_response.setName(brd_ble_identity_active_name()) && success;
     NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
     if (advertising != nullptr) {
         advertising->enableScanResponse(true);
@@ -312,6 +291,7 @@ bool brd_bbp_begin(void) {
         return false;
     }
     g_started = true;
+    brd_ble_identity_clear_advertising_refresh();
     g_last_advertise_attempt_ms = now_ms;
     g_last_tx_ms = now_ms - BBP_NOTIFY_INTERVAL_MS;
     return true;
@@ -374,6 +354,16 @@ void brd_bbp_update(bool storage_allowed) {
     g_session.update(micros(), BBP_PUBLISH_MIN_DELAY_US);
     bool published = previous_total != g_session.state().total;
     save_storage(now_ms, storage_allowed);
+    /* [V1.4.4 新增] 自訂名稱存檔後，等現有連線結束再更新廣播。
+       並確認設定已存完、OTA 空閒，不會搶走 RPM / NVS 寫入窗口。 */
+    if (storage_allowed && g_started && !link_snapshot().connected &&
+        !brd_settings_save_pending() && !g_session.dirty() &&
+        brd_measurement_modifications_allowed() &&
+        brd_ble_identity_needs_advertising_refresh()) {
+        brd_bbp_stop();
+        (void)brd_bbp_begin();
+        return;
+    }
     if (!g_started) {
         return;
     }

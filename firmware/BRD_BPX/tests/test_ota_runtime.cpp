@@ -30,7 +30,7 @@ void brd_oled_update() {
     }
 }
 const brd_settings::Manager &brd_settings_model() {
-    static brd_settings::Manager model({0U, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH}, 30000U); return model;
+    static brd_settings::Manager model({0U, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS}, 30000U); return model;
 }
 static void put32(std::vector<uint8_t> &p, size_t off, uint32_t value) {
     for (unsigned i = 0; i < 4; i++) { p[off + i] = static_cast<uint8_t>(value >> (8U * i)); }

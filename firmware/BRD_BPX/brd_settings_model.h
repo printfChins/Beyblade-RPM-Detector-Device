@@ -14,14 +14,18 @@
 namespace brd_settings {
 constexpr size_t REQUEST_SIZE = 8U;
 constexpr size_t RESPONSE_SIZE = 20U;
-constexpr size_t STORAGE_SIZE = 16U;
+/* [V1.4.4 修改] v3 保存 HOLD；讀取時仍相容 v1/v2 的 16 bytes。 */
+constexpr size_t STORAGE_SIZE = 20U;
+constexpr size_t LEGACY_STORAGE_SIZE = 16U;
 enum Parameter : uint8_t {
     PARAM_MODE = 1U,
     PARAM_AUTO_MIN_RPM = 2U,
     PARAM_FINISH_PERCENT = 3U,
     PARAM_CHARGING_BLE_OFF = 4U,
     /* [V1.4.3 新增] BLE SET ID=05，僅允許 200 / 300 mAh。 */
-    PARAM_BATTERY_CAPACITY_MAH = 5U
+    PARAM_BATTERY_CAPACITY_MAH = 5U,
+    /* [V1.4.4 新增] LOAD/AUTO 共用 HOLD 自鎖時間 (ms)。 */
+    PARAM_HOLD_MS = 6U
 };
 enum Command : uint8_t {
     CMD_GET = 1U, CMD_SET = 2U, CMD_SAVE = 3U,
@@ -40,6 +44,8 @@ struct Values {
     uint16_t auto_min_rpm;
     /* [V1.4.3 新增] 此欄最後加入，保留既有四個欄位語意。 */
     uint16_t battery_capacity_mah;
+    /* [V1.4.4 新增] 保留原有五個欄位順序，新增第六欄。 */
+    uint16_t hold_ms;
 };
 bool equal(const Values &first, const Values &second);
 bool valid(const Values &value, uint32_t rpm_limit);

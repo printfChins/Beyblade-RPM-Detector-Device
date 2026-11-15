@@ -1,157 +1,100 @@
-# BRD BLE 設定 API
+# BRD BPX V1.4.4 BLE 設定 API
 
-[V1.4.3 修改] 新增電池容量設定 `05`，保留既有 8-byte 請求、20-byte 回覆及 BLE API 版本 `01`。設定服務獨立於既有 BBP 服務；既有裝置名稱、BBP UUID、廣播內容及 17-byte BBP 封包保留。
+[修改] 依實際 `brd_settings_model.cpp`、`brd_settings_ble.cpp`、`brd_ble_identity.cpp` 說明。舊版說明保存在 `docs/SETTINGS_API_V1.4.3.md`。本版不修改 BattlePass BBP 封包 17 bytes、原 BBP Service UUID、OTA UUID 與 GPIO / RPM ISR。
 
-## 可修改參數
+## BLE 掃描及連線
 
-| ID | 設定 | 合法值 | 首次開機預設 |
+- [V1.4.4 修改] 出廠名稱：`BEYBLADE_TOOL01`（不再自動附加 MAC 尾碼）。已在 V1.4.4 中保存過名稱時，開機優先使用 NVS 自訂名稱。
+- [保留] BBP Service UUID：`55c40000-f8eb-11ec-b939-0242ac120002`；BBP Characteristic UUID：`55c4f002-f8eb-11ec-b939-0242ac120002`。
+- [保留] 獨立設定服務 UUID：`c7570001-9040-4c7b-87b1-086ef858ace7`。設定服務 UUID 不另外放入廣播，連線後進行 GATT Discover 即可找到。
+- [重要] 更名後原連線不會被踢除；斷線且歷史/設定安全後才重新初始化 BLE，更新 Scan Response 廣播名稱。改名不改硬體 UID，原 BBP 傳輸資料維持原識別資料。
+
+## GATT Characteristics
+
+所有 UUID 的尾碼與上列設定服務共用 `-9040-4c7b-87b1-086ef858ace7`。
+
+| 尾碼前 8 碼 | 用途 | 屬性 | 回覆格式 |
 |---|---|---|---|
-| `01` | 量測模式 | `0=LOAD`、`1=AUTO` | LOAD |
-| `02` | AUTO 有效 MAX 最低 RPM 門檻 | 1～59999 RPM | 2000 RPM |
-| `03` | 結束百分比 | 1～100，整數百分比 | 30% |
-| `04` | 充電時自動關閉 BLE | `0=關閉此功能`、`1=啟用此功能` | 0，充電時保留 BLE |
-| `05` | 電池容量檔位 | `200`、`300`（mAh） | 200 mAh |
+| `c7570002` | 原設定命令 | WRITE | 8-byte 指令 |
+| `c7570003` | 原設定回覆 | READ / NOTIFY | 20-byte 快照 |
+| `c7570004` | 原 OLED 頁面 | READ / WRITE | 1-byte，0 主頁 / 1 IR TEST |
+| `c7570005` | [新增] 韌體版本 | READ | UTF-8 字串 `V1.4.4`（無結尾 NUL） |
+| `c7570006` | [新增] BLE 裝置名稱 | READ / WRITE | UTF-8/ASCII 字串（1～20 bytes） |
+| `c7570007` | [新增] BLE 名稱保存狀態 | READ | 1-byte 狀態碼 |
+| `c7570008` | [新增] 電池容量 | READ | 4-byte：生效 uint16 LE + 草稿 uint16 LE（mAh） |
+| `c7570009` | [新增] HOLD 時間 | READ | 4-byte：生效 uint16 LE + 草稿 uint16 LE（ms） |
 
-預設值由 `brd_config.h` 提供；已有有效 NVS 設定時，開機載入 NVS，優先於編譯預設。去抖時間和 MAX 保留時間維持 config.h 設定，未納入本次五項 API。
+### 可透過原設定命令修改的參數
 
-百分比指「剩下本次 MAX 的多少百分比」，不是下降幅度。例：MAX=30000、設定=30 時，RPM **嚴格低於 9000** 就立即結束並顯示 30000；等於 9000 不結束。LOAD 與 AUTO 共用此規則。AUTO 必須先達到最低 RPM 門檻，未達門檻不發布有效 MAX 結果。
+| ID | 名稱 | 允許值 | 預設 |
+|---|---|---|---|
+| `01` | 模式 | 0=LOAD, 1=AUTO | 0 |
+| `02` | AUTO RPM 最低門檻 | 1～59999 | 2000 |
+| `03` | MAX 結束百分比 | 1～100 | 30 |
+| `04` | 充電時關閉 BLE | 0=否, 1=是 | 0 |
+| `05` | [修改] 電池容量 | **200、250、300 mAh** | 200 |
+| `06` | [新增] HOLD 自鎖時間 | **1000～10000 ms** | 2500 |
 
-## GATT
+[重要] SET 僅修改草稿。**只有收到 SAVE/SAVED 後才會套用及持久化**。不能在轉動中套用新設定。LOAD、AUTO 目前共用單一 HOLD 時間；HOLD 的狀態機、MAX、下一次裝載去抖未被改寫。
 
-| 項目 | UUID | 屬性 |
-|---|---|---|
-| 設定服務 | `c7570001-9040-4c7b-87b1-086ef858ace7` | Service |
-| 請求特徵 | `c7570002-9040-4c7b-87b1-086ef858ace7` | Write with response |
-| 回覆特徵 | `c7570003-9040-4c7b-87b1-086ef858ace7` | Read、Notify |
+## 原設定命令（完全維持 8-byte / 20-byte 協定）
 
-掃描使用原裝置名稱 `BEYBLADE_TOOL_BRD_XXXX` 或原 BBP Service UUID。設定 Service UUID 不加入廣播；連線後進行 GATT discovery 即可找到。請求 8 bytes、回覆 20 bytes，不需要增加預設 ATT MTU 23。
+請求：`C1 01 CMD SEQ PARAM VALUE_0 VALUE_1 VALUE_2`，Value 為 uint24 Little Endian。
 
-## 請求：8 bytes
+- `CMD=01` GET；`CMD=02` SET；`CMD=03` SAVE；`CMD=04` DEFAULTS；`CMD=05` DISCARD。
+- GET、SAVE、DEFAULTS、DISCARD 的 `PARAM` 與 `VALUE` 必須全部為 0。
+- SEQ 為客戶端自訂 0～255 序號，應逐筆遞增；讀取時確認回覆 `byte2/byte3` 與命令/序號一致。
 
-索引從 0 開始；所有多 byte 數值皆為 Little Endian。
-
-| Byte | 內容 |
+| 操作 | HEX 8 bytes |
 |---|---|
-| 0 | 固定 `C1` |
-| 1 | API 版本 `01` |
-| 2 | 命令 ID |
-| 3 | App 指定的序號 0～255；回覆原樣帶回 |
-| 4 | 參數 ID；只有 SET 使用，其他命令必須為 0 |
-| 5～7 | 無號 24-bit 值；只有 SET 使用，其他命令必須為 0 |
+| GET (序號 01) | `C1 01 01 01 00 00 00 00` |
+| 設定 200 mAh (序號 02) | `C1 01 02 02 05 C8 00 00` |
+| 設定 250 mAh (序號 03) | `C1 01 02 03 05 FA 00 00` |
+| 設定 300 mAh (序號 04) | `C1 01 02 04 05 2C 01 00` |
+| 設定 HOLD=4000 ms (序號 05) | `C1 01 02 05 06 A0 0F 00` |
+| SAVE (序號 06) | `C1 01 03 06 00 00 00 00` |
+| DISCARD (序號 07) | `C1 01 05 07 00 00 00 00` |
 
-| 命令 | ID | 行為 |
-|---|---|---|
-| GET | `01` | 查詢全部執行值、草稿及保存狀態；量測中也可使用 |
-| SET | `02` | 修改一項 RAM 草稿，不立即套用或寫 Flash |
-| SAVE | `03` | 凍結整份草稿，要求安全時段保存；成功後套用 |
-| DEFAULTS | `04` | 把草稿改成 config.h 預設；仍需 SAVE |
-| DISCARD | `05` | 放棄未保存草稿，恢復目前執行值 |
+回覆為 20 bytes：`C2 01 CMD SEQ STATUS PARAM FLAGS MODE AUTO_L AUTO_H BLE_OFF STAGED_MODE STAGED_AUTO_L STAGED_AUTO_H STAGED_BLE_OFF FINISH STAGED_FINISH LAST_SAVE REV_L REV_H`。
 
-範例（HEX；每列都是完整請求）：
+- `FLAGS` bit0=PENDING；bit1=DIRTY；bit2=NVS 尚未保存/保存失敗；bit3=執行 300mAh；bit4=草稿 300mAh；**bit5=執行 250mAh；bit6=草稿 250mAh**。200mAh 時 bit3/4/5/6 均為 0。
+- `STATUS`：00=OK、01=PENDING、02=SAVED、03=BAD_LENGTH、04=BAD_VERSION、05=BAD_COMMAND、06=BAD_PARAMETER、07=OUT_OF_RANGE、08=BUSY、09=FLASH_ERROR、0A=BAD_MAGIC。
+- 原版回覆 20 bytes 沒有 HOLD 欄位；**讀取 HOLD 請使用 `c7570009`**，容量也建議直接讀 `c7570008` 取得完整數值，而非自行解碼 bit 位元。
+- WAIT/READY 時若沒在旋轉，可以先 SET 多個參數、再 SAVE；SAVE 接受後收到 PENDING，須繼續等待 SAVED。允許 GET 在測速時讀值，SET/SAVE 在量測不安全時回 BUSY。
 
-| 用途 | 8-byte 請求 |
-|---|---|
-| 查詢，序號 1 | `C1 01 01 01 00 00 00 00` |
-| AUTO，序號 2 | `C1 01 02 02 01 01 00 00` |
-| AUTO 門檻 2000 RPM，序號 3 | `C1 01 02 03 02 D0 07 00` |
-| 結束百分比 30%，序號 4 | `C1 01 02 04 03 1E 00 00` |
-| 充電時仍保留 BLE，序號 5 | `C1 01 02 05 04 00 00 00` |
-| **設定電池 300mAh，序號 9** | **`C1 01 02 09 05 2C 01 00`** |
-| 設定電池 200mAh，序號 10 | `C1 01 02 0A 05 C8 00 00` |
-| 保存整份草稿，序號 6 | `C1 01 03 06 00 00 00 00` |
-| 草稿恢復預設，序號 7 | `C1 01 04 07 00 00 00 00` |
-| 放棄草稿，序號 8 | `C1 01 05 08 00 00 00 00` |
+## BLE 更名獨立 API
 
-## 回覆：20 bytes
+對 `c7570006-9040-4c7b-87b1-086ef858ace7` 寫入直接的 ASCII 位元組，例如 `BEYBLADE_TOOL02`，不含 `\0`，不使用 C1 封包。
 
-| Byte | 內容 |
-|---|---|
-| 0 | 固定 `C2` |
-| 1 | API 版本 `01` |
-| 2 | 對應命令 ID |
-| 3 | 對應序號 |
-| 4 | 本次請求狀態碼 |
-| 5 | 對應參數 ID |
-| 6 | Flags：bit0=等待保存；bit1=草稿與執行值不同；bit2=尚無有效保存值或最近保存失敗；**bit3=執行容量為 300mAh；bit4=草稿容量為 300mAh**（位元為 0 時表示 200mAh） |
-| 7 | 目前執行模式 |
-| 8～9 | 目前執行 AUTO 最低 RPM（uint16 LE） |
-| 10 | 目前執行充電 BLE 關閉開關 |
-| 11 | 草稿模式 |
-| 12～13 | 草稿 AUTO 最低 RPM（uint16 LE） |
-| 14 | 草稿充電 BLE 關閉開關 |
-| 15 | 目前執行結束百分比 |
-| 16 | 草稿結束百分比 |
-| 17 | 最近一次 SAVE 狀態碼 |
-| 18～19 | 本次開機成功保存次數（uint16 LE；回繞；不持久化） |
+- [新增] 可用字元：ASCII `A-Z`、`a-z`、`0-9`、底線 `_`、減號 `-`。長度 **1～20 bytes**，可在 ATT MTU=23 的 Write Request 單包寫入。
+- [新增] 名稱保存與原 SET/SAVE 分開。BLE Write ACK 只能表示藍牙收件，不代表 NVS 已保存。
+- `c7570007` 讀取狀態：`00`=IDLE；`01`=PENDING；`02`=SAVED；`03`=INVALID；`04`=BUSY；`05`=FLASH_ERROR。
+- `c7570006` 的 READ 永遠回傳**已保存且生效**的名稱，未保存的新草稿不回傳。
+- [保留] callback 不寫 Flash。名稱由主 loop 在 RPM 安全窗口、正常電量與非 OTA 期間保存並讀回驗證。保存失敗保留舊名稱；需要重寫才能再次嘗試。
+- [重要] 保存成功並不會強行中斷現有連線；**斷線後**、無待保存交易和歷史紀錄時，BLE 重新廣播新名稱。手機可能有裝置名稱快取，可重新掃描或關閉再開啟藍牙。
 
-| 狀態碼 | 名稱 | 意義 |
-|---|---|---|
-| `00` | OK | GET 成功或草稿修改成功；不代表已保存 |
-| `01` | PENDING | SAVE 已接受，等待安全時段與寫入間隔 |
-| `02` | SAVED | 保存成功且已套用；或數值相同、原本已有效保存，無需重寫 |
-| `03` | BAD_LENGTH | 請求長度不是 8 bytes |
-| `04` | BAD_VERSION | API 版本錯誤 |
-| `05` | BAD_COMMAND | 未知命令 |
-| `06` | BAD_PARAMETER | 未知參數，或非 SET 命令的參數／值不為 0 |
-| `07` | OUT_OF_RANGE | 值超出合法範圍 |
-| `08` | BUSY | 正在量測、保存等待中、GPIO 事件待處理，或設定命令佇列已滿 |
-| `09` | FLASH_ERROR | 寫入或讀回驗證失敗；執行值保持原值 |
-| `0A` | BAD_MAGIC | Byte0 錯誤 |
+## 電池容量與充電時間
 
-首次使用未保存過設定時，bit2=1 是可辨識的未保存狀態，執行值仍為預設值。GET 自身成功會回 OK；判斷保存結果應查看 bit0、byte17 與執行值，不應只看 GET 的 byte4。
+原 `BATTERY_CHARGE_CURRENT_MA=100U` 不變。`BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah)` 的公式未改：
 
-## App 操作順序
+`3600000 × capacity_mAh ÷ (100 × charge_current_mA)`（ms/1%）。
 
-1. 連線、發現服務，訂閱回覆 Notify；也可只使用 Read。
-2. 發 GET，確認執行設定。
-3. 板子停止量測後逐一發 SET，等待每筆相同序號回覆。收到 BUSY 時不要當作已接受；等量測結束再重送。
-4. 發 SAVE。收到 PENDING 後保持板子靜止，等待相同序號的 SAVE/SAVED 或 SAVE/FLASH_ERROR。
-5. 再 GET 確認 byte7～10、byte15 是預期執行值，bit0=0 且 byte17=SAVED；容量由 byte6 bit3（執行）與 bit4（草稿）確認。
+| 設定容量 | 估計上升 1% | 理論 0 → 100% |
+|---|---:|---:|
+| 200 mAh | 72 秒 | 120 分鐘 |
+| 250 mAh | 90 秒 | 150 分鐘 |
+| 300 mAh | 108 秒 | 180 分鐘 |
 
-GATT Write 的成功只表示 BLE 層收到，仍須檢查此 API 的回覆。不要大量並行送命令；韌體只保留 8 個設定請求及一份拒絕回覆，在過量輸入時拒絕回覆可能被較新的拒絕取代。
+[保留] 充電百分比必須低於 ADC 電壓查表限制才會按限速上升。容量切換在 SAVE 後，下一筆 ADC 將重新計算升幅計時起點；不會修改物理充電電流，且實際充電進入 CV 階段時間可能更長。原放電 21 點電壓曲線、低電鎖定及 FULL 政策未更動。
 
-Read 回傳的是最近處理完成的回覆快照。若不訂閱 Notify，Write 後重複 Read，直到 byte2／byte3 符合本次命令／序號；不要把上一筆快照當作新回覆。Notify 失敗最多重試 1.5 秒，之後保留 Read 快照並繼續處理後續請求，不主動因此斷線。若 Notify 收不到，可使用 Read 或重新連線再 GET。通知成功僅表示交給 BLE stack，不代表 App 已收到。
+## NVS 相容性
 
-## 量測與保存
+- 原設定 namespace/key：`brd_cfg/settings_v1`，**key 不變**，新編碼 `BRDC` + version 3，長度 20 bytes：byte5～11 保留舊四個設定與電池容量；byte12～13 = HOLD uint16 LE；byte14～15 = 0；byte16～19 = 前 16 bytes CRC32/IEEE。
+- [V1.4.4 新增] 開機相容原 `v1`、`v2` 固定 16 bytes blob，並補入 `HOLD=2500ms`；讀到後**不會立刻重寫**，下次 SAVE 才遷移到 v3。
+- [保留] BBP 歷史 namespace `brd_bbp/history_v1`、原 OTA 分割區不變。
+- 名稱獨立 namespace/key：`brd_identity/name_v1`，25 bytes（`BRDN`、1-byte 長度、20-byte ASCII 名稱欄）。首次無名稱設定時預設 `BEYBLADE_TOOL01`。
+- [重要] 若降回只支援 v1/v2 的舊韌體，舊版可能不識別 v3 設定並改用預設值；建議備份設定並保留 NVS，不要在燒錄時 Erase All Flash。
 
-- SPINNING 期間保留 GET、既有 `0x51`／`0x74` 查詢及通知。SET、SAVE、DEFAULTS、DISCARD 回 BUSY，不排隊等待當次量測結束。既有 `0x75` 清除紀錄也拒絕，但沿用原協議不新增 ACK。
-- 寫入命令在 BLE callback 和主 loop 各檢查一次。若閒置時入列、處理前量測開始，仍回 BUSY。已回 PENDING 的 SAVE 則是接受的交易，若隨後開始量測，會等結束再保存。
-- WAIT、未旋轉的 READY 或完成後 HOLD，且 GPIO 佇列為空、電池與 ADC 正常，才能保存。Flash 期間暫停輸入捕捉；請等 SAVED 再開始下一次量測。保存成功後立即套用，不重啟，保留已完成的 MAX、HOLD 及待發布曲線。
-- 實際設定寫入嘗試至少間隔 1 秒；相同且已有效保存的數值不重複寫。保存失敗不自動重試；同一連線的草稿保留，App 可再發 SAVE。若保存期間斷線，完成後丟棄舊連線草稿，避免新連線繼承。
-- 斷線會丟棄未 SAVE 的草稿。已被主 loop 接受並回 PENDING 的 SAVE 保留，即使斷線仍會完成；重連用 GET 確認，不接續舊連線序號通知。斷電前尚未完成保存的草稿／交易不會保留。
-- AUTO 達最低 RPM 後，無參考邊沿 300 ms 會把 RPM 視為 0 並依共同百分比結束；未達門檻時無有效 RPM 250 ms 重置，不發布結果。只出現第一個邊沿但未形成有效週期時保留 3 秒空轉重置。
+## 使用工具
 
-## 充電 BLE 開關
-
-`04=1` 表示充電時自動停用 BLE，量測與本機歷史仍可運作，拔除充電後在安全時段恢復 BLE。`04=0` 表示充電時保留 BLE。
-
-[修改] 編譯預設值為 `0`。若裝置之前已保存 `04=1`，更新韌體後仍保留該 Flash 設定；請使用 SET 將 `04` 設為 `0` 後 SAVE。DEFAULTS 後 SAVE 也會套用新預設，但同時重設全部五項設定。
-
-若目前已因充電而停用 BLE，需先拔除充電、連線設定為 0 並保存，再接回充電。在充電中從 0 改成 1 並成功保存時，保留 200 ms 通知窗口後關閉 BLE；不保證此窗口內 App 一定收到，拔除充電重連 GET 可確認。
-
-## NVS 格式
-
-namespace=`brd_cfg`、key=`settings_v1`，與既有 `brd_bbp/history_v1` 分開。固定 16-byte blob，不直接保存 C++ struct。
-
-| Byte | 內容 |
-|---|---|
-| 0～3 | ASCII `BRDC` |
-| 4 | 儲存版本 `01`（舊版）或 `02`（V1.4.3） |
-| 5 | 模式 |
-| 6 | 充電 BLE 關閉開關 |
-| 7 | 結束百分比 |
-| 8～9 | AUTO 最低 RPM（uint16 LE） |
-| 10～11 | v1：保留且必須為 0（代表 200mAh）；v2：電池容量 200 或 300（uint16 LE） |
-| 12～15 | 前 12 bytes 的 CRC32/IEEE（Little Endian） |
-
-開機檢查長度、版本、CRC 及數值範圍；無效則用 config.h 預設且不自動覆寫。只有明確 SAVE 才保存。成功寫入並讀回一致後才套用；保留 NVS 請在燒錄時停用 Erase All Flash。
-
-## [V1.4.3 新增] 電池容量與充電百分比
-
-- 支援 `200mAh` 與 `300mAh` 兩檔，**預設仍為 200mAh**。充電電流由 `BATTERY_CHARGE_CURRENT_MA=100U` 固定設定，不會因檔位改變硬體充電電流。
-- 充電電量顯示採用既有理論時間限速：`3600000 × 容量(mAh) ÷ (100 × 充電電流(mA))` ms / 1%，因此 200mAh 為 **72 秒 / 1%**，300mAh 為 **108 秒 / 1%**。每次有效 ADC 讀值（每秒一次）仍需通過電壓推算 SOC 上限，非每隔固定秒數無條件增加。
-- BLE 設定：發 `C1 01 02 09 05 2C 01 00` 將 300mAh 暫存於草稿，成功後發 `C1 01 03 0A 00 00 00 00` 保存；收到 `SAVED` 後，才套用新的間隔。`GET` 既有 20-byte 回覆不變，byte6 bit3/4 分別回報執行／草稿的 300mAh 狀態。200mAh 時兩者均為 0。
-- 切換容量並成功 SAVE 若發生在充電中，**從新容量生效後的第一筆電池取樣重新計算下一個 1% 區間**，不立即把原累積時間換算成新容量的增幅；沒有修改 RPM、中斷或 OLED 版面。
-- [保留] 原 21 點電壓放電 SOC 曲線、低電保護門檻、3 秒 CHRG_DET 解除確認、FULL 不判定等功能不變。**300mAh 電池的真實放電曲線不一定與原 200mAh 電池相同**；目前新增的是充電限速檔位，非 300mAh 專屬放電校準曲線，也不是庫倫計。
-- NVS 沿用 `brd_cfg/settings_v1` 的 16-byte blob：舊 v1 資料會以 200mAh 載入；新 SAVE 寫入 v2 格式並以 CRC32 驗證，不清除既有模式、門檻等設定。若退回不支援 v2 的舊韌體，該舊韌體可能不接受新版 blob 並回到編譯預設，請先備份設定。
-- 舊 App 不使用 ID `05` 時可沿用原參數與 8/20-byte 封包；若 App 將 Flags 當作整個數值比對而不是位元遮罩，需要更新 App 解析 bit3/bit4。
+提供 `tools/BRD_BPX_BLE_Config.html`。Chrome/Edge 在 HTTPS 或 localhost 環境開啟後，按「搜尋並連線」，能讀韌體版本、容量、HOLD、名稱，並直接保存三項設定。BLE 操作須在裝置具備有效電量、未執行 OTA、未轉動時進行。

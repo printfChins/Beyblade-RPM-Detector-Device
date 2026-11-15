@@ -6,11 +6,21 @@
 #include "brd_config.h"
 #include "brd_settings.h"
 #include "brd_settings_ble.h"
+#include "brd_ble_identity.h"
+#include <map>
+#include <string>
 uint64_t test_clock_us=1000000U;
 void (*test_interrupts[32])(void)={};
 bool test_notify_ok=true;
+/* [V1.4.4 新增] 名稱 NVS host stub 與安全寫入窗口。 */
+std::map<std::string, std::vector<uint8_t>> test_nvs;
+unsigned test_flash_writes=0U;
+bool test_flash_fail=false;
+bool brd_battery_measurement_allowed() { return true; }
+bool brd_measurement_pause_for_settings() { return true; }
+void brd_measurement_resume_after_settings(bool) {}
 static bool allowed=true;
-static brd_settings::Manager model({0U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH},60000U);
+static brd_settings::Manager model({0U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS},60000U);
 static bool completed=false;
 bool brd_measurement_modifications_allowed() { return allowed; }
 const brd_settings::Manager &brd_settings_model() { return model; }
@@ -40,6 +50,7 @@ static void reconnect_and_save_during_dequeue() {
     race_rx->getCallbacks()->onWrite(race_rx,peer);
 }
 int main() {
+    brd_ble_identity_begin();
     NimBLEServer server;
     assert(brd_settings_ble_create(&server));
     auto *service=server.getService(SETTINGS_SERVICE_UUID);
@@ -135,5 +146,47 @@ int main() {
     model.complete_save(true); completed = true; step();
     assert(model.active().battery_capacity_mah == BATTERY_CAPACITY_300_MAH);
     assert((tx->getValue()[6] & 0x18U) == 0x18U);
-    puts("PASS: settings GATT, 300mAh save/flags, BUSY/GET, READ fallback and connection generations.");
+    /* [V1.4.4 新增] 版本、250mAh、HOLD 及裝置名稱均以獨立 GATT 驗證。 */
+    auto *fw=service->getCharacteristic(SETTINGS_FW_VERSION_UUID);
+    auto *capacity=service->getCharacteristic(SETTINGS_BATTERY_CAPACITY_UUID);
+    auto *hold=service->getCharacteristic(SETTINGS_HOLD_DURATION_UUID);
+    auto *name=service->getCharacteristic(SETTINGS_DEVICE_NAME_UUID);
+    auto *name_status=service->getCharacteristic(SETTINGS_DEVICE_NAME_STATUS_UUID);
+    assert(fw && capacity && hold && name && name_status);
+    fw->getCallbacks()->onRead(fw,peer);
+    auto fwbytes=fw->getValue();
+    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.4.4");
+    capacity->getCallbacks()->onRead(capacity,peer);
+    assert(capacity->getValue().size()==4U && capacity->getValue()[0]==0x2CU);
+    const uint8_t hold_request[8]={0xC1U,1U,brd_settings::CMD_SET,15U,
+                                   brd_settings::PARAM_HOLD_MS,0xA0U,0x0FU,0U};
+    rx->setValue(hold_request,sizeof(hold_request)); rx->getCallbacks()->onWrite(rx,peer); step();
+    hold->getCallbacks()->onRead(hold,peer);
+    assert(hold->getValue().size()==4U && hold->getValue()[2]==0xA0U && hold->getValue()[3]==0x0FU);
+    const uint8_t capacity_250_request[8]={0xC1U,1U,brd_settings::CMD_SET,16U,
+        brd_settings::PARAM_BATTERY_CAPACITY_MAH,0xFAU,0U,0U};
+    rx->setValue(capacity_250_request,sizeof(capacity_250_request));
+    rx->getCallbacks()->onWrite(rx,peer); step();
+    capacity->getCallbacks()->onRead(capacity,peer);
+    assert(capacity->getValue()[2]==0xFAU && capacity->getValue()[3]==0U);
+    write(brd_settings::CMD_SAVE,17U); step();
+    assert(model.pending()); model.complete_save(true); completed=true; step();
+    assert(model.active().hold_ms==4000U && model.active().battery_capacity_mah==250U);
+    capacity->getCallbacks()->onRead(capacity,peer);
+    assert(capacity->getValue()[0]==0xFAU && capacity->getValue()[2]==0xFAU);
+    name->getCallbacks()->onRead(name,peer);
+    auto old_name=name->getValue();
+    assert(std::string(old_name.begin(),old_name.end())=="BEYBLADE_TOOL01");
+    const char renamed[]="BEYBLADE_TOOL77";
+    name->setValue(reinterpret_cast<const uint8_t *>(renamed),sizeof(renamed)-1U);
+    name->getCallbacks()->onWrite(name,peer);
+    name_status->getCallbacks()->onRead(name_status,peer);
+    assert(name_status->getValue()[0]==BRD_BLE_NAME_PENDING);
+    brd_ble_identity_update();
+    name_status->getCallbacks()->onRead(name_status,peer);
+    assert(name_status->getValue()[0]==BRD_BLE_NAME_SAVED);
+    name->getCallbacks()->onRead(name,peer);
+    auto new_name=name->getValue();
+    assert(std::string(new_name.begin(),new_name.end())==renamed);
+    puts("PASS: settings GATT, fw/read, 250mAh, HOLD, name save, READ fallback and link generations.");
 }

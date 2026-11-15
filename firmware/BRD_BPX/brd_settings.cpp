@@ -16,8 +16,8 @@
 static const brd_settings::Values g_defaults = {
     BRD_MEASUREMENT_MODE, BLE_OFF_WHILE_CHARGING,
     POST_LAUNCH_FINISH_PERCENT, AUTO_RPM_THRESHOLD,
-    /* [V1.4.3 新增] 既有使用者維持 200mAh 預設，不因韌體更新改用 300mAh。 */
-    BATTERY_NOMINAL_CAPACITY_MAH
+    /* [V1.4.4 新增] 200mAh 與 2.5 秒 HOLD 均沿用既有預設。 */
+    BATTERY_NOMINAL_CAPACITY_MAH, OLED_MAX_HOLD_MS
 };
 static brd_settings::Manager g_model(g_defaults, RPM_VALID_MAX);
 static bool g_write_attempted = false;
@@ -37,10 +37,11 @@ void brd_settings_begin(void) {
     if (!preferences.begin(SETTINGS_NVS_NAMESPACE, false)) { return; }
     uint8_t blob[brd_settings::STORAGE_SIZE];
     brd_settings::Values restored;
-    if (preferences.isKey(SETTINGS_NVS_KEY) &&
-        preferences.getBytesLength(SETTINGS_NVS_KEY) == sizeof(blob) &&
-        preferences.getBytes(SETTINGS_NVS_KEY, blob, sizeof(blob)) == sizeof(blob) &&
-        brd_settings::decode_storage(blob, sizeof(blob), RPM_VALID_MAX, restored)) {
+    const size_t length = preferences.isKey(SETTINGS_NVS_KEY) ?
+        preferences.getBytesLength(SETTINGS_NVS_KEY) : 0U;
+    if ((length == brd_settings::LEGACY_STORAGE_SIZE || length == sizeof(blob)) &&
+        preferences.getBytes(SETTINGS_NVS_KEY, blob, length) == length &&
+        brd_settings::decode_storage(blob, length, RPM_VALID_MAX, restored)) {
         g_model.restore(restored, true);
     }
     /* [保留] 無資料或資料錯誤使用 cfg 預設值；不自動覆寫無法辨識的 blob。 */
@@ -115,3 +116,6 @@ bool brd_settings_bluetooth_allowed(bool charging) {
     g_charge_grace_active = false;
     return false;
 }
+
+/* [V1.4.4 新增] 用於安全重新初始化 BLE，不操作 Settings 模型。 */
+bool brd_settings_save_pending(void) { return g_model.pending(); }
