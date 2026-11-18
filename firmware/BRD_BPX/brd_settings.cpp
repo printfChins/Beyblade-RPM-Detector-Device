@@ -16,7 +16,7 @@
 static const brd_settings::Values g_defaults = {
     BRD_MEASUREMENT_MODE, BLE_OFF_WHILE_CHARGING,
     POST_LAUNCH_FINISH_PERCENT, AUTO_RPM_THRESHOLD,
-    /* [V1.4.4 新增] 200mAh 與 2.5 秒 HOLD 均沿用既有預設。 */
+    /* [修改] 出廠電池容量及 HOLD 由 brd_config.h 定義。 */
     BATTERY_NOMINAL_CAPACITY_MAH, OLED_MAX_HOLD_MS
 };
 static brd_settings::Manager g_model(g_defaults, RPM_VALID_MAX);
@@ -82,16 +82,13 @@ void brd_settings_update(void) {
                   memcmp(blob, check, sizeof(blob)) == 0;
         preferences.end();
     }
-    /* [V1.5 修正] 在套用值前比較模式，避免保存電池容量等非模式參數時重置 LOAD READY。 */
-    const bool mode_changed = success &&
-                              g_model.pending_values().mode != g_model.active().mode;
     g_model.complete_save(success);
     if (g_discard_after_save) {
         /* [修正] 失敗也不能讓新連線取得舊連線的未成功草稿。 */
         (void)g_model.discard_staged();
         g_discard_after_save = false;
     }
-    brd_measurement_resume_after_settings(mode_changed);
+    brd_measurement_resume_after_settings(success);
     brd_settings::make_response(g_model, brd_settings::CMD_SAVE, g_model.save_sequence(),
                                0U, g_model.last_save_status(), g_completion);
     g_completion_pending = true;

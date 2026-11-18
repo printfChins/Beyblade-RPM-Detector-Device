@@ -3,7 +3,7 @@
     貼放位置: 完整主程式，Arduino IDE 開啟此檔，同資料夾保留全部 .cpp/.h。
     [BRD_BBP 修改] 由 BRD_OLED V0.12 整合 BattlePass BLE 周邊端。
     [新增] 電池檢查及開機畫面後才初始化 BLE，再啟動量測。
-    [本次修改] 80MHz、GPIO3 FALLING；僅以下降緣至下降緣作為完整一圈 SP 取樣。
+    [修改] 80MHz、GPIO3 FALLING；Falling-to-Falling 原始 RPM 即時計算與完整 RAM 緩存。
     [保留] LOAD 去抖預設 50 ms、2.5 秒 MAX 自鎖。
     [修改] AUTO / LOAD 共用可設定的 MAX 百分比結束，預設 30%。
     [刪減] 不帶入原 OLED build 與 bin，避免誤燒舊韌體。
@@ -60,26 +60,25 @@ void loop(void) {
         brd_measurement_begin();
         brd_measurement_update();
     }
-    /* [V1.2 新增] 量測安全窗口建立後，再處理 OTA 入列請求。 */
-    brd_ota_update();
-    /* [保留] 量測事件優先，其次 BLE，最後 OLED 一個區塊。 */
-    bool ota_busy = brd_ota_is_busy();
-    bool storage_allowed = !ota_busy && brd_measurement_storage_allowed();
-    /* [新增] 充電策略只關閉 BLE，量測與本機歷史仍持續運作。 */
-    if (!ota_busy && !brd_settings_bluetooth_allowed(brd_io_is_charging())) {
-        brd_bbp_stop();
-    } else if (storage_allowed) {
-        brd_bbp_begin();
-    }
-    brd_bbp_update(storage_allowed);
-    /* [新增] GET / 通知仍運作；修改指令由設定模組檢查安全窗口。 */
-    brd_settings_ble_update();
-    /* [新增] 只在量測結束或閒置時保存；保存成功後不需重啟。 */
-    /* [V1.2 修改] OTA 期間只回覆設定 GET / BUSY，不執行 NVS 保存。 */
-    if (!ota_busy) {
-        brd_settings_update();
-        /* [V1.4.4 新增] 名稱存檔由主 loop 在 RPM 空閒窗口執行。 */
-        if (!brd_settings_model().pending()) { brd_ble_identity_update(); }
+    /*
+        [修改] RPM 量測為最高優先：進行中完全略過主 loop 的 OTA/BBP Notify/設定傳輸/NVS。
+        不強制 BLE 斷線，僅延後應用層傳輸；電池保護與 OLED 仍維持運作。
+    */
+    if (!brd_measurement_capture_active()) {
+        brd_ota_update();
+        const bool ota_busy = brd_ota_is_busy();
+        const bool storage_allowed = !ota_busy && brd_measurement_storage_allowed();
+        if (!ota_busy && !brd_settings_bluetooth_allowed(brd_io_is_charging())) {
+            brd_bbp_stop();
+        } else if (storage_allowed) {
+            brd_bbp_begin();
+        }
+        brd_bbp_update(storage_allowed);
+        brd_settings_ble_update();
+        if (!ota_busy) {
+            brd_settings_update();
+            if (!brd_settings_model().pending()) { brd_ble_identity_update(); }
+        }
     }
     brd_oled_update();
     delay(MAIN_LOOP_DELAY_MS);

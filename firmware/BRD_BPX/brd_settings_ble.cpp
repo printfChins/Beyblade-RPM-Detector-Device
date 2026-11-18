@@ -294,6 +294,8 @@ static void publish(const settings_link_t &link) {
     g_notify_started_ms = millis();
 }
 void brd_settings_ble_update(void) {
+    /* [新增] RPM 採樣期間停用設定回覆 Notify；封包保持佇列到採樣結束。 */
+    if (brd_measurement_capture_active()) { return; }
     if (g_response == nullptr) { return; }
     /* [V1.4.4 新增] 每次主 loop 更新生效/草稿快照，不在 callback 觸碰模型。 */
     update_read_snapshots();

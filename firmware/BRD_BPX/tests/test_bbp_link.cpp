@@ -20,6 +20,7 @@ uint8_t brd_battery_get_percent() { return 80U; }
 bool brd_settings_bluetooth_allowed(bool) { return true; }
 bool brd_settings_save_pending() { return false; }
 bool brd_io_is_charging() { return false; }
+bool brd_measurement_capture_active() { return false; }
 bool brd_measurement_modifications_allowed() { return true; }
 bool brd_measurement_pause_for_settings() { return true; }
 void brd_measurement_resume_after_settings(bool) {}

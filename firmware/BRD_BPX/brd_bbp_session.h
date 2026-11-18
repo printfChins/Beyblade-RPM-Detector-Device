@@ -9,7 +9,7 @@ public:
     Session();
     void restore(const State &state);
     void reset_capture();
-    // [R3 修改] 所有有效讀值更新 MAX；record_profile 決定是否加入單圈曲線。
+    // [修改] 只在採樣停止後呼叫；原始 MAX 週期單獨更新，32 點曲線再批次加入。
     void period(uint32_t period_us, uint32_t event_us, bool record_profile = true);
     // [R2 修改] 只標記發射事件，不清除已記錄的拉轉資料。
     void launched(uint32_t launch_us);

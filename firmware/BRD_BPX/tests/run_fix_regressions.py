@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""[V1.4.5 新增] 四項缺陷與必要邊界的真實模組回歸。"""
+"""
+[修改] V1.4.5 中位數／兩筆停止測試已不適用，改為 FALLING 原始取樣與 BLE 延後傳輸。
+[保留] 原有 BBP CRC / 名稱安全性回歸與 LOAD/AUTO、方向無關的正負電位模擬。
+"""
 import argparse
 import os
 from pathlib import Path
@@ -18,7 +21,8 @@ env = dict(os.environ, ASAN_OPTIONS='detect_leaks=0', UBSAN_OPTIONS='halt_on_err
 common = ['brd_bbp.cpp', 'brd_ble_identity.cpp', 'brd_bbp_session.cpp', 'brd_bbp_protocol.cpp']
 if not args.skip_build:
     for name, sources in {
-        'measurement_fixes': ['tests/test_measurement_fixes.cpp', 'brd_measurement.cpp', 'brd_settings.cpp', 'brd_settings_model.cpp'],
+        'measurement_fixes': ['tests/test_measurement_fixes.cpp', 'brd_measurement.cpp',
+                              'brd_settings.cpp', 'brd_settings_model.cpp'],
         'bbp_recovery': ['tests/test_bbp_recovery.cpp'],
     }.items():
         subprocess.run(flags + sources + common + ['-o', str(BIN / name)], cwd=ROOT, check=True)
@@ -31,16 +35,11 @@ for case in ['history-crc', 'history-length', 'history-version', 'history-read',
              'rename-set-fail', 'rename-gap-fail', 'rename-start-fail']:
     subprocess.run([str(BIN / 'bbp_recovery'), case], cwd=ROOT, env=env, check=True)
     checks += 1
-# [本次修改] 僅驗證固定 Falling -> Falling，移除已廢棄的 rising 量測案例。
 for mode in ['load', 'auto']:
-    for polarity in ['falling']:
-        for case in ['rising-only', 'clear-ready', 'clear-spinning', 'clear-hold', 'single-low', 'high-after-32',
-                     'wrap-zero', 'startup-short', 'startup-three', 'overflow-single-low']:
-            subprocess.run([str(BIN / 'measurement_fixes'), case, mode, polarity], cwd=ROOT, env=env, check=True)
+    for polarity in ['positive', 'negative']:
+        for case in ['ble-deferred', 'clear-ready', 'clear-spinning', 'clear-hold',
+                     'high-after-32', 'startup-three']:
+            subprocess.run([str(BIN / 'measurement_fixes'), case, mode, polarity],
+                           cwd=ROOT, env=env, check=True)
             checks += 1
-        for phase in [100, 500, 900, 1000, 1100, 2000, 2500, 3000, 3900, 4500, 4900]:
-            for case in ['noise', 'startup-noise']:
-                subprocess.run([str(BIN / 'measurement_fixes'), case, mode, polarity, str(phase)],
-                               cwd=ROOT, env=env, check=True)
-                checks += 1
-print(f'PASS: {checks} four-fix regression scenarios (ASan/UBSan).')
+print(f'PASS: {checks} FALLING capture / deferred BLE / CRC / rename regression scenarios (ASan/UBSan).')

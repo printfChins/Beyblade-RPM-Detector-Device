@@ -49,7 +49,7 @@ static void load(int level, uint32_t us) {
 }
 static void rpm(uint32_t us) {
     test_clock_us += us;
-    GPIO.in.val &= ~(1U << RPM_IR_GPIO);
+    GPIO.in.val |= 1U << RPM_IR_GPIO;
     if (test_interrupts[RPM_IR_GPIO]) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }
@@ -63,7 +63,8 @@ static void shot_10000_then_3000() {
     assert(session.state().total == previous_total);
     // [V1.4.5 修改] 3000 == 10000 x 30%，單點不結束，連續確認後結束。
     rpm(20000U);
-    assert(!brd_measurement_get_display().hold_active);
+    /* [修改] 3000 == MAX*30%，首個低值直接進 HOLD，不需多筆確認。 */
+    assert(brd_measurement_get_display().hold_active);
     for (unsigned i = 0U; i < 3U; ++i) { rpm(20000U); }
     assert(brd_measurement_get_display().show_max);
     assert(brd_measurement_get_display().value == 10000U);

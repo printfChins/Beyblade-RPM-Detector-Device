@@ -43,7 +43,7 @@ static void load_level(int level, uint32_t delta_us) {
 }
 static void rpm_edge(uint32_t delta_us) {
     test_clock_us += delta_us;
-    GPIO.in.val &= ~(1U << RPM_IR_GPIO);
+    GPIO.in.val |= (1U << RPM_IR_GPIO);
     if (test_interrupts[RPM_IR_GPIO]) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }

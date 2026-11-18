@@ -21,17 +21,17 @@ void brd_bbp_capture_finish() {}
 void brd_bbp_capture_abort() {}
 static void pulse(uint32_t us) {
     test_clock_us += us;
-    GPIO.in.val &= ~(1U << RPM_IR_GPIO);
-    assert(test_interrupts[RPM_IR_GPIO] != nullptr);
-    test_interrupts[RPM_IR_GPIO]();
+    GPIO.in.val |= 1U << RPM_IR_GPIO;
+    if (test_interrupts[RPM_IR_GPIO]) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }
 int main() {
     brd_measurement_begin();
+    assert(test_interrupts[RPM_IR_GPIO] != nullptr);
     pulse(100U);
     // [V1.4.5 修改] 使用持續高轉／下降，HOLD 時間斷言保留。
     for (unsigned i = 0U; i < 5U; ++i) { pulse(5000U); }
-    for (unsigned i = 0U; i < 4U; ++i) { pulse(20000U); }
+    pulse(20000U); // 第一筆低轉立即進 HOLD。
     assert(brd_measurement_get_display().hold_active);
     test_clock_us += 3999ULL * 1000ULL;
     brd_measurement_update();

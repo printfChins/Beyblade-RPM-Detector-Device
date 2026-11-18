@@ -22,6 +22,7 @@ void brd_measurement_resume_after_settings(bool) {}
 static bool allowed=true;
 static brd_settings::Manager model({0U,1U,30U,2000U,BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS},60000U);
 static bool completed=false;
+bool brd_measurement_capture_active() { return false; }
 bool brd_measurement_modifications_allowed() { return allowed; }
 const brd_settings::Manager &brd_settings_model() { return model; }
 void brd_settings_discard_draft() { (void)model.discard_staged(); }
@@ -157,8 +158,7 @@ int main() {
     assert(fw && capacity && hold && name && name_status);
     fw->getCallbacks()->onRead(fw,peer);
     auto fwbytes=fw->getValue();
-    /* [V1.5 修改] 驗證 BLE 版本 READ 回傳值與當前韌體一致。 */
-    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.5");
+    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.5.1");
     capacity->getCallbacks()->onRead(capacity,peer);
     assert(capacity->getValue().size()==4U && capacity->getValue()[0]==0x2CU);
     const uint8_t hold_request[8]={0xC1U,1U,brd_settings::CMD_SET,15U,

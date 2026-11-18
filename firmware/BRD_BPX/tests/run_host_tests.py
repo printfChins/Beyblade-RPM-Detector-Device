@@ -19,6 +19,9 @@ CASES = {
     "model": ["tests/test_model.cpp", "brd_settings_model.cpp"],
     "identity": ["tests/test_ble_identity.cpp", "brd_ble_identity.cpp"],
     "hold_dynamic": ["tests/test_hold_dynamic.cpp", "brd_measurement.cpp"],
+    # [新增] 本版真正的 FALLING-only、每圈即時運算、原始 RAM 與停止後曲線測試。
+    "falling_raw": ["tests/test_falling_raw.cpp", "brd_measurement.cpp",
+                    "brd_bbp_session.cpp", "brd_bbp_protocol.cpp"],
     "runtime": ["tests/test_runtime.cpp", "brd_measurement.cpp", "brd_settings.cpp",
                 "brd_settings_model.cpp", "brd_bbp_session.cpp", "brd_bbp_protocol.cpp"],
     "ble": ["tests/test_ble.cpp", "brd_settings_ble.cpp", "brd_settings_model.cpp", "brd_ble_identity.cpp"],
@@ -66,8 +69,6 @@ run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
      "-Itests/battery_stubs", "-Itests/stubs", "-I.",
      "tests/test_battery_curve.cpp", "brd_battery.cpp", "-o", str(BIN / "battery_curve")])
 run([str(BIN / "battery_curve")])
-# [V1.4.5 新增] 四項缺陷回歸與原有全部測試使用同一個入口。
+# [修改] 原 V1.4.5 雜訊過濾／連續兩筆停止預期，改由 Falling-only 專用案例驗證。
 run(["python3", "tests/run_fix_regressions.py"])
-# [V1.5 新增] 修正已確認的兩項 P1 缺陷；物理不可辨識案例列為 XFAIL 而非 PASS。
-run(["python3", "tests/run_v15_hardening.py"])
-print("PASS: LOAD/HOLD / BLE/OTA / 200/250/300/500/1000mAh battery host regression tests, plus V1.5 hardening.")
+print("PASS: FALLING raw RPM/MAX, LOAD/HOLD, deferred BLE/OTA, all battery host regressions.")

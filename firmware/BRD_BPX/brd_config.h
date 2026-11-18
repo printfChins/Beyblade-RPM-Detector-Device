@@ -25,8 +25,8 @@
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
-/* [V1.5 修改] BLE 版本查詢與 OLED 開機畫面同步更新為 V1.5。 */
-#define PROJECT_FIRMWARE_VERSION          "V1.5"
+/* [V1.5.1 修改] BLE 版本查詢與 OLED 開機版本共用 V1.5.1；不更動 RPM 量測。 */
+#define PROJECT_FIRMWARE_VERSION          "V1.5.1"
 #define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
 #define PROJECT_BOOT_NAME                 "BRD BPX"
 #define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
@@ -62,8 +62,8 @@
 #define BBP_SUBSCRIBE_SETTLE_MS            100UL
 static_assert(BBP_COMPAT_AUTONOTIFY == 0 || BBP_COMPAT_AUTONOTIFY == 1,
               "BBP compatibility mode must be 0 or 1.");
-/* [新增] 有效轉動起的發布下限；量測尚未結束時仍繼續等待。 */
-#define BBP_PUBLISH_MIN_DELAY_US          600000UL
+/* [修改] 曲線在停止採樣後才建立；取消舊版額外等待 600 ms。 */
+#define BBP_PUBLISH_MIN_DELAY_US          0UL
 /* [新增] BRD 鋰電池 SOC 門檻，非聲稱已確認原廠 AAA 門檻。 */
 #define BBP_BATTERY_WARNING_PERCENT       20U
 #define BBP_BATTERY_CRITICAL_PERCENT      5U
@@ -119,8 +119,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
 #define RPM_IR_GPIO                       3
 #define RPM_IR_INPUT_MODE                 INPUT
-/* [本次修改] 固定下降緣 (FALLING) 中斷，僅以下降緣到下一次下降緣為完整一圈。
-   [刪減] CHANGE 取樣與首次邊沿自動選擇極性的機制；LOAD GPIO 仍使用原設定。 */
+/* [修改] GPIO3 僅捕捉下降緣，一圈僅觸發一次 RPM ISR。 */
 #define RPM_IR_TRIGGER_EDGE               FALLING
 #define LOAD_IR_GPIO                      1
 #define LOAD_IR_INPUT_MODE                INPUT
@@ -152,6 +151,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
     [V1.4.4 修改] 充電百分比依已保存生效的容量與 100 mA 估算電流計時。
     200 / 250 / 300 / 500 / 1000 mAh 對應每 1% 至少 72 / 90 / 108 / 180 / 360 秒。
 */
+/* [修改] 出廠電池容量改為 300 mAh，供無有效 NVS 設定及 DEFAULTS 使用。 */
 #define BATTERY_NOMINAL_CAPACITY_MAH      BATTERY_CAPACITY_300_MAH
 #define BATTERY_CHARGE_CURRENT_MA         100U
 /* [V1.4.4 修改] 3,600,000 ms/h 除以 100 後再乘容量，縮小 32-bit 中間值。 */
@@ -220,29 +220,15 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /* [刪減] AUTO_LAUNCH_ZERO_MS：AUTO 不再等待零轉速滿一秒，改共用百分比結束。 */
 #define AUTO_RESET_ZERO_MS                250UL
 
-/* [本次修改] 相鄰下降緣 (Falling -> Falling) 為一圈，換算不採半圈或雙邊沿。 */
+/* [修改] GPIO3 連續兩次 FALLING = 一圈，直接以原始時間間隔換算 RPM。 */
 #define PULSES_PER_REV                    1UL
 #define RPM_ISR_QUEUE_SIZE               128U
-#define RPM_MIN_PERIOD_US                500UL
-#define RPM_MAX_PERIOD_US                1000000UL
+/* [刪減] 移除先前 RPM_MIN/MAX_PERIOD_US 過濾限制；非零間隔均直接換算。 */
 #define RPM_VALID_MAX                    60000UL
-/*
-    [V1.4.5 新增] 固定 5 筆週期中位數：單一額外邊沿可切成兩筆短週期，
-    故不能只用 3 點中位數。啟動至少 3 筆，未滿 5 筆時保守選最長週期。
-    [保留] 不平均 RPM、不提高最短週期；本次僅固定 GPIO／ISR 參考為下降緣。
-    [新增] 百分比結束需連續 2 個確認值；無脈衝逾時另行直接結算。
-*/
-#define RPM_PERIOD_FILTER_SIZE           5U
-#define RPM_PERIOD_STARTUP_COUNT         3U
-/* [V1.5 修正新增] 確認「新峰值」前，5 筆週期的最大/最小差異不能超過 25%。
-   原本 5 點中位數無法擋住每圈兩個以上的連續假下降緣。
-   僅限制新的較高 MAX；正常減速與結束確認仍使用原有中位數邏輯。
-   限制：穩定等間距的重複假脈衝無法單靠 GPIO3 區別，需要硬體確認。 */
-#define RPM_PEAK_WINDOW_JITTER_PERCENT   25U
-/* [V1.5 新增] 首次轉速若已達高轉速區間，必須滿 5 個一致週期才發布，
-   避免 3 個連續假下降緣剛好通過原本 3 點啟動條件。 */
-#define RPM_FAST_STARTUP_THRESHOLD       20000U
-#define RPM_FINISH_CONFIRM_COUNT         2U
+/* [新增] 無濾波原始週期 RAM（16384 筆 x 4 bytes = 64 KiB）。 */
+#define RPM_RAW_CAPTURE_CAPACITY          16384U
+/* [保留] 官方 BBP BLE 曲線封包容量固定 32 點，僅在完成後抽樣。 */
+#define RPM_BLE_CURVE_POINTS              32U
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
 #define POST_LAUNCH_NO_RPM_TIMEOUT_MS      1200UL
@@ -326,19 +312,13 @@ static_assert(BATTERY_LOW_LOOP_DELAY_MS > 0UL && BATTERY_LOW_LOOP_DELAY_MS <= 10
               "Invalid low battery loop delay.");
 static_assert(BATTERY_LOW_OLED_REFRESH_MS > 0UL && BATTERY_LOW_OLED_REFRESH_MS < 0x80000000UL,
               "Invalid low battery OLED refresh interval.");
-static_assert(RPM_IR_TRIGGER_EDGE == FALLING, "RPM sampling must use Falling-to-Falling periods.");
+static_assert(RPM_IR_TRIGGER_EDGE == FALLING, "RPM must use falling edge only.");
 static_assert(PULSES_PER_REV == 1UL, "Each same-polarity interval must equal one revolution.");
 static_assert(RPM_ISR_QUEUE_SIZE >= 2U && RPM_ISR_QUEUE_SIZE <= 256U,
               "RPM queue size must be between 2 and 256.");
 static_assert(RPM_VALID_MAX > 0UL && RPM_VALID_MAX <= 65535UL, "Invalid RPM limit.");
-static_assert(RPM_PERIOD_FILTER_SIZE == 5U && RPM_PERIOD_STARTUP_COUNT == 3U,
-              "RPM single-extra-edge rejection requires the 5/3 period window.");
-static_assert(RPM_PEAK_WINDOW_JITTER_PERCENT >= 1U && RPM_PEAK_WINDOW_JITTER_PERCENT <= 50U,
-              "RPM new-peak consistency threshold out of range.");
-static_assert(RPM_FAST_STARTUP_THRESHOLD > 0U && RPM_FAST_STARTUP_THRESHOLD < RPM_VALID_MAX,
-              "Invalid fast startup confirmation threshold.");
-static_assert(RPM_FINISH_CONFIRM_COUNT >= 2U && RPM_FINISH_CONFIRM_COUNT <= 255U,
-              "RPM finish must require at least two confirmed periods.");
+static_assert(RPM_RAW_CAPTURE_CAPACITY >= RPM_BLE_CURVE_POINTS,
+              "Raw RPM capture capacity must cover the BLE curve.");
 static_assert(POST_LAUNCH_FINISH_PERCENT > 0U && POST_LAUNCH_FINISH_PERCENT <= 100U,
               "Invalid finish percentage.");
 static_assert(LOAD_IR_DEBOUNCE_US >= 10000UL && LOAD_IR_DEBOUNCE_US < 0x80000000UL,

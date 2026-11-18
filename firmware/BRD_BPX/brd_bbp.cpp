@@ -397,12 +397,15 @@ static void prepare_response(uint8_t command, const bbp_link_t &link) {
     }
 }
 void brd_bbp_update(bool storage_allowed) {
+    /* [新增] RPM 採樣期間不建立頁面、Notify 或執行 Flash 保存。 */
+    if (brd_measurement_capture_active()) { return; }
     if (!g_storage_loaded) {
         return;
     }
     uint32_t now_ms = millis();
     /* [新增] 沒有連線仍完成本地紀錄，發布不依賴手機輪詢。 */
     uint32_t previous_total = g_session.state().total;
+    /* [修改] 曲線已在 HOLD 時完整凍結，無須額外等待舊版 600 ms 捕捉窗口。 */
     g_session.update(micros(), BBP_PUBLISH_MIN_DELAY_US);
     bool published = previous_total != g_session.state().total;
     save_storage(now_ms, storage_allowed);

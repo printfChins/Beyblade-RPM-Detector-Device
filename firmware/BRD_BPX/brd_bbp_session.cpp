@@ -33,8 +33,8 @@ void Session::period(uint32_t period_us, uint32_t event_us, bool record_profile)
         first_period_us_ = event_us;
         started_ = true;
     }
-    /* [R3 修改] 曲線只保存本次參考邊沿的整圈週期，一圈一筆。
-       [保留] 裝載後取得有效參考週期即起錄，發射不清空前段資料。 */
+    /* [修改] 來源是停止採樣後整理的最多 32 筆 FALLING->FALLING 原始週期。
+       量測當下只寫 brd_measurement.cpp 的原始 RAM，本函式不在 ISR／採樣期呼叫。 */
     if (record_profile) {
         profile_.add_period_us(period_us);
     }

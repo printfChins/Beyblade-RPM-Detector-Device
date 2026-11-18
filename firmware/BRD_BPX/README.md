@@ -1,14 +1,13 @@
-# BRD BPX V1.5
+# BRD BPX V1.4.4
 
-本版以 2026-11-18 Falling → Falling SP 取樣與 OLED SP 顯示版本為基礎，將韌體版本更新為 `V1.5`，並保留既有 500/1000 mAh 電池容量等功能。解壓後使用 Arduino IDE 開啟 `BRD_BPX/BRD_BPX.ino`。
+本版在 V1.4.5 的 ESP32-C3 與 128×32 SSD1306 OLED 專案加入 500 mAh、1000 mAh 充電百分比估算檔位。解壓後使用 Arduino IDE 開啟 `BRD_BPX/BRD_BPX.ino`。
 
-[V1.5 修改] OLED 開機顯示 `FW VER V1.5`，BLE 韌體版本 READ 回傳 `V1.5`；原 BBP 通訊封包、BLE 設定 UUID、取樣演算法及操作流程均不變。詳見 [V1.5 修改紀錄](V1.5_CHANGES.md)。
-
-V1.4.5 的修正詳見 [V1.4.5 修改清單](V1.4.5_CHANGES.md)。
+本次 GPIO3 FALLING 原始 RPM 量測改造詳見 [RPM_FALLING_RAW_CHANGELOG.md](RPM_FALLING_RAW_CHANGELOG.md)。
+版本字串延續原專案，未主動更換韌體版本號。
 
 | 修正 | 行為 |
 |---|---|
-| RPM 假 MAX／單次低值提前結束 | 使用 5 筆週期中位數確認轉速，OLED、MAX 與 BLE 曲線使用同一個確認值。百分比結束須連續兩次達標，無有效脈衝滿 300 ms 仍可結算。 |
+| [本次修改] RPM 即時優先 | GPIO3 僅 FALLING；每一筆非零 Falling-to-Falling 原始週期直接換算 RPM/MAX，不使用中位數、平滑、二次低轉確認。達結束百分比立即停止取樣，之後才整理曲線與啟動 BLE 應用層傳輸。 |
 | 歷史 CRC 損壞 | BLE 照常啟動，歷史暫存在 RAM。保留原 NVS 資料，收到清歷史命令 `0x75` 並保存成功後恢復持久化。 |
 | READY 清歷史漏首發 | LOAD／AUTO 清除後可正常記錄第一發 MAX 與曲線。 |
 | BLE 更名競態 | 斷線後更新 GAP 名稱和 Scan Response，保留現有 BLE Server 與剛建立的連線。 |
@@ -37,7 +36,7 @@ V1.4.5 的修正詳見 [V1.4.5 修改清單](V1.4.5_CHANGES.md)。
 
 ## 電池容量檔位
 
-開啟 `tools/BRD_BPX_BLE_Config.html`，連線後選擇電池容量並儲存。出廠預設容量為 200 mAh。容量經 `SET` 參數 `05` 暫存，取得 `SAVED` 後生效並可跨重啟保留。詳細封包見 [SETTINGS_API.md](SETTINGS_API.md)。
+出廠預設電池容量為 **300 mAh**。開機優先載入有效的 NVS 設定。要調整已保存的容量，可開啟 `tools/BRD_BPX_BLE_Config.html`，連線後選擇容量並儲存。容量經 `SET` 參數 `05` 暫存，收到 `SAVED` 後生效並可跨重啟保留。詳細封包見 [SETTINGS_API.md](SETTINGS_API.md)。
 
 | 容量 | 100 mA 估算下，顯示增加 1% 的最短間隔 |
 |---|---:|
@@ -47,12 +46,12 @@ V1.4.5 的修正詳見 [V1.4.5 修改清單](V1.4.5_CHANGES.md)。
 | 500 mAh | 180 秒 |
 | 1000 mAh | 360 秒 |
 
-| 檔案位置（相對於 `BRD_BPX/`） | V1.4.4 容量功能修改（沿用至 V1.5） |
+| 檔案位置（相對於 `BRD_BPX/`） | V1.4.4 修改 |
 |---|---|
 | `brd_battery_capacity.h` | [新增] 兩個容量常數及共用容量驗證。 |
-| `brd_config.h`、`brd_battery.cpp` | [修改] 版本、計時公式與充電補償說明。 |
+| `brd_config.h`、`brd_battery.cpp` | [修改] 出廠電池容量、版本、計時公式與充電補償說明。 |
 | `brd_settings_model.cpp`、`brd_settings_model.h` | [修改] SET 與 NVS 驗證。[新增] 容量擴充旗標 `bit7`。 |
-| `tools/BRD_BPX_BLE_Config.html` | [新增] 兩個容量選項。[刪減] JavaScript 重複維護的容量清單。 |
+| `tools/BRD_BPX_BLE_Config.html` | [修改] 初始選擇 300 mAh。[新增] 兩個容量選項。[刪減] JavaScript 重複維護的容量清單。 |
 
 ## 本次功能
 
@@ -66,26 +65,26 @@ V1.4.5 的修正詳見 [V1.4.5 修改清單](V1.4.5_CHANGES.md)。
 | AUTO 最低有效 RPM | 2000 | 1～59999 |
 | RPM 結束百分比 | 30% | 1～100% |
 | 充電時自動關閉 BLE | 停用，充電時保留 BLE | 啟用 / 停用 |
-| 電池容量 | 200 mAh | 200 / 250 / 300 / 500 / 1000 mAh |
+| 電池容量 | 300 mAh | 200 / 250 / 300 / 500 / 1000 mAh |
 | HOLD 時間 | 2500ms | 1000～10000ms |
 
 LOAD 的確認值須小於或等於 MAX 乘上結束百分比，AUTO 則須嚴格小於。MAX=30000、結束百分比=30% 時，LOAD 以 9000 RPM 為含等號的門檻。AUTO 須先確認至少一次達到最低 RPM 門檻。達有效條件後，兩種模式皆可在無有效脈衝持續 300 ms 時結算。
 
-設定在 RAM 草稿修改，SAVE 接受後於非量測時段寫入 Flash，讀回成功才套用，重開保留。量測期間仍可查詢與接收通知；修改設定及清除歷史會拒絕，不在結束後自動執行被拒絕的命令。已接受的 SAVE 若遇到量測開始，則延後保存。完成的 MAX、HOLD 及曲線不會因套用設定而清除。
+設定在 RAM 草稿修改，SAVE 接受後於非量測時段寫入 Flash，讀回成功才套用，重開保留。**RPM 採樣期間不執行 BBP/設定 Notify、OTA 排程及 NVS 寫入；收到的查詢命令由 BLE 佇列延後到停止採樣後回覆**。修改設定及清除歷史仍遵守 BUSY／HOLD 安全窗口，不在結束後自動執行被拒絕的命令。已接受的 SAVE 若遇到量測開始則延後保存。
 
 充電開關預設停用（`BLE_OFF_WHILE_CHARGING=0U`），充電時保留 BLE。已有有效 Flash 設定時仍載入原設定；若之前保存為啟用，需透過設定 API 將參數 `04` 設為 `0` 後 SAVE，才會改為充電時保留 BLE。也可 DEFAULTS 後 SAVE，但會同步重設全部五項參數。
 
-充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方顯示 `BRD BPX`，下方版本 `FW VER V1.5` 取自 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION`。下圖為舊版 framebuffer 的版面參考。
+充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方顯示 `BRD BPX`，下方版本 `FW VER V1.4.4` 取自 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION`。下圖為舊版 framebuffer 的版面參考。
 
 ![OLED 開機畫面](docs/OLED_boot_preview.png)
 
 ## 原架構保留
 
-[V1.5 修改] SP/RPM GPIO3 固定使用 FALLING 中斷，僅下降緣至下一個下降緣為一整圈；不再根據首個邊沿選極性。最早 32 個已確認週期保存為曲線，32 點滿後仍可更新 MAX。LOAD GPIO1，充電 GPIO10，電池 ADC GPIO0，OLED SDA20 / SCL21 均保留。
+**GPIO3 使用 FALLING，不再啟用 RISING/CHANGE。** LOAD 裝載去抖成功才啟用 RPM 中斷；開始量測後停止 LOAD 中斷；每筆原始非零週期直接算 RPM 與 MAX，記錄在 16,384 筆固定 RAM（64 KiB）中，直到達到停止百分比。停止後才轉換為官方 BBP 32 點曲線、盡可能保留峰值。RAM 滿後仍計算即時/MAX，但會標記原始資料截斷。GPIO1 LOAD、GPIO10 充電、GPIO0 ADC、OLED SDA20 / SCL21 保留。
 
 LOAD 去抖預設 **50 ms**、MAX HOLD **2500 ms**、OLED 更新 100 ms 保留。LOAD 去抖由 `brd_config.h` 設定，HOLD 可經 BLE 設定。
 
-出廠 BLE 名稱為 `BEYBLADE_TOOL01`。BBP service `55c40000-f8eb-11ec-b939-0242ac120002`、特徵 `55c4f002-f8eb-11ec-b939-0242ac120002`、沿用 17-byte 封包及既有廣播結構。新增設定 Service 在連線後發現，不加入廣播。`0x51` / `0x74` 可在量測中查詢，`0x75` 量測中拒絕且不新增 ACK。
+出廠 BLE 名稱為 `BEYBLADE_TOOL01`。BBP service `55c40000-f8eb-11ec-b939-0242ac120002`、特徵 `55c4f002-f8eb-11ec-b939-0242ac120002`、沿用 17-byte 封包及既有廣播結構。新增設定 Service 在連線後發現，不加入廣播。`0x51` / `0x74` 量測期間可收件，但**延後到停止採樣後**回覆；`0x75` 量測中拒絕且不新增 ACK。
 
 既有 50 筆歷史與 `brd_bbp/history_v1` 格式保留；新設定使用 `brd_cfg/settings_v1`，兩者分開。
 

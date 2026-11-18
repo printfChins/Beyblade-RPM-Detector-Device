@@ -20,17 +20,17 @@ void brd_bbp_capture_finish() {}
 void brd_bbp_capture_abort() {}
 static void pulse(uint32_t delta) {
     test_clock_us += delta;
-    GPIO.in.val &= ~(1U << RPM_IR_GPIO);
-    test_interrupts[RPM_IR_GPIO]();
+    GPIO.in.val |= 1U << RPM_IR_GPIO;
+    if (test_interrupts[RPM_IR_GPIO]) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }
 int main() {
     brd_measurement_begin();
     pulse(100U);
-    // [V1.4.5 修改] 單點低值不得結束，持續低於百分比仍須完成。
+    // [修改] 單筆 Falling 週期立即換算；首次低於百分比直接結束。
     for (unsigned i = 0U; i < 5U; ++i) { pulse(5000U); }
     pulse(20000U);
-    assert(!brd_measurement_get_display().show_max);
+    assert(brd_measurement_get_display().show_max);
     for (unsigned i = 0U; i < 3U; ++i) { pulse(20000U); }
     const brd_display_t display = brd_measurement_get_display();
     if (!display.show_max || display.value != 12000U || launches != 1U) {

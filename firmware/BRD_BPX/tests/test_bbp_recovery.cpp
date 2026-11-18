@@ -18,16 +18,19 @@ std::map<std::string, std::vector<uint8_t>> test_nvs;
 bool test_flash_fail = false;
 unsigned test_flash_writes = 0U;
 static void (*modifications_hook)() = nullptr;
+/* [新增] 模擬完成後仍處於 HOLD，該窗口不得接受 0x75 清除歷史。 */
+static bool measurement_safe = true;
 bool brd_battery_measurement_allowed() { return true; }
 uint8_t brd_battery_get_percent() { return 80U; }
 bool brd_settings_bluetooth_allowed(bool) { return true; }
 bool brd_settings_save_pending() { return false; }
 bool brd_io_is_charging() { return false; }
+bool brd_measurement_capture_active() { return false; }
 bool brd_measurement_modifications_allowed() {
     if (modifications_hook) {
         auto hook = modifications_hook; modifications_hook = nullptr; hook();
     }
-    return true;
+    return measurement_safe;
 }
 bool brd_measurement_pause_for_settings() { return true; }
 void brd_measurement_resume_after_settings(bool) {}
@@ -135,6 +138,7 @@ int main(int argc, char **argv) {
         assert(restored.total == 1U);
     } else if (scenario == "pending-clear") {
         start(); connect(); capture();
+        measurement_safe = false;  // 模擬已停止取樣、仍在 HOLD；禁止清歷史。
         command(0x75U);
         advance();
         assert(count_ram() == 1U);

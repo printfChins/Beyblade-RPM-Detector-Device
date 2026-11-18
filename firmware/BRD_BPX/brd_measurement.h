@@ -32,6 +32,9 @@ struct brd_measurement_diagnostics_t {
     uint32_t rpm_queue_overflows;
     uint32_t load_stable_transitions;
     uint32_t launch_events;
+    /* [新增] 原始週期總筆數及固定 RAM 滿時的截斷次數。 */
+    uint32_t raw_periods_seen;
+    uint32_t raw_capture_overflows;
 };
 
 /* [V0.12 修改] 已啟用時呼叫不重置量測；供 ADC 故障恢復使用。 */
@@ -39,6 +42,8 @@ void brd_measurement_begin(void);
 /* [V0.10 新增] 停用 RPM / LOAD 中斷並清除量測資料，供低電鎖定使用。 */
 void brd_measurement_stop(void);
 void brd_measurement_update(void);
+/* [新增] 量測中禁用主 loop 的 BLE/OTA/Flash 交易；ISR 本身仍可接收下降緣。 */
+bool brd_measurement_capture_active(void);
 /* [BRD_BBP 新增] 非量測時段才允許 Flash 保存及 BLE 初始化重試。 */
 bool brd_measurement_storage_allowed(void);
 /* [新增] 設定與清除紀錄只能在非量測安全時段執行。 */

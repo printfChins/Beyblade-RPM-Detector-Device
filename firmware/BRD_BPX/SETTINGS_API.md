@@ -1,8 +1,8 @@
-# BRD BPX V1.5 BLE 設定 API
+# BRD BPX V1.4.4 BLE 設定 API
 
-本文件適用於 V1.5 韌體，沿用 500／1000 mAh 檔位及既有設定 GATT 協定。
+本文件適用於提供 500／1000 mAh 檔位的 V1.4.4 韌體。RPM 模組已改為 GPIO3 FALLING 原始週期量測，詳見 `RPM_FALLING_RAW_CHANGELOG.md`。
 
-[修改] 依實際 `brd_settings_model.cpp`、`brd_settings_ble.cpp`、`brd_ble_identity.cpp` 說明。舊版說明保存在 `docs/SETTINGS_API_V1.4.3.md`。本版不修改 BattlePass BBP 封包 17 bytes、原 BBP Service UUID、OTA UUID 與 GPIO / RPM ISR。
+[修改] 依實際 `brd_settings_model.cpp`、`brd_settings_ble.cpp`、`brd_ble_identity.cpp` 說明。舊版說明保存在 `docs/SETTINGS_API_V1.4.3.md`。本版不修改 BattlePass BBP 封包 17 bytes、原 BBP Service UUID、OTA UUID；RPM ISR 已改為 FALLING-only。
 
 ## BLE 掃描及連線
 
@@ -20,7 +20,7 @@
 | `c7570002` | 原設定命令 | WRITE | 8-byte 指令 |
 | `c7570003` | 原設定回覆 | READ / NOTIFY | 20-byte 快照 |
 | `c7570004` | 原 OLED 頁面 | READ / WRITE | 1-byte，0 主頁 / 1 IR TEST |
-| `c7570005` | 韌體版本 | READ | UTF-8 字串 `V1.5`（無結尾 NUL） |
+| `c7570005` | 韌體版本 | READ | UTF-8 字串 `V1.4.4`（無結尾 NUL） |
 | `c7570006` | [新增] BLE 裝置名稱 | READ / WRITE | UTF-8/ASCII 字串（1～20 bytes） |
 | `c7570007` | [新增] BLE 名稱保存狀態 | READ | 1-byte 狀態碼 |
 | `c7570008` | 電池容量 | READ | 4 bytes，byte0～1 為生效容量，byte2～3 為草稿容量，皆為 uint16 LE（mAh） |
@@ -34,10 +34,12 @@
 | `02` | AUTO RPM 最低門檻 | 1～59999 | 2000 |
 | `03` | MAX 結束百分比 | 1～100 | 30 |
 | `04` | 充電時關閉 BLE | 0=否, 1=是 | 0 |
-| `05` | [V1.4.4 修改] 電池容量 | **200、250、300、500、1000 mAh** | 200 |
+| `05` | [V1.4.4 修改] 電池容量 | **200、250、300、500、1000 mAh** | 300 mAh |
 | `06` | [新增] HOLD 自鎖時間 | **1000～10000 ms** | 2500 |
 
 [重要] SET 僅修改草稿。**只有收到 SAVE/SAVED 後才會套用及持久化**。不能在轉動中套用新設定。LOAD、AUTO 共用同一個 HOLD 時間。
+
+裝置在沒有有效 NVS 設定時以 300 mAh 開機。`DEFAULTS` 會把整組出廠值載入草稿，等 `SAVE` 成功後才生效。只調整容量時使用 `SET` ID `05` 後儲存。
 
 ## 設定命令（8-byte 請求／20-byte 回覆）
 
@@ -65,7 +67,7 @@
 - [V1.4.4 新增] `FLAGS` **bit7=1** 表示生效或草稿容量有一項為 500／1000 mAh。讀取 `c7570008` 取得兩個完整數值。例如 `F4 01 E8 03` 表示生效 500 mAh、草稿 1000 mAh。bit7=0 時，生效的 bit3／bit5 均為 0 代表生效 200 mAh，草稿的 bit4／bit6 同理。
 - `STATUS`：00=OK、01=PENDING、02=SAVED、03=BAD_LENGTH、04=BAD_VERSION、05=BAD_COMMAND、06=BAD_PARAMETER、07=OUT_OF_RANGE、08=BUSY、09=FLASH_ERROR、0A=BAD_MAGIC。
 - 讀取完整電池容量使用 `c7570008`，讀取 HOLD 時間使用 `c7570009`。
-- WAIT/READY 時若沒在旋轉，可以先 SET 多個參數、再 SAVE；SAVE 接受後收到 PENDING，須繼續等待 SAVED。允許 GET 在測速時讀值，SET/SAVE 在量測不安全時回 BUSY。
+- WAIT/READY 時若沒在旋轉，可以先 SET 多個參數、再 SAVE；SAVE 接受後收到 PENDING，須繼續等待 SAVED。GET 在測速時可收件，但回覆延後至停止採樣後；SET/SAVE 在量測不安全時回 BUSY。
 
 ## BLE 更名獨立 API
 
@@ -97,7 +99,7 @@
 ## NVS 相容性
 
 - 原設定 namespace/key：`brd_cfg/settings_v1`，**key 不變**，新編碼 `BRDC` + version 3，長度 20 bytes：byte5～11 保留舊四個設定與電池容量；byte12～13 = HOLD uint16 LE；byte14～15 = 0；byte16～19 = 前 16 bytes CRC32/IEEE。
-- [V1.4.4 新增] 開機相容原 `v1`、`v2` 固定 16 bytes blob，並補入 `HOLD=2500ms`；讀到後**不會立刻重寫**，下次 SAVE 才遷移到 v3。
+- 開機相容 `v1`、`v2` 的 16-byte blob，並補入 `HOLD=2500ms`。`v1` 依舊格式以 200 mAh 解讀。`v2`、`v3` 優先載入已保存的容量。`v1`、`v2` 在下次 SAVE 時遷移到 v3。
 - [V1.4.4 新增] 500／1000 mAh 寫入 v3 的原容量欄位（byte10～11，uint16 LE）。V1.4.5 遇到含這兩檔的設定會載入編譯預設值。
 - [保留] BBP 歷史 namespace `brd_bbp/history_v1`、原 OTA 分割區不變。
 - 名稱獨立 namespace/key：`brd_identity/name_v1`，25 bytes（`BRDN`、1-byte 長度、20-byte ASCII 名稱欄）。首次無名稱設定時預設 `BEYBLADE_TOOL01`。
