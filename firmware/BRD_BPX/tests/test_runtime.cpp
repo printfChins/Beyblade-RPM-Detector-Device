@@ -136,7 +136,7 @@ int main() {
     edge(100U); periods(5000U, 5U); // 達門檻後無脈衝，共同 300ms 備援。
     tick(RPM_ZERO_TIMEOUT_MS * 1000U + 1U);
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 12000U);
-    // [修改] 單一 FALLING 時戳、micros 回繞：無濾波 MAX，BLE 在停止後均勻抽 32 點。
+    // [V1.5.1 修改] 單一 FALLING、micros 回繞：BLE 停止後固定取前 32 圈（不抽樣）。
     fresh_auto();
     test_clock_us = UINT32_MAX - 4095ULL;
     GPIO.in.val |= 1U << RPM_IR_GPIO;

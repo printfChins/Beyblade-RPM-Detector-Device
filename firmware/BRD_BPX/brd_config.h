@@ -227,7 +227,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define RPM_VALID_MAX                    60000UL
 /* [新增] 無濾波原始週期 RAM（16384 筆 x 4 bytes = 64 KiB）。 */
 #define RPM_RAW_CAPTURE_CAPACITY          16384U
-/* [保留] 官方 BBP BLE 曲線封包容量固定 32 點，僅在完成後抽樣。 */
+/* [V1.5.1 修改] BLE 曲線只使用量測起始的前 32 圈，一圈一點；完成後才轉換。 */
 #define RPM_BLE_CURVE_POINTS              32U
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL

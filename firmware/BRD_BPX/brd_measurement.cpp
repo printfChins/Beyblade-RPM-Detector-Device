@@ -3,7 +3,7 @@
     [修改] GPIO3 僅使用 FALLING 中斷；每兩次下降緣形成一次完整旋轉週期。
     [刪減] CHANGE/RISING、參考極性選擇、5 點中位數、起始延後確認與連續低值確認。
     [修改] 每筆非零原始週期直接換算即時 RPM 並持續更新 MAX，不做平滑或去噪。
-    [新增] 量測期間只把原始週期寫入固定 RAM；HOLD 成立後才轉成最多 32 點 BLE 曲線。
+    [修改 V1.5.1] 量測期間只寫原始週期至固定 RAM；HOLD 後按順序輸出「前 32 圈，一圈一點」。
     [保留] LOAD 去抖、AUTO 最低轉速資格、無脈衝歸零、MAX HOLD、低電中止及時間回繞。
     [注意] 原始模式不抑制雜訊；硬體假下降緣會直接反映於 RPM/MAX。
 */
@@ -65,8 +65,6 @@ static uint16_t g_max_rpm = 0U;
 static uint32_t g_raw_periods[RPM_RAW_CAPTURE_CAPACITY] = {};
 static uint32_t g_raw_period_count = 0U;
 static uint32_t g_max_period_us = 0U;
-/* [新增] MAX 的原始索引，供停止後 32 點曲線盡可能保留峰值。 */
-static uint32_t g_max_period_index = UINT32_MAX;
 /* [新增] AUTO 達到執行時最低 RPM 後保存資格，共用百分比結束。 */
 static bool g_auto_launch_candidate = false;
 /* [刪減] AUTO 不再保存一秒零轉速候選時間戳記。 */
@@ -200,7 +198,6 @@ static void restart_input_capture(void) {
 static void reset_measurement(bool loaded) {
     g_raw_period_count = 0U;
     g_max_period_us = 0U;
-    g_max_period_index = UINT32_MAX;
     /* [BRD_BBP 新增] 只重置本次曲線，不清除已發布歷史。 */
     brd_bbp_capture_reset();
     /*
@@ -225,42 +222,28 @@ static void reset_measurement(bool loaded) {
 }
 
 /*
-    [新增] 只有停止取樣後才執行 BBP 資料轉換。
-    原始 RAM 全數保留到下一次 reset；BLE 固定 32 點，在完整取樣區間均勻取點。
-    若峰值仍在 RAM 內，額外確保其位置被選入 BLE 曲線。
-    MAX 使用原始峰值週期獨立寫入，避免協定 32 點限制改變最高轉速。
+    [修改 V1.5.1] 只有停止取樣後才執行 BBP 曲線資料轉換。
+    [刪減] 全段均勻取樣、MAX 插點與調整取樣索引的計算；不再覆寫前 32 圈。
+    [新增] 曲線嚴格採用轉動後的前 32 個完整 Falling-to-Falling 週期，
+           每個週期只佔一點，保持原始先後次序。少於 32 圈時由既有協定補零。
+    [保留] 每圈的原始週期先存入 g_raw_periods；RPM/MAX 仍計算整段量測。
+           全程 MAX 獨立寫入 BBP 代表 SP，曲線不必包含全程最高點。
 */
 static void publish_stopped_capture(void) {
     if (g_raw_period_count == 0U || g_max_period_us == 0U) {
         return;
     }
 
-    /* [新增] 此筆只更新 BBP 代表 MAX，不占用 32 點曲線。 */
+    /* [保留] 全程 MAX 單獨發送給 Session，不佔用 32 點曲線。 */
     brd_bbp_capture_period(g_max_period_us, g_launch_us, false);
-    const uint32_t count = g_raw_period_count;
-    const uint32_t points = count < RPM_BLE_CURVE_POINTS ? count : RPM_BLE_CURVE_POINTS;
-    uint32_t selected[RPM_BLE_CURVE_POINTS] = {};
-    uint32_t nearest = 0U;
-    uint32_t nearest_distance = UINT32_MAX;
+
+    /* [修改] 直接讀取從第一圈起連續的前 32 筆，絕不均勻抽點或補入後期 MAX。 */
+    const uint32_t points = g_raw_period_count < RPM_BLE_CURVE_POINTS ?
+                            g_raw_period_count : RPM_BLE_CURVE_POINTS;
     for (uint32_t index = 0U; index < points; ++index) {
-        selected[index] = points == 1U ? 0U :
-            static_cast<uint32_t>((static_cast<uint64_t>(index) * (count - 1U)) / (points - 1U));
-        if (g_max_period_index < count) {
-            const uint32_t distance = selected[index] > g_max_period_index ?
-                selected[index] - g_max_period_index : g_max_period_index - selected[index];
-            if (distance < nearest_distance) {
-                nearest_distance = distance;
-                nearest = index;
-            }
-        }
+        brd_bbp_capture_period(g_raw_periods[index], g_launch_us, true);
     }
-    if (points != 0U && g_max_period_index < count) {
-        /* [新增] 抽點不濾波，僅以最接近峰值的槽位替換成真實 MAX 週期。 */
-        selected[nearest] = g_max_period_index;
-    }
-    for (uint32_t index = 0U; index < points; ++index) {
-        brd_bbp_capture_period(g_raw_periods[selected[index]], g_launch_us, true);
-    }
+
     brd_bbp_capture_launch(g_launch_us);
     brd_bbp_capture_finish();
 }
@@ -380,7 +363,6 @@ static void process_rpm_edge(uint32_t edge_us) {
         g_max_rpm = g_current_rpm;
         /* [新增] 即便全量 RAM 滿，也保留 MAX 對應的未處理原始週期。 */
         g_max_period_us = rpm > RPM_VALID_MAX ? (60000000UL / RPM_VALID_MAX) : period_us;
-        g_max_period_index = period_recorded ? g_raw_period_count - 1U : UINT32_MAX;
     }
     if (!measurement_uses_load() && !g_auto_launch_candidate &&
         g_current_rpm >= brd_settings_get().auto_min_rpm) {

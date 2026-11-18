@@ -8,7 +8,7 @@
 2. **每次下降緣**：ISR 僅將 `micros()` 時戳推入 128 筆固定環形佇列；不做除法、排序、BLE、malloc 或 Flash 寫入。主迴圈先批次處理 GPIO 事件，使用兩筆相鄰下降緣 `Δt = current_us - previous_us`，立即計算 `RPM = 60,000,000 / Δt / PULSES_PER_REV`。第一筆基準沒有完整一圈，因此不會產生轉速。
 3. **原始儲存**：每筆 `Δt > 0` 的週期不做中位數、平均、平滑、合理性比對，直接存入固定 RAM 並計算 RPM，持續更新 MAX；只有零週期做除零保護。因現有 `uint16_t` 畫面／BBP API 上限，顯示 RPM 限制為 60,000；原始週期仍以 `uint32_t` 保留。
 4. **停止條件**：LOAD 使用 `current_rpm * 100 <= MAX * finish_percent`；AUTO 使用 `<`，且需先達到設定的 AUTO 最低有效轉速。一筆達標即立即結束，不再等待第二筆低值。保留 300ms 無下降緣的停止備援；AUTO 尚未達最低有效門檻時不會封存發射。
-5. **停止後處理**：先禁止 ISR 並鎖定 MAX，才由 RAM 擷取 32 點整段 BLE 曲線，優先把 RAM 內的實際 MAX 點納入曲線，並獨立保存完整發射 MAX。**所有 BBP Notify、設定回覆、OTA 排程與 NVS 更新皆在量測結束後恢復**。BLE Link 可維持連線，底層 BLE 協定交握並未關閉。
+5. **停止後處理**：先禁止 ISR 並鎖定 MAX，才由 RAM 按順序擷取量測起始的前 32 個完整旋轉週期，每圈一點、不均勻抽點、不插入後期 MAX，並獨立保存完整發射 MAX（V1.5.1 曲線修訂）。**所有 BBP Notify、設定回覆、OTA 排程與 NVS 更新皆在量測結束後恢復**。BLE Link 可維持連線，底層 BLE 協定交握並未關閉。
 6. **HOLD**：沿用原有 OLED MAX 停留與 LOAD 重新裝載條件；HOLD 結束後才回待測並恢復適當中斷。
 
 ## 實際容量與限制
@@ -16,7 +16,7 @@
 - RPM ISR Queue：`RPM_ISR_QUEUE_SIZE = 128`，有效可排 127 筆。主迴圈被遮斷太久可能 Queue overflow；會記錄 `rpm_queue_overflows`，重建週期基準，不以跨缺口時間偽造 RPM。
 - 原始週期 RAM：`RPM_RAW_CAPTURE_CAPACITY = 16384`，每筆 4 bytes，**合計 65,536 bytes**。例：持續 30,000 RPM 可存約 32.8 秒；這是單次保留上限，不代表測量會在滿額時終止。
 - 若原始 RAM 填滿：新增 `raw_capture_overflows` 診斷累加；後續仍每圈計算即時 RPM/MAX，但**超額的原始週期無法保存**。MAX 仍獨立更新。BBP 曲線因此只能使用保留下來的前段原始週期。
-- BBP 官方封包仍限制每條曲線 32 點；32 點是**停止後整理的輸出**，不是採樣期間只記錄 32 筆。此改動尚未新增 BLE 傳輸完整 16,384 筆原始週期的自訂 API，也未把原始週期逐圈寫入 NVS，避免 Flash 壽命與採樣延遲問題。
+- BBP 官方封包仍限制每條曲線 32 點；32 點是**停止後由原始資料取前 32 圈的輸出**，不是採樣期間只記錄 32 筆。此改動尚未新增 BLE 傳輸完整 16,384 筆原始週期的自訂 API，也未把原始週期逐圈寫入 NVS，避免 Flash 壽命與採樣延遲問題。
 - **無濾波是刻意要求**：光學反射、比較器毛刺、接點或干擾產生的額外下降緣會直接產生 RPM 峰值，甚至讓停止判定提前成立。要從硬體實測確認波形品質；本版不嘗試軟體修正這些事件。
 - 主迴圈仍保留電池低電保護與 OLED 顯示；NimBLE 底層中斷／連線維持仍可能執行，不等於完全關閉 RF 系統。
 
@@ -40,4 +40,4 @@
 
 Arduino IDE 開啟 `BRD_BPX/BRD_BPX.ino`，同層完整保留全部原本 `.cpp/.h`、`partitions.csv` 和資料夾。若使用 `tests/stubs` 只代表主機替身，**不是實機燒錄版本**。
 
-主機測試：在 `BRD_BPX/` 下執行 `python3 tests/run_host_tests.py`。驗證 GPIO Falling、LOAD/AUTO、立即 MAX、第一個低轉速即停止、停止後 BBP、曲線峰值、RAM 上限、Queue overflow、`micros()` 回繞及現有 BLE/NVS/OTA 功能。主機測試無法取代 ESP32-C3 實機波形、Arduino IDE 編譯及電流／中斷負載量測。
+主機測試：在 `BRD_BPX/` 下執行 `python3 tests/run_host_tests.py`。驗證 GPIO Falling、LOAD/AUTO、立即 MAX、第一個低轉速即停止、停止後 BBP、前 32 圈順序、曲線不插入後期 MAX、RAM 上限、Queue overflow、`micros()` 回繞及現有 BLE/NVS/OTA 功能。主機測試無法取代 ESP32-C3 實機波形、Arduino IDE 編譯及電流／中斷負載量測。

@@ -1,7 +1,7 @@
 /*
     檔案: BRD_BPX/tests/test_falling_raw.cpp
     [新增] 驗證 GPIO3 僅在裝載後裝上 FALLING ISR；無濾波即時 RPM/MAX；停止後才進 BBP。
-    [新增] 驗證完整原始筆數、固定 RAM 上限診斷、micros 回繞及 32 點曲線。
+    [V1.5.1 修改] 驗證前 32 個連續週期、後期 MAX 不覆寫曲線、完整原始筆數與時間回繞。
 */
 #include <cassert>
 #include <cstdio>
@@ -99,7 +99,51 @@ static void check_load_direct_finish() {
     assert(g_session.state().curve[1] == 500U);
     assert(g_session.state().curve[2] == 625U);
     assert(g_session.state().curve[3] == 2000U);
+    /* [V1.5.1 新增] 未滿 32 圈須依原始順序保存，尾端其餘點仍是零。 */
+    for (uint8_t index = 4U; index < brd_bbp::CURVE_SIZE; ++index) {
+        assert(g_session.state().curve[index] == 0U);
+    }
 }
+/*
+    [V1.5.1 新增] 模擬 34 個完整旋轉週期：
+    - 第 1～32 圈的時間逐筆不同，可直接檢查是否跳點或重新排序。
+    - 第 33 圈才產生真正的全程 MAX，不可插到前 32 圈曲線中。
+    - 第 34 圈轉速低於停止百分比，觸發 HOLD 後才輸出 BLE 曲線。
+*/
+static void check_curve_first_32_consecutive_revolutions() {
+    reset_mode(BRD_MEASUREMENT_MODE_AUTO);
+    const uint32_t periods[] = {5000U, 6000U, 7000U, 8000U};
+    const uint16_t packed[] = {625U, 750U, 875U, 1000U};
+    const uint32_t before = g_session_period_calls;
+    const uint32_t raw_before = brd_measurement_get_diagnostics().raw_periods_seen;
+
+    falling(100U); /* 第一次 Falling 為時間基準，不算第 1 圈。 */
+    for (uint32_t index = 0U; index < RPM_BLE_CURVE_POINTS; ++index) {
+        falling(periods[index % 4U]);
+        assert(!brd_measurement_get_display().show_max);
+    }
+    assert(g_session_period_calls == before); /* 取樣期間不呼叫 BLE Session。 */
+
+    falling(2000U); /* 第 33 圈：30000 RPM 為全程 MAX。 */
+    assert(brd_measurement_get_display().value == 30000U);
+    assert(!brd_measurement_get_display().show_max);
+    falling(20000U); /* 第 34 圈：3000 RPM < MAX 30%，立即停止。 */
+    assert(brd_measurement_get_display().hold_active);
+    assert(brd_measurement_get_display().value == 30000U);
+    assert(brd_measurement_get_diagnostics().raw_periods_seen == raw_before + 34U);
+    assert(g_session_period_calls == before + 1U + RPM_BLE_CURVE_POINTS);
+
+    g_session.update(micros(), 0U);
+    const auto &state = g_session.state();
+    const uint8_t newest = static_cast<uint8_t>(
+        (state.next + brd_bbp::HISTORY_SIZE - 1U) % brd_bbp::HISTORY_SIZE);
+    assert(state.records[newest] == 30000U); /* 後期 MAX 必須寫入歷史，不得丟失。 */
+    for (uint32_t index = 0U; index < RPM_BLE_CURVE_POINTS; ++index) {
+        assert(state.curve[index] == packed[index % 4U]);
+    }
+    /* 第 33 圈 2000us=250 若插入曲線，下列每一圈逐筆比對會失敗。 */
+}
+
 static void check_raw_unfiltered_and_wrap() {
     reset_mode(BRD_MEASUREMENT_MODE_AUTO);
     assert(test_interrupts[RPM_IR_GPIO] != nullptr);
@@ -154,7 +198,8 @@ static void check_capture_capacity_and_queue_overflow() {
 int main() {
     static_assert(RPM_IR_TRIGGER_EDGE == FALLING, "RPM must configure FALLING only");
     check_load_direct_finish();
+    check_curve_first_32_consecutive_revolutions();
     check_raw_unfiltered_and_wrap();
     check_capture_capacity_and_queue_overflow();
-    puts("PASS: FALLING-only, load arming, raw RPM/MAX, immediate stop, deferred curve, wrap, RAM cap and queue overflow.");
+    puts("PASS: FALLING-only, first 32 revolutions, late MAX excluded from curve, raw RPM/MAX, immediate stop, deferred BLE, wrap and overflow.");
 }

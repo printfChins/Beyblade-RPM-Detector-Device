@@ -49,8 +49,8 @@ void Profile::reset() {
 }
 
 void Profile::add_period_us(uint32_t period_us) {
-    /* [API V1.1 修改] 只保留前 32 個有效週期。
-       [刪減] 後續更高峰重新建立曲線視窗及 recent_ 緩衝。 */
+    /* [V1.5.1 保留] 最多 32 個連續的有效週期，依傳入先後順序保存。
+       [注意] BBP 格式要求週期 >=1000us；超出可編碼區間的脈衝不得寫入。 */
     if (period_us < 1000U || size_ >= CURVE_SIZE) {
         return;
     }

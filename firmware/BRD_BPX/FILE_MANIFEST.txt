@@ -1,6 +1,6 @@
-BRD_BPX Falling-only 原始 RPM 優先量測修改版
+BRD_BPX V1.5.1 Falling-only：前 32 圈一圈一點 BLE 曲線
 
-交付檔案（不包含測試期間產生的 tests/bin 二進位檔）：
+交付檔案（不含 tests/bin 主機測試執行檔）：
 BRD_BPX/BRD_BPX.ino
 BRD_BPX/CHANGELOG.md
 BRD_BPX/CHARGING_BLE_ICON_NOTE.md
@@ -24,6 +24,8 @@ BRD_BPX/V1.2.3_LOAD_HOLD_README.md
 BRD_BPX/V1.4.3_BATTERY_300MAH_README.md
 BRD_BPX/V1.4.4_#U4fee#U6539#U6e05#U55ae.md
 BRD_BPX/V1.4.5_CHANGES.md
+BRD_BPX/V1.5.1_CHANGELOG.md
+BRD_BPX/V1.5.1_CURVE32_CHANGELOG.md
 BRD_BPX/VALIDATION.md
 BRD_BPX/brd_battery.cpp
 BRD_BPX/brd_battery.h

@@ -80,7 +80,7 @@ LOAD 的確認值須小於或等於 MAX 乘上結束百分比，AUTO 則須嚴�
 
 ## 原架構保留
 
-**GPIO3 使用 FALLING，不再啟用 RISING/CHANGE。** LOAD 裝載去抖成功才啟用 RPM 中斷；開始量測後停止 LOAD 中斷；每筆原始非零週期直接算 RPM 與 MAX，記錄在 16,384 筆固定 RAM（64 KiB）中，直到達到停止百分比。停止後才轉換為官方 BBP 32 點曲線、盡可能保留峰值。RAM 滿後仍計算即時/MAX，但會標記原始資料截斷。GPIO1 LOAD、GPIO10 充電、GPIO0 ADC、OLED SDA20 / SCL21 保留。
+**GPIO3 使用 FALLING，不再啟用 RISING/CHANGE。** LOAD 裝載去抖成功才啟用 RPM 中斷；開始量測後停止 LOAD 中斷；每筆原始非零週期直接算 RPM 與 MAX，記錄在 16,384 筆固定 RAM（64 KiB）中，直到達到停止百分比。停止後才轉換為官方 BBP 32 點曲線（前 32 圈依序記錄，絕不插入後續 MAX；MAX 仍獨立保留）。RAM 滿後仍計算即時/MAX，但會標記原始資料截斷。GPIO1 LOAD、GPIO10 充電、GPIO0 ADC、OLED SDA20 / SCL21 保留。
 
 LOAD 去抖預設 **50 ms**、MAX HOLD **2500 ms**、OLED 更新 100 ms 保留。LOAD 去抖由 `brd_config.h` 設定，HOLD 可經 BLE 設定。
 

@@ -33,8 +33,8 @@ void Session::period(uint32_t period_us, uint32_t event_us, bool record_profile)
         first_period_us_ = event_us;
         started_ = true;
     }
-    /* [修改] 來源是停止採樣後整理的最多 32 筆 FALLING->FALLING 原始週期。
-       量測當下只寫 brd_measurement.cpp 的原始 RAM，本函式不在 ISR／採樣期呼叫。 */
+    /* [V1.5.1 修改] 只在停止採樣後依序加入「前 32 圈，一圈一點」。
+       後續 MAX 不插入曲線；量測期只將原始週期寫入 brd_measurement.cpp RAM。 */
     if (record_profile) {
         profile_.add_period_us(period_us);
     }
