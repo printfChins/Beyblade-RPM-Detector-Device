@@ -6,14 +6,14 @@
     [V0.12 修改] 發射後門檻使用 cfg 的 MAX 設定百分比。
     [V1.4.5 修改] 以固定 5 筆週期確認後才更新即時、MAX 與曲線，抑制孤立假峰值。
     [V1.4.2 修改] LOAD HOLD 恢復 2.5 秒（AUTO 原本 2.5 秒）；HOLD 不接收 LOAD/RPM 事件，發射結果於 HOLD 階段發布。
-    [修改] RPM 使用 CHANGE；每次量測以第一個實際觸發邊沿固定參考極性。
-    [修改] 先正緣則正緣到正緣計算 RPM；先負緣則負緣到負緣計算 RPM，中途不切換。
+    [本次修改] RPM 使用 FALLING 中斷；固定下降緣到下降緣計算完整一圈 SP。
+    [刪減] 以第一個觸發邊沿選擇 HIGH/LOW 參考極性的流程。
     [修改] LOAD 只負責裝載後歸零/啟動量測；卸載不參與發射成功判定。
     [V1.4.5 修改] 第一筆已確認非 0 RPM 起保存曲線，BLE Profile 只保留最早 32 點。
     [修改] MAX 與 32 點曲線獨立；32 點之後仍持續更新 MAX。
     [V1.4.5 修改] LOAD <= / AUTO < 的百分比規則不變，需連續兩個確認低值才結束。
     [修正] SPINNING 後 LOAD 變化與 LOAD Queue overflow 不得重置 RPM / MAX / 曲線。
-    [修正] RPM Queue overflow 保留已取樣資料與本次參考極性，只重新建立同極性週期基準，不誤觸發 300 ms 結算。
+    [修正] RPM Queue overflow 保留已取樣資料，只重新建立下降緣週期基準，不誤觸發 300 ms 結算。
     [新增] 可由 cfg 切換 LOAD / AUTO；AUTO 不以 LOAD 決定開始、發射或歸零。
     ISR 只記錄事件；所有狀態機與 OLED 仍在主 loop 執行。
 */
@@ -40,8 +40,7 @@ static volatile uint16_t g_load_tail = 0U;
 static volatile bool g_rpm_overflow = false;
 static volatile bool g_load_overflow = false;
 static volatile bool g_input_capture = false;
-/* [修改] -1=尚未選定；HIGH=正緣參考；LOW=負緣參考。ISR 選定後只收參考極性，降低 Queue 負載。 */
-static volatile int g_rpm_reference_level = -1;
+/* [本次刪減] 移除可變 g_rpm_reference_level，固定以 LOW 代表 FALLING 事件。 */
 static volatile int g_isr_load_level = LOW;
 
 /* [V0.12 新增] 固定 RAM 快照，不使用 heap，也不把陣列放在主迴圈堆疊。 */
@@ -59,7 +58,7 @@ static brd_state_t g_state = BRD_STATE_WAIT_LOAD;
 static int g_load_raw = LOW;
 static int g_load_stable = LOW;
 static uint32_t g_load_candidate_us = 0UL;
-/* [修改] HIGH/LOW 分別代表正緣/負緣週期基準；每次量測只會使用先觸發的參考極性。 */
+/* [保留] 既有週期陣列結構，固定只取 LOW（下降緣）索引，避免改動濾波邏輯。 */
 static bool g_period_valid[2] = {false, false};
 static bool g_quiet_expired = true;
 static uint32_t g_last_edge_us[2] = {0UL, 0UL};
@@ -144,6 +143,47 @@ static bool confirm_period(uint32_t period_us, uint32_t &confirmed_us) {
     const uint8_t selected = g_period_window_count < RPM_PERIOD_FILTER_SIZE ?
                              g_period_window_count - 1U : RPM_PERIOD_FILTER_SIZE / 2U;
     confirmed_us = sorted[selected];
+    /* [V1.5 修正新增] 額外脈衝連續出現時，5 點中位數仍可能落在短假週期。
+       對尚未建立首筆轉速、或將刷新 MAX 的候選值，要求整個窗口的週期一致。
+       以 64-bit 交叉乘法避免溢位與浮點；真正高速連續穩定 5 圈即可刷新 MAX。
+       正常降速仍維持原本的中位數結束判定，不在此阻止 HOLD。 */
+    const uint32_t proposed_rpm = 60000000UL / confirmed_us / PULSES_PER_REV;
+    /* [V1.5 修正] 20k 以上的首次高速值不得僅憑 3~4 個下降緣期間確認；
+       3 個連續假下降緣在真實週期未走完前可能看起來穩定。 */
+    if (!g_has_valid_rpm && proposed_rpm >= RPM_FAST_STARTUP_THRESHOLD &&
+        g_period_window_count < RPM_PERIOD_FILTER_SIZE) {
+        return false;
+    }
+    if (!g_has_valid_rpm || proposed_rpm > g_max_rpm) {
+        const uint32_t shortest = sorted[0];
+        const uint32_t longest = sorted[g_period_window_count - 1U];
+        if (static_cast<uint64_t>(longest) * 100ULL >
+            static_cast<uint64_t>(shortest) *
+                (100ULL + RPM_PEAK_WINDOW_JITTER_PERCENT)) {
+            /* [V1.5 新增] 已經有可信 MAX 後，允許真的突然加速：
+               最近連續 4 圈都一致時，即使第 5 筆還是先前的慢週期，
+               也可更新 MAX。此路徑不對首次啟動開放，避免短雜訊取得首筆 MAX。
+               例：5000us -> 連續 4 個 2000us，立即承認 30000 RPM。
+               連續額外脈衝 1300/1300/2400、1100/1100/1100/1700 無法通過。 */
+            if (!g_has_valid_rpm || g_period_window_count < RPM_PERIOD_FILTER_SIZE) {
+                return false;
+            }
+            uint32_t recent_shortest = UINT32_MAX;
+            uint32_t recent_longest = 0U;
+            for (uint8_t n = 1U; n <= RPM_PERIOD_FILTER_SIZE - 1U; ++n) {
+                const uint8_t index = static_cast<uint8_t>(
+                    (g_period_window_next + RPM_PERIOD_FILTER_SIZE - n) % RPM_PERIOD_FILTER_SIZE);
+                const uint32_t recent = g_period_window[index];
+                if (recent < recent_shortest) { recent_shortest = recent; }
+                if (recent > recent_longest) { recent_longest = recent; }
+            }
+            if (static_cast<uint64_t>(recent_longest) * 100ULL >
+                static_cast<uint64_t>(recent_shortest) *
+                    (100ULL + RPM_PEAK_WINDOW_JITTER_PERCENT)) {
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -157,18 +197,15 @@ static void update_modification_window(void) {
 }
 
 static void IRAM_ATTR rpm_ir_isr(void) {
+    /* [本次修改] FALLING 由 GPIO 硬體判定，不在 ISR 再讀 GPIO 電位。
+       [刪減] 回讀可能因短脈衝已回 HIGH 而漏掉真正下降緣的檢查。 */
     uint32_t edge_us = micros();
-    int level = (int)((GPIO.in.val >> RPM_IR_GPIO) & 1U);
     portENTER_CRITICAL_ISR(&g_input_mux);
-    if (g_input_capture && (g_rpm_reference_level < 0 || level == g_rpm_reference_level)) {
-        /*
-            [修改] 尚未選定參考時先收正、負緣，讓主迴圈依事件時間決定真正的第一個邊沿。
-            一旦參考極性確定，ISR 只收同極性事件，避免 CHANGE 讓 Queue 負載加倍。
-        */
+    if (g_input_capture) {
         uint16_t next = (uint16_t)((g_rpm_head + 1U) % RPM_ISR_QUEUE_SIZE);
         if (next != g_rpm_tail) {
             g_rpm_queue[g_rpm_head].time_us = edge_us;
-            g_rpm_queue[g_rpm_head].level = level;
+            g_rpm_queue[g_rpm_head].level = LOW;
             g_rpm_head = next;
         } else {
             g_rpm_overflow = true;
@@ -239,9 +276,7 @@ static void reset_measurement(bool loaded) {
         一般狀態持續捕捉，WAIT_LOAD 的 RPM 在事件處理時直接忽略。
     */
     g_period_valid[LOW] = g_period_valid[HIGH] = false;
-    portENTER_CRITICAL(&g_input_mux);
-    g_rpm_reference_level = -1;
-    portEXIT_CRITICAL(&g_input_mux);
+    /* [本次刪減] 不再重置可變參考極性，下一發仍固定下降緣取樣。 */
     g_quiet_expired = true;
     g_has_valid_rpm = false;
     g_current_rpm = 0U;
@@ -345,26 +380,12 @@ static void process_rpm_edge(const input_edge_t &edge) {
         update_modification_window();
     }
 
-    const uint32_t edge_us = edge.time_us;
-    const uint8_t polarity = static_cast<uint8_t>(edge.level);
-
-    if (g_rpm_reference_level < 0) {
-        /*
-            [修改] 本次檢測的第一個實際 RPM 邊沿決定固定參考極性。
-            HIGH 表示先觸發正緣，後續只使用正緣 -> 正緣；
-            LOW 表示先觸發負緣，後續只使用負緣 -> 負緣。
-        */
-        portENTER_CRITICAL(&g_input_mux);
-        if (g_rpm_reference_level < 0) {
-            g_rpm_reference_level = edge.level;
-        }
-        portEXIT_CRITICAL(&g_input_mux);
-    }
-
-    if (edge.level != g_rpm_reference_level) {
-        /* [修改] 參考極性選定後，先前已排入 Queue 的另一極性事件直接忽略。 */
+    /* [本次修改] 一律使用下降緣作為唯一完整週期基準；其餘狀態機不更動。 */
+    if (edge.level != LOW) {
         return;
     }
+    const uint32_t edge_us = edge.time_us;
+    const uint8_t polarity = LOW;
 
     if (!g_period_valid[polarity]) {
         /* [V1.4.5 修改] 第一個參考邊沿只建立基準；後續週期須通過確認窗口。 */
@@ -406,7 +427,7 @@ static void process_rpm_edge(const input_edge_t &edge) {
     g_has_valid_rpm = true;
 
     /*
-        [V1.4.5 修改] 每一筆已確認的參考極性週期才送入 Session。
+        [V1.4.5 修改] 每一筆已確認的下降緣週期才送入 Session。
         Profile 自己只保存最早 32 點；即使 Profile 已滿，Session 仍會以後續參考週期更新 representative/MAX。
         因此 BLE 取線與 MAX 完全獨立，另一極性不參與 RPM/MAX/曲線計算。
     */
@@ -663,7 +684,7 @@ void brd_measurement_update(void) {
         g_max_lock = false;
         reset_period_confirmation();
         g_state = BRD_STATE_WAIT_LOAD;
-        g_rpm_reference_level = -1;
+        /* [本次刪減] 不再重設可變極性；固定使用下降緣。 */
         if (measurement_uses_load()) {
             g_load_release_required = true;
         } else {
@@ -689,8 +710,8 @@ void brd_measurement_update(void) {
     if (rpm_overflow) {
         /*
             [修正] RPM Queue overflow 不再 abort 整次 Capture。
-            snapshot 內已保存的事件仍依序處理，保留最早 32 點、已取得的 MAX 與本次參考極性。
-            缺失區段在批次處理完成後只重新建立同極性週期基準，避免把 Queue overflow
+            snapshot 內已保存的事件仍依序處理，保留最早 32 點與已取得的 MAX。
+            缺失區段在批次處理完成後只重新建立下降緣週期基準，避免把 Queue overflow
             誤判成 300 ms 無脈衝而提前完成發射。
         */
         increment_counter(g_diagnostics.rpm_queue_overflows);
@@ -737,8 +758,8 @@ void brd_measurement_update(void) {
     if (!g_max_lock && rpm_overflow) {
         /*
             [修正] Queue overflow 代表中間可能遺失參考邊沿，不能拿 overflow 前最後一個
-            參考邊沿與 overflow 後第一個同極性邊沿直接計算 RPM。
-            保留本次先觸發所選定的參考極性，只清除週期基準重新同步。
+            下降緣與 overflow 後第一個下降緣直接計算 RPM。
+            固定使用下降緣，只清除週期基準重新同步。
             同時把 quiet timeout 起點移到本次重新同步時間，避免立即觸發 300 ms 歸零。
         */
         g_period_valid[LOW] = g_period_valid[HIGH] = false;
@@ -792,10 +813,20 @@ void brd_measurement_max_frame_presented(uint32_t generation) {
     disable_input_capture();
 }
 
-/* [修改] LOAD 維持 WAIT_LOAD；AUTO 的 READY 亦屬非量測安全時段。 */
+/* [V1.5 修正] 不在 LOAD 已裝載、正在去抖或 HOLD 待解除時啟動 NVS。
+   ISR 無法保證在 Flash cache 關閉時持續工作；僅剩待機且 LOAD 穩定未裝載，
+   或 AUTO 尚未起轉時允許寫入。AUTO READY 仍保留原先可設定行為。 */
+static bool flash_window_safe(void) {
+    if (!g_measurement_enabled) { return true; }
+    if (!measurement_uses_load()) { return g_state == BRD_STATE_LOADED_READY; }
+    return g_state == BRD_STATE_WAIT_LOAD &&
+           !g_load_release_required &&
+           g_load_stable != LOAD_ACTIVE_LEVEL &&
+           g_load_raw != LOAD_ACTIVE_LEVEL &&
+           ((GPIO.in.val >> LOAD_IR_GPIO) & 1U) != static_cast<uint32_t>(LOAD_ACTIVE_LEVEL);
+}
 bool brd_measurement_storage_allowed(void) {
-    return !g_measurement_enabled || g_state == BRD_STATE_WAIT_LOAD ||
-           (!measurement_uses_load() && g_state == BRD_STATE_LOADED_READY);
+    return flash_window_safe();
 }
 
 /* [新增] callback 與主 loop 共用安全窗口；已排入 GPIO 事件時先處理量測。 */
@@ -808,7 +839,10 @@ bool brd_measurement_modifications_allowed(void) {
 }
 bool brd_measurement_pause_for_settings(void) {
     portENTER_CRITICAL(&g_input_mux);
-    bool allowed = g_modification_window && !g_rpm_overflow && !g_load_overflow &&
+    /* [V1.5 修正] GET/SET/SAVE 可在 READY 排入，但真正的 Flash 操作應延後至安全窗口。
+       另再次檢查 GPIO1 實際電位，縮小高電位已出現但 LOAD ISR 尚未消費的競態。 */
+    bool allowed = flash_window_safe() && g_modification_window &&
+                   !g_rpm_overflow && !g_load_overflow &&
                    g_rpm_head == g_rpm_tail && g_load_head == g_load_tail && !g_settings_paused;
     if (allowed) {
         g_settings_paused = true;
@@ -817,9 +851,11 @@ bool brd_measurement_pause_for_settings(void) {
     portEXIT_CRITICAL(&g_input_mux);
     return allowed;
 }
-void brd_measurement_resume_after_settings(bool applied) {
+void brd_measurement_resume_after_settings(bool mode_changed) {
     if (!g_settings_paused) { return; }
-    if (applied && g_measurement_enabled) {
+    /* [V1.5 修正] 僅在 LOAD/AUTO 模式真的改變時重建量測狀態。
+       修改容量、HOLD、結束門檻等不得清除已裝載狀態或 RPM 基準。 */
+    if (mode_changed && g_measurement_enabled) {
         reset_period_confirmation();
         /* [新增] 模式切換更新 LOAD 中斷，但不呼叫 stop/reset_capture 清除已完成曲線。 */
         if (g_load_interrupt_attached && !measurement_uses_load()) {
@@ -830,7 +866,7 @@ void brd_measurement_resume_after_settings(bool applied) {
             g_load_interrupt_attached = true;
         }
         g_period_valid[LOW] = g_period_valid[HIGH] = false;
-        g_rpm_reference_level = -1;
+        /* [本次刪減] 不再重設可變極性；固定使用下降緣。 */
         g_quiet_expired = true;
         g_has_valid_rpm = false;
         g_current_rpm = g_max_rpm = 0U;
@@ -843,5 +879,9 @@ void brd_measurement_resume_after_settings(bool applied) {
     g_settings_paused = false;
     portEXIT_CRITICAL(&g_input_mux);
     update_modification_window();
-    if (g_measurement_enabled && !g_max_lock) { restart_input_capture(); }
+    if (g_measurement_enabled && !g_max_lock) {
+        /* [V1.5] NVS/OTA pause 過程不具備無縫收集保證，從當下電位重新同步。
+           未切換模式時保留 g_load_stable 與本次已確認的 MAX，不再退回 WAIT_LOAD。 */
+        restart_input_capture();
+    }
 }

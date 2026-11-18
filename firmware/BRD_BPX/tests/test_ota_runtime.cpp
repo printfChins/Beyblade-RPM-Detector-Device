@@ -17,6 +17,8 @@ static uint8_t soc = 80;
 static unsigned resumes = 0;
 static bool disconnect_in_verify = false;
 bool brd_measurement_modifications_allowed() { return safe && !paused; }
+/* [V1.5 測試替身] OTA 必須同時滿足 Flash 安全窗口。 */
+bool brd_measurement_storage_allowed() { return safe && !paused; }
 bool brd_measurement_pause_for_settings() { if (!safe || paused) { return false; } paused = true; return true; }
 void brd_measurement_resume_after_settings(bool) { paused = false; resumes++; }
 bool brd_battery_measurement_allowed() { return power; }

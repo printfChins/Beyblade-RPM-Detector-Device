@@ -24,7 +24,8 @@ bool test_notify_ok = true;
 static bool battery_allowed = true;
 static NimBLEConnInfo peer(7U);
 static NimBLECharacteristic *bbp = nullptr;
-static int reference_level = HIGH;
+/* [本次修改] 單一固定下降緣 (LOW)，不再以參數選擇上升緣參考。 */
+static constexpr int reference_level = LOW;
 
 bool brd_battery_measurement_allowed() { return battery_allowed; }
 uint8_t brd_battery_get_percent() { return battery_allowed ? 80U : 4U; }
@@ -67,7 +68,8 @@ static void edge(int pin, int level, uint32_t us) {
     assert(((GPIO.in.val >> pin) & 1U) != static_cast<uint32_t>(level));
     GPIO.in.val = (GPIO.in.val & ~(1U << pin)) | (static_cast<uint32_t>(level) << pin);
     assert(test_interrupts[pin] != nullptr);
-    test_interrupts[pin]();
+    /* [本次修改] 主機依 FALLING/CHANGE 模擬硬體觸發；上升緣不可呼叫 RPM ISR。 */
+    if (pin != RPM_IR_GPIO || level == LOW) { test_interrupts[pin](); }
     poll();
 }
 
@@ -184,9 +186,18 @@ int main(int argc, char **argv) {
     assert(argc >= 2);
     const std::string scenario = argv[1];
     const bool automatic = argc > 2 && std::string(argv[2]) == "auto";
-    if (argc > 3 && std::string(argv[3]) == "negative") { reference_level = LOW; }
+    /* [本次刪減] 正／負緣模式切換，所有案例一律使用 Falling -> Falling。 */
     setup(automatic);
-    if (scenario == "clear-ready") {
+    if (scenario == "rising-only") {
+        /* [本次新增] 僅有 HIGH 的訊號不得觸發硬體 FALLING ISR，也不得啟動 SP 或曲線。 */
+        for (unsigned i = 0U; i < 12U; ++i) {
+            GPIO.in.val &= ~(1U << RPM_IR_GPIO);
+            edge(RPM_IR_GPIO, HIGH, 5000U);
+        }
+        assert(brd_measurement_get_display().value == 0U);
+        assert(!brd_measurement_get_display().show_max);
+        assert(brd_measurement_modifications_allowed());
+    } else if (scenario == "clear-ready") {
         bbp_command(0x75U);
         pump(200000U);
         assert(brd_measurement_modifications_allowed());
@@ -254,7 +265,8 @@ int main(int argc, char **argv) {
                 test_clock_us += 2500U;
                 GPIO.in.val = (GPIO.in.val & ~(1U << RPM_IR_GPIO)) |
                               (static_cast<uint32_t>(level) << RPM_IR_GPIO);
-                test_interrupts[RPM_IR_GPIO]();
+                /* [本次修改] 溢位測試也只送下降緣，模擬真實中斷模式。 */
+                if (level == LOW) { test_interrupts[RPM_IR_GPIO](); }
             }
         }
         poll();
@@ -284,5 +296,5 @@ int main(int argc, char **argv) {
         assert(false);
     }
     printf("PASS: %s %s %s\n", scenario.c_str(), automatic ? "AUTO" : "LOAD",
-           reference_level == HIGH ? "positive" : "negative");
+           "falling");
 }

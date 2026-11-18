@@ -31,9 +31,10 @@ for case in ['history-crc', 'history-length', 'history-version', 'history-read',
              'rename-set-fail', 'rename-gap-fail', 'rename-start-fail']:
     subprocess.run([str(BIN / 'bbp_recovery'), case], cwd=ROOT, env=env, check=True)
     checks += 1
+# [本次修改] 僅驗證固定 Falling -> Falling，移除已廢棄的 rising 量測案例。
 for mode in ['load', 'auto']:
-    for polarity in ['positive', 'negative']:
-        for case in ['clear-ready', 'clear-spinning', 'clear-hold', 'single-low', 'high-after-32',
+    for polarity in ['falling']:
+        for case in ['rising-only', 'clear-ready', 'clear-spinning', 'clear-hold', 'single-low', 'high-after-32',
                      'wrap-zero', 'startup-short', 'startup-three', 'overflow-single-low']:
             subprocess.run([str(BIN / 'measurement_fixes'), case, mode, polarity], cwd=ROOT, env=env, check=True)
             checks += 1

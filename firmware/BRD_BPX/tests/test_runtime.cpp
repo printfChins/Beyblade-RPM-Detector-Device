@@ -26,14 +26,16 @@ void brd_bbp_capture_launch(uint32_t event) { session.launched(event); }
 void brd_bbp_capture_finish() { session.finish(); }
 void brd_bbp_capture_abort() { session.abort(); }
 static void tick(uint32_t us) { test_clock_us += us; brd_measurement_update(); }
-static void edge(uint32_t delta, int level = HIGH) {
+/* [本次修改] 主機事件預設為下降緣；HIGH 僅用來測試應被忽略的非參考訊號。 */
+static void edge(uint32_t delta, int level = LOW) {
     test_clock_us += delta;
     GPIO.in.val = (GPIO.in.val & ~(1U << RPM_IR_GPIO)) | (static_cast<uint32_t>(level) << RPM_IR_GPIO);
-    if (test_interrupts[RPM_IR_GPIO] != nullptr) { test_interrupts[RPM_IR_GPIO](); }
+    /* [本次修改] 真實 GPIO 只在下降緣觸發 RPM ISR。 */
+    if (level == LOW && test_interrupts[RPM_IR_GPIO] != nullptr) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }
 // [V1.4.5 新增] 持續輸入真實相鄰週期，保留原設定／HOLD／回繞／溢位斷言。
-static void periods(uint32_t period, unsigned count, int level = HIGH) {
+static void periods(uint32_t period, unsigned count, int level = LOW) {
     for (unsigned i = 0U; i < count; ++i) { edge(period, level); }
 }
 static brd_settings::Status command(uint8_t op, uint8_t param = 0U, uint32_t value = 0U) {
@@ -110,6 +112,13 @@ int main() {
     edge(12000U); // [V1.2.3 驗證] HOLD 期間 RPM 不得中斷 MAX。
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 12000U);
     tick(LOAD_MAX_HOLD_MS * 1000U + 1000U); // [V1.4.2 修改] LOAD HOLD 2.5 秒後回 WAIT LOAD 才能修改設定。
+    /* [V1.5 測試修正] HOLD 結束後還必須真的卸載且去抖完成，才允許 NVS 寫入。
+       舊測試在 LOAD 仍 HIGH 時就觸發 Flash，正是本次要關閉的危險窗口。 */
+    GPIO.in.val &= ~(1U << LOAD_IR_GPIO);
+    assert(test_interrupts[LOAD_IR_GPIO] != nullptr);
+    test_interrupts[LOAD_IR_GPIO]();
+    brd_measurement_update();
+    tick(LOAD_IR_DEBOUNCE_US);
     // Flash 失敗不切換模式；重啟仍載入最後成功保存值。
     test_flash_fail = true;
     assert(command(brd_settings::CMD_SET,brd_settings::PARAM_MODE,1U) == brd_settings::OK);
@@ -135,7 +144,7 @@ int main() {
     edge(100U); periods(5000U, 5U); // 達門檻後無脈衝，共同 300ms 備援。
     tick(RPM_ZERO_TIMEOUT_MS * 1000U + 1U);
     assert(brd_measurement_get_display().show_max && brd_measurement_get_display().value == 12000U);
-    // 三萬 RPM、負緣先觸發、micros 回繞：32 點滿後 MAX 仍獨立更新。
+    // 三萬 RPM、固定下降緣、micros 回繞：32 點滿後 MAX 仍獨立更新。
     fresh_auto();
     test_clock_us = UINT32_MAX - 4095ULL;
     GPIO.in.val |= 1U << RPM_IR_GPIO; // 初始 HIGH 不應影響第一個 LOW 參考。
@@ -159,7 +168,7 @@ int main() {
     for (unsigned index = 0U; index < brd_bbp::CURVE_SIZE; index++) {
         assert(session.state().curve[index] == 1250U); // 前 32 圈仍為 10000us / 8。
     }
-    // 真正塞滿 RPM ISR queue：不誤結束，也不改選另一極性。
+    // 真正塞滿 RPM ISR queue：不誤結束，持續固定下降緣。
     fresh_auto();
     edge(100U, LOW); edge(10000U, LOW);
     uint32_t overflows = brd_measurement_get_diagnostics().rpm_queue_overflows;

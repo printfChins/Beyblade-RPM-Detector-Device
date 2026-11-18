@@ -1,0 +1,153 @@
+BRD_BPX V1.5 — 2026-11-18 主機端測試結果
+基準: BRD_BPX_V1.5_FALLING_SP_20261118.zip
+韌體版本仍為: V1.5
+測試入口: cd BRD_BPX && python3 tests/run_host_tests.py
+整體主機測試退出碼: 0
+原有修正回歸: 80 PASS
+新增硬化回歸: 18 PASS / 0 非預期 FAIL
+已知物理限制（預期失敗）: 2 XFAIL
+  1) 真實 12000 RPM + 等距假 Falling -> 輸出 24000 RPM (XFAIL)
+  2) AUTO READY Flash pause 中起轉，注入 Falling -> SP 仍 0 (XFAIL)
+ESP32-C3 Arduino/ESP-IDF 交叉編譯: 未執行
+實機 BLE/OLED/NVS/OTA/30分鐘壓測: 未執行
+
+===== 原始完整主機測試 LOG =====
+PASS: v1/v2 NVS migration, v3 HOLD and capacity profiles, CRC and settings protocol.
+PASS: default/name validation, safe NVS write, failure handling and reboot recovery.
+PASS: saved 4000ms runtime HOLD controls AUTO without changing MAX history.
+PASS: AUTO/LOAD, NVS battery 300/500/1000mAh, MAX/history, confirmed RPM and charging.
+PASS: settings GATT, fw/read, capacity SET/SAVE/READ, HOLD, name save and link generations.
+PASS: AUTO finishes on common MAX ratio.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: actual OLED boot framebuffer rendered.
+PASS: rotated DXF geometry, 10px gap and right-aligned 2dp voltage without BAT.
+PASS: rotated DXF geometry, 10px gap and right-aligned 2dp voltage without BAT.
+PASS: rotated DXF geometry, 10px gap and right-aligned 2dp voltage without BAT.
+PASS: rotated DXF geometry, 10px gap and right-aligned 2dp voltage without BAT.
+PASS: OTA sessions, image/size/power gates, exact retries, MTU=23, abort, timeout/wrap and verification failure.
+PASS: OTA GATT MTU, safe start, reconnect generation, MD5/image verification, app-only boot switch and measurement lease.
+PASS: pending last-shot publication and NVS persistence gate OTA start, including 600ms delay.
+PASS: HOLD guards load bounce, held HIGH cannot rearm, real LOW->HIGH permits only one new shot.
+PASS: LOW already present when HOLD expires is confirmed without requiring a new falling edge.
+PASS: V1.2.2 HOLD regression / MAX-history / new-load tests.
+PASS: LOAD -> SP -> MAX threshold equality -> HOLD 2.5s / BLE record -> WAIT LOAD -> LOADED reset.
+PASS: both OLED polygons match DXF left-90-degree vertices and correct IR1 symmetry.
+PASS: Notify stall after initial success keeps link and resumes the same 12-page snapshot.
+PASS: bounded command overflow preserves the connection and all 32 accepted requests.
+PASS: stalled BLE retries stay bounded while the main loop continues.
+PASS: 2-second service delay cannot cause a forced BLE disconnect.
+PASS: real disconnect/reconnect with reused handle discards the old partial dump.
+PASS: unsubscribe stops retries without disconnect; resubscribe starts a fresh header.
+PASS: discharge SOC, low-lock, 72/90/108/180/360s charge intervals, capacity switching and millis wrap.
+PASS: history-crc
+PASS: history-length
+PASS: history-version
+PASS: history-read
+PASS: history-open
+PASS: history-write-fail
+PASS: pending-clear
+PASS: rename-pending
+PASS: rename-success
+PASS: rename-before-check
+PASS: rename-at-stop
+PASS: rename-after-stop
+PASS: rename-stop-fail
+PASS: rename-set-fail
+PASS: rename-gap-fail
+PASS: rename-start-fail
+PASS: rising-only LOAD falling
+PASS: clear-ready LOAD falling
+PASS: clear-spinning LOAD falling
+PASS: clear-hold LOAD falling
+PASS: single-low LOAD falling
+PASS: high-after-32 LOAD falling
+PASS: wrap-zero LOAD falling
+PASS: startup-short LOAD falling
+PASS: startup-three LOAD falling
+PASS: overflow-single-low LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: noise LOAD falling
+PASS: startup-noise LOAD falling
+PASS: rising-only AUTO falling
+PASS: clear-ready AUTO falling
+PASS: clear-spinning AUTO falling
+PASS: clear-hold AUTO falling
+PASS: single-low AUTO falling
+PASS: high-after-32 AUTO falling
+PASS: wrap-zero AUTO falling
+PASS: startup-short AUTO falling
+PASS: startup-three AUTO falling
+PASS: overflow-single-low AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: noise AUTO falling
+PASS: startup-noise AUTO falling
+PASS: 80 four-fix regression scenarios (ASan/UBSan).
+V1.5 硬化回歸：PASS=18 FAIL=0
+PASS: load/two-noise-peak
+PASS: load/startup-repeated-noise
+PASS: load/startup-three-extra
+PASS: load/three-noise-peak
+PASS: load/real-acceleration
+PASS: load/brief-real-peak
+PASS: load/single-low
+PASS: load/high-after-32
+PASS: auto/two-noise-peak
+PASS: auto/startup-repeated-noise
+PASS: auto/startup-three-extra
+PASS: auto/three-noise-peak
+PASS: auto/real-acceleration
+PASS: auto/brief-real-peak
+PASS: auto/single-low
+PASS: auto/high-after-32
+PASS: load/loaded-save-deferred
+PASS: load/loaded-mode-deferred
+XFAIL 已知限制：KNOWN_LIMIT: expected=12000, reported=24000 (exit=-6)
+XFAIL 已知限制：KNOWN_LIMIT: auto Flash pause missed SP=0 (exit=-6)
+PASS: LOAD/HOLD / BLE/OTA / 200/250/300/500/1000mAh battery host regression tests, plus V1.5 hardening.
+
+EXIT_CODE=0

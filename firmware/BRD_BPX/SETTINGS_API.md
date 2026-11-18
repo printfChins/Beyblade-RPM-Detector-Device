@@ -1,6 +1,6 @@
-# BRD BPX V1.4.4 BLE 設定 API
+# BRD BPX V1.5 BLE 設定 API
 
-本文件適用於提供 500／1000 mAh 檔位的 V1.4.4 韌體。
+本文件適用於 V1.5 韌體，沿用 500／1000 mAh 檔位及既有設定 GATT 協定。
 
 [修改] 依實際 `brd_settings_model.cpp`、`brd_settings_ble.cpp`、`brd_ble_identity.cpp` 說明。舊版說明保存在 `docs/SETTINGS_API_V1.4.3.md`。本版不修改 BattlePass BBP 封包 17 bytes、原 BBP Service UUID、OTA UUID 與 GPIO / RPM ISR。
 
@@ -20,7 +20,7 @@
 | `c7570002` | 原設定命令 | WRITE | 8-byte 指令 |
 | `c7570003` | 原設定回覆 | READ / NOTIFY | 20-byte 快照 |
 | `c7570004` | 原 OLED 頁面 | READ / WRITE | 1-byte，0 主頁 / 1 IR TEST |
-| `c7570005` | 韌體版本 | READ | UTF-8 字串 `V1.4.4`（無結尾 NUL） |
+| `c7570005` | 韌體版本 | READ | UTF-8 字串 `V1.5`（無結尾 NUL） |
 | `c7570006` | [新增] BLE 裝置名稱 | READ / WRITE | UTF-8/ASCII 字串（1～20 bytes） |
 | `c7570007` | [新增] BLE 名稱保存狀態 | READ | 1-byte 狀態碼 |
 | `c7570008` | 電池容量 | READ | 4 bytes，byte0～1 為生效容量，byte2～3 為草稿容量，皆為 uint16 LE（mAh） |

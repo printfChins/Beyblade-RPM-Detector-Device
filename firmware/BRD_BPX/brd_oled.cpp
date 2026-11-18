@@ -7,7 +7,7 @@
     [V1.2 新增] 0% 保留圓形外框、1~99% 由 12 點方向順時針填滿、100% 完全實心。
     [V1.2 新增] % 字型；OTA 數值不使用 PCT 字串，版本號維持 V1.2。
     [修正] OTA 大字百分比以 10x14 專用空心圓圈字型繪製，不再顯示成實心點。
-    [V0.10 修改] 顯示 LOAD 狀態、RPM / MAX 與開機版本。
+    [本次修改] 顯示 LOAD 狀態、SP / MAX 與開機版本。
     [V0.10 恢復] 右上角電池圖示與左側充電閃電圖示，沿用 V1.9 尺寸與位置。
     [V0.10 刪減] OLED 休眠與獨立 FreeRTOS Task。
     [V0.10 修改] 不使用 Wire.begin，避免框架初始化自動開啟內部上拉。
@@ -591,7 +591,7 @@ static void oled_begin_adc_fault_frame(void) {
 }
 
 /* [R4 新增] 使用 BRD_BLE_OLED(3).zip 的原生 7x13 藍牙點陣。
-   點陣及位置沿用附件：x119..125、y17..29，保留五位數 RPM/MAX 間距。 */
+   點陣及位置沿用附件：x119..125、y17..29，保留五位數 SP/MAX 間距。 */
 static void oled_draw_bluetooth_icon(void) {
     static const uint8_t rows[13] = {
         0x08U, 0x0CU, 0x0AU, 0x49U, 0x2AU, 0x1CU, 0x08U,
@@ -844,10 +844,10 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
         oled_draw_ota_sector(13U, 23U, 8U, g_frame_ota.percent);
         oled_draw_centered_text(16U, value_line, 2U);
     } else {
-        /* [修改] 即時轉速標籤由 SP 改為 RPM；MAX 狀態與轉速數值來源維持原樣。
-           [刪減] 原本的 SP 文字，不改變 RPM 量測演算法或 OLED 刷新週期。 */
+        /* [本次修改] OLED 即時轉速標籤 RPM 改回 SP。
+           [保留] MAX 狀態、資料來源、字型、座標及 OLED 刷新週期不變。 */
         snprintf(value_line, sizeof(value_line), "%s %u",
-                 display.show_max ? "MAX" : "RPM", (unsigned int)display.value);
+                 display.show_max ? "MAX" : "SP", (unsigned int)display.value);
         oled_draw_text(0U, 16U, value_line, 2U);
     }
     /* [修改] 充電停用分兩行顯示 BLE / OFF 小字；一般連線沿用原生藍牙符號。
@@ -857,7 +857,7 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     } else if (g_frame_ble_connected) {
         oled_draw_bluetooth_icon();
     }
-    /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */
+    /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 SP / MAX 數值區。 */
     oled_draw_battery_icon(108U, 0U, battery_percent);
     if (charging) {
         oled_draw_charging_icon(100U, 1U);

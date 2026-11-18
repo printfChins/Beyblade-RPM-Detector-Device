@@ -68,4 +68,6 @@ run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
 run([str(BIN / "battery_curve")])
 # [V1.4.5 新增] 四項缺陷回歸與原有全部測試使用同一個入口。
 run(["python3", "tests/run_fix_regressions.py"])
-print("PASS: LOAD/HOLD / BLE/OTA / 200/250/300/500/1000mAh battery host regression tests.")
+# [V1.5 新增] 修正已確認的兩項 P1 缺陷；物理不可辨識案例列為 XFAIL 而非 PASS。
+run(["python3", "tests/run_v15_hardening.py"])
+print("PASS: LOAD/HOLD / BLE/OTA / 200/250/300/500/1000mAh battery host regression tests, plus V1.5 hardening.")

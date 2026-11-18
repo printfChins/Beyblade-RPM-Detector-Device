@@ -1,7 +1,12 @@
-[BRD BPX V1.4.4 ZIP 檔案清單]
+[2026-11-18 修改] V1.5：在 Falling → Falling／OLED SP 版本上，更新韌體版本、BLE READ 版本、網頁標題及測試。新增 V1.5_CHANGES.md。
+[本次排除] build/、舊 *.bin 和 tests/bin 不隨原始碼交付，避免使用未修改的舊韌體。
+
+[BRD BPX V1.5 ZIP 檔案清單]
 以下路徑皆位於 BRD_BPX/。
 
 BRD_BPX.ino
+FALLING_TO_FALLING_SP_20261118.md
+V1.5_CHANGES.md
 CHANGELOG.md
 CHARGING_BLE_ICON_NOTE.md
 CLEAN_INSTALL_V1.4.2.md

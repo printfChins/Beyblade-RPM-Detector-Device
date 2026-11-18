@@ -159,7 +159,10 @@ static brd_ota::Policy policy(uint16_t maximum) {
     bool charging = brd_io_is_charging();
     bool power = brd_battery_measurement_allowed() &&
                  (charging || brd_battery_get_percent() >= OTA_MIN_BATTERY_PERCENT);
-    bool allowed = brd_measurement_modifications_allowed() && !brd_settings_model().pending() && brd_bbp_ota_ready();
+    /* [V1.5 修正] LOAD 已裝載雖可接受一般設定指令，但 OTA 不可搶走捕捉權。 */
+    bool allowed = brd_measurement_modifications_allowed() &&
+                   brd_measurement_storage_allowed() &&
+                   !brd_settings_model().pending() && brd_bbp_ota_ready();
     return {allowed, power, charging, maximum};
 }
 class OtaRequestCallbacks : public NimBLECharacteristicCallbacks {

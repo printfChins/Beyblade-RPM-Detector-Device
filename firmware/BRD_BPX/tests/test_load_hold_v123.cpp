@@ -49,7 +49,7 @@ static void load(int level, uint32_t us) {
 }
 static void rpm(uint32_t us) {
     test_clock_us += us;
-    GPIO.in.val |= 1U << RPM_IR_GPIO;
+    GPIO.in.val &= ~(1U << RPM_IR_GPIO);
     if (test_interrupts[RPM_IR_GPIO]) { test_interrupts[RPM_IR_GPIO](); }
     brd_measurement_update();
 }

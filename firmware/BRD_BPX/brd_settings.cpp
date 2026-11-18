@@ -82,13 +82,16 @@ void brd_settings_update(void) {
                   memcmp(blob, check, sizeof(blob)) == 0;
         preferences.end();
     }
+    /* [V1.5 修正] 在套用值前比較模式，避免保存電池容量等非模式參數時重置 LOAD READY。 */
+    const bool mode_changed = success &&
+                              g_model.pending_values().mode != g_model.active().mode;
     g_model.complete_save(success);
     if (g_discard_after_save) {
         /* [修正] 失敗也不能讓新連線取得舊連線的未成功草稿。 */
         (void)g_model.discard_staged();
         g_discard_after_save = false;
     }
-    brd_measurement_resume_after_settings(success);
+    brd_measurement_resume_after_settings(mode_changed);
     brd_settings::make_response(g_model, brd_settings::CMD_SAVE, g_model.save_sequence(),
                                0U, g_model.last_save_status(), g_completion);
     g_completion_pending = true;

@@ -1,6 +1,8 @@
-# BRD BPX V1.4.4
+# BRD BPX V1.5
 
-本版在 V1.4.5 的 ESP32-C3 與 128×32 SSD1306 OLED 專案加入 500 mAh、1000 mAh 充電百分比估算檔位。解壓後使用 Arduino IDE 開啟 `BRD_BPX/BRD_BPX.ino`。
+本版以 2026-11-18 Falling → Falling SP 取樣與 OLED SP 顯示版本為基礎，將韌體版本更新為 `V1.5`，並保留既有 500/1000 mAh 電池容量等功能。解壓後使用 Arduino IDE 開啟 `BRD_BPX/BRD_BPX.ino`。
+
+[V1.5 修改] OLED 開機顯示 `FW VER V1.5`，BLE 韌體版本 READ 回傳 `V1.5`；原 BBP 通訊封包、BLE 設定 UUID、取樣演算法及操作流程均不變。詳見 [V1.5 修改紀錄](V1.5_CHANGES.md)。
 
 V1.4.5 的修正詳見 [V1.4.5 修改清單](V1.4.5_CHANGES.md)。
 
@@ -45,7 +47,7 @@ V1.4.5 的修正詳見 [V1.4.5 修改清單](V1.4.5_CHANGES.md)。
 | 500 mAh | 180 秒 |
 | 1000 mAh | 360 秒 |
 
-| 檔案位置（相對於 `BRD_BPX/`） | V1.4.4 修改 |
+| 檔案位置（相對於 `BRD_BPX/`） | V1.4.4 容量功能修改（沿用至 V1.5） |
 |---|---|
 | `brd_battery_capacity.h` | [新增] 兩個容量常數及共用容量驗證。 |
 | `brd_config.h`、`brd_battery.cpp` | [修改] 版本、計時公式與充電補償說明。 |
@@ -73,13 +75,13 @@ LOAD 的確認值須小於或等於 MAX 乘上結束百分比，AUTO 則須嚴�
 
 充電開關預設停用（`BLE_OFF_WHILE_CHARGING=0U`），充電時保留 BLE。已有有效 Flash 設定時仍載入原設定；若之前保存為啟用，需透過設定 API 將參數 `04` 設為 `0` 後 SAVE，才會改為充電時保留 BLE。也可 DEFAULTS 後 SAVE，但會同步重設全部五項參數。
 
-充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方顯示 `BRD BPX`，下方版本 `FW VER V1.4.4` 取自 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION`。下圖為舊版 framebuffer 的版面參考。
+充電開關啟用時只停用 BLE，量測與本機歷史保留；拔除充電後恢復。開機上方顯示 `BRD BPX`，下方版本 `FW VER V1.5` 取自 `brd_config.h` 的 `PROJECT_FIRMWARE_VERSION`。下圖為舊版 framebuffer 的版面參考。
 
 ![OLED 開機畫面](docs/OLED_boot_preview.png)
 
 ## 原架構保留
 
-RPM GPIO3 使用 CHANGE，每次量測由第一個實際邊沿決定固定參考極性；同極性到同極性為一整圈，另一極性不更新 RPM、MAX 或曲線。最早 32 個已確認週期保存為曲線，32 點滿後仍可更新 MAX。LOAD GPIO1，充電 GPIO10，電池 ADC GPIO0，OLED SDA20 / SCL21 均保留。
+[V1.5 修改] SP/RPM GPIO3 固定使用 FALLING 中斷，僅下降緣至下一個下降緣為一整圈；不再根據首個邊沿選極性。最早 32 個已確認週期保存為曲線，32 點滿後仍可更新 MAX。LOAD GPIO1，充電 GPIO10，電池 ADC GPIO0，OLED SDA20 / SCL21 均保留。
 
 LOAD 去抖預設 **50 ms**、MAX HOLD **2500 ms**、OLED 更新 100 ms 保留。LOAD 去抖由 `brd_config.h` 設定，HOLD 可經 BLE 設定。
 

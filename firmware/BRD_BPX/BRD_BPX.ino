@@ -3,7 +3,7 @@
     貼放位置: 完整主程式，Arduino IDE 開啟此檔，同資料夾保留全部 .cpp/.h。
     [BRD_BBP 修改] 由 BRD_OLED V0.12 整合 BattlePass BLE 周邊端。
     [新增] 電池檢查及開機畫面後才初始化 BLE，再啟動量測。
-    [修改] 80MHz、GPIO3 CHANGE；每次量測由先觸發的正/負緣固定為同極性單圈參考。
+    [本次修改] 80MHz、GPIO3 FALLING；僅以下降緣至下降緣作為完整一圈 SP 取樣。
     [保留] LOAD 去抖預設 50 ms、2.5 秒 MAX 自鎖。
     [修改] AUTO / LOAD 共用可設定的 MAX 百分比結束，預設 30%。
     [刪減] 不帶入原 OLED build 與 bin，避免誤燒舊韌體。

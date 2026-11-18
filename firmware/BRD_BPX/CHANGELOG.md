@@ -1,3 +1,12 @@
+# V1.5（Falling → Falling SP／OLED SP／版本更新）— 2026-11-18
+
+- [修改] GPIO3 SP 取樣使用 FALLING 中斷，固定以下降緣到下一個下降緣為一整圈（沿用已完成的 SP 取樣修改）。
+- [修改] OLED 即時數值標籤使用 `SP`，發射完成 `MAX` 保持不變（沿用已完成的 OLED 修改）。
+- [修改] `brd_config.h` 中 `PROJECT_FIRMWARE_VERSION` 更新為 `V1.5`，供開機 OLED 與 BLE GATT 韌體版本 READ 共用。
+- [修改] 網頁 BLE 設定工具的靜態版本標題、設定 API、README 與 BLE 版本測試同步更新。
+- [保留] 量測公式、週期濾波、LOAD/AUTO、MAX、BLE/OTA 封包與 UUID、NVS 資料格式及電池算法不更動。
+- [驗證] 依 host 測試結果另行確認；交付不含舊版已編譯 BIN。
+
 # V1.4.4（500／1000 mAh）— 2026-11-15
 
 - [新增] BLE 設定及網頁工具支援 500 mAh、1000 mAh。以 100 mA 估算，顯示每增加 1% 至少需 180 秒、360 秒。

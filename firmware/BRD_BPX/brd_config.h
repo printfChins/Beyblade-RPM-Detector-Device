@@ -25,8 +25,8 @@
 
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
-/* [V1.4.4 修改] BLE 版本查詢與 OLED 開機畫面共用此版本。 */
-#define PROJECT_FIRMWARE_VERSION          "V1.4.4"
+/* [V1.5 修改] BLE 版本查詢與 OLED 開機畫面同步更新為 V1.5。 */
+#define PROJECT_FIRMWARE_VERSION          "V1.5"
 #define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
 #define PROJECT_BOOT_NAME                 "BRD BPX"
 #define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
@@ -119,9 +119,9 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /* [V0.10 修改] RPM、LOAD 與 ADC 不啟用內部上下拉；充電 DET 例外使用上拉。 */
 #define RPM_IR_GPIO                       3
 #define RPM_IR_INPUT_MODE                 INPUT
-/* [修改] RPM 使用 CHANGE 捕捉正、負緣；本次量測第一個觸發邊沿決定固定參考極性。
-    先正緣：正緣 -> 正緣計算一圈 RPM；先負緣：負緣 -> 負緣計算一圈 RPM。 */
-#define RPM_IR_TRIGGER_EDGE               CHANGE
+/* [本次修改] 固定下降緣 (FALLING) 中斷，僅以下降緣到下一次下降緣為完整一圈。
+   [刪減] CHANGE 取樣與首次邊沿自動選擇極性的機制；LOAD GPIO 仍使用原設定。 */
+#define RPM_IR_TRIGGER_EDGE               FALLING
 #define LOAD_IR_GPIO                      1
 #define LOAD_IR_INPUT_MODE                INPUT
 #define LOAD_IR_TRIGGER_EDGE              CHANGE
@@ -220,7 +220,7 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /* [刪減] AUTO_LAUNCH_ZERO_MS：AUTO 不再等待零轉速滿一秒，改共用百分比結束。 */
 #define AUTO_RESET_ZERO_MS                250UL
 
-/* [修改] 選定參考極性的相鄰同極性邊沿為一圈，因此每一有效週期直接換算一次 RPM。 */
+/* [本次修改] 相鄰下降緣 (Falling -> Falling) 為一圈，換算不採半圈或雙邊沿。 */
 #define PULSES_PER_REV                    1UL
 #define RPM_ISR_QUEUE_SIZE               128U
 #define RPM_MIN_PERIOD_US                500UL
@@ -229,11 +229,19 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 /*
     [V1.4.5 新增] 固定 5 筆週期中位數：單一額外邊沿可切成兩筆短週期，
     故不能只用 3 點中位數。啟動至少 3 筆，未滿 5 筆時保守選最長週期。
-    [保留] 不平均 RPM、不提高最短週期、不修改 GPIO／ISR 參考極性。
+    [保留] 不平均 RPM、不提高最短週期；本次僅固定 GPIO／ISR 參考為下降緣。
     [新增] 百分比結束需連續 2 個確認值；無脈衝逾時另行直接結算。
 */
 #define RPM_PERIOD_FILTER_SIZE           5U
 #define RPM_PERIOD_STARTUP_COUNT         3U
+/* [V1.5 修正新增] 確認「新峰值」前，5 筆週期的最大/最小差異不能超過 25%。
+   原本 5 點中位數無法擋住每圈兩個以上的連續假下降緣。
+   僅限制新的較高 MAX；正常減速與結束確認仍使用原有中位數邏輯。
+   限制：穩定等間距的重複假脈衝無法單靠 GPIO3 區別，需要硬體確認。 */
+#define RPM_PEAK_WINDOW_JITTER_PERCENT   25U
+/* [V1.5 新增] 首次轉速若已達高轉速區間，必須滿 5 個一致週期才發布，
+   避免 3 個連續假下降緣剛好通過原本 3 點啟動條件。 */
+#define RPM_FAST_STARTUP_THRESHOLD       20000U
 #define RPM_FINISH_CONFIRM_COUNT         2U
 #define RPM_ZERO_TIMEOUT_MS              300UL
 #define PRELAUNCH_IDLE_RESET_MS           3000UL
@@ -318,13 +326,17 @@ static_assert(BATTERY_LOW_LOOP_DELAY_MS > 0UL && BATTERY_LOW_LOOP_DELAY_MS <= 10
               "Invalid low battery loop delay.");
 static_assert(BATTERY_LOW_OLED_REFRESH_MS > 0UL && BATTERY_LOW_OLED_REFRESH_MS < 0x80000000UL,
               "Invalid low battery OLED refresh interval.");
-static_assert(RPM_IR_TRIGGER_EDGE == CHANGE, "RPM must capture both edges and lock to the first edge polarity.");
+static_assert(RPM_IR_TRIGGER_EDGE == FALLING, "RPM sampling must use Falling-to-Falling periods.");
 static_assert(PULSES_PER_REV == 1UL, "Each same-polarity interval must equal one revolution.");
 static_assert(RPM_ISR_QUEUE_SIZE >= 2U && RPM_ISR_QUEUE_SIZE <= 256U,
               "RPM queue size must be between 2 and 256.");
 static_assert(RPM_VALID_MAX > 0UL && RPM_VALID_MAX <= 65535UL, "Invalid RPM limit.");
 static_assert(RPM_PERIOD_FILTER_SIZE == 5U && RPM_PERIOD_STARTUP_COUNT == 3U,
               "RPM single-extra-edge rejection requires the 5/3 period window.");
+static_assert(RPM_PEAK_WINDOW_JITTER_PERCENT >= 1U && RPM_PEAK_WINDOW_JITTER_PERCENT <= 50U,
+              "RPM new-peak consistency threshold out of range.");
+static_assert(RPM_FAST_STARTUP_THRESHOLD > 0U && RPM_FAST_STARTUP_THRESHOLD < RPM_VALID_MAX,
+              "Invalid fast startup confirmation threshold.");
 static_assert(RPM_FINISH_CONFIRM_COUNT >= 2U && RPM_FINISH_CONFIRM_COUNT <= 255U,
               "RPM finish must require at least two confirmed periods.");
 static_assert(POST_LAUNCH_FINISH_PERCENT > 0U && POST_LAUNCH_FINISH_PERCENT <= 100U,

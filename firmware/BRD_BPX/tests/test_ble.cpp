@@ -157,7 +157,8 @@ int main() {
     assert(fw && capacity && hold && name && name_status);
     fw->getCallbacks()->onRead(fw,peer);
     auto fwbytes=fw->getValue();
-    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.4.4");
+    /* [V1.5 修改] 驗證 BLE 版本 READ 回傳值與當前韌體一致。 */
+    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.5");
     capacity->getCallbacks()->onRead(capacity,peer);
     assert(capacity->getValue().size()==4U && capacity->getValue()[0]==0x2CU);
     const uint8_t hold_request[8]={0xC1U,1U,brd_settings::CMD_SET,15U,

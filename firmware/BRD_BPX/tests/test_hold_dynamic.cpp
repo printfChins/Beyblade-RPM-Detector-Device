@@ -21,7 +21,7 @@ void brd_bbp_capture_finish() {}
 void brd_bbp_capture_abort() {}
 static void pulse(uint32_t us) {
     test_clock_us += us;
-    GPIO.in.val |= 1U << RPM_IR_GPIO;
+    GPIO.in.val &= ~(1U << RPM_IR_GPIO);
     assert(test_interrupts[RPM_IR_GPIO] != nullptr);
     test_interrupts[RPM_IR_GPIO]();
     brd_measurement_update();

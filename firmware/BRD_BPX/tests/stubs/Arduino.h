@@ -12,6 +12,8 @@
 #define INPUT_PULLUP 2
 #define OUTPUT 3
 #define CHANGE 3
+/* [本次新增] Arduino-ESP32 下降緣中斷常數，供主機編譯驗證。 */
+#define FALLING 2
 using portMUX_TYPE = int;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(p) ((void)(p))
