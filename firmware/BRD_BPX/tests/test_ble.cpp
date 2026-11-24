@@ -153,12 +153,14 @@ int main() {
     auto *fw=service->getCharacteristic(SETTINGS_FW_VERSION_UUID);
     auto *capacity=service->getCharacteristic(SETTINGS_BATTERY_CAPACITY_UUID);
     auto *hold=service->getCharacteristic(SETTINGS_HOLD_DURATION_UUID);
+    auto *charge_current=service->getCharacteristic(SETTINGS_CHARGE_CURRENT_UUID);
+    auto *oled_rotation=service->getCharacteristic(SETTINGS_OLED_ROTATION_UUID);
     auto *name=service->getCharacteristic(SETTINGS_DEVICE_NAME_UUID);
     auto *name_status=service->getCharacteristic(SETTINGS_DEVICE_NAME_STATUS_UUID);
-    assert(fw && capacity && hold && name && name_status);
+    assert(fw && capacity && hold && charge_current && oled_rotation && name && name_status);
     fw->getCallbacks()->onRead(fw,peer);
     auto fwbytes=fw->getValue();
-    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.5.1");
+    assert(std::string(fwbytes.begin(),fwbytes.end())=="V1.5.2");
     capacity->getCallbacks()->onRead(capacity,peer);
     assert(capacity->getValue().size()==4U && capacity->getValue()[0]==0x2CU);
     const uint8_t hold_request[8]={0xC1U,1U,brd_settings::CMD_SET,15U,
@@ -177,6 +179,19 @@ int main() {
     assert(model.active().hold_ms==4000U && model.active().battery_capacity_mah==250U);
     capacity->getCallbacks()->onRead(capacity,peer);
     assert(capacity->getValue()[0]==0xFAU && capacity->getValue()[2]==0xFAU);
+    /* [V1.5.2 新增] 新 READ 特徵讀回 active/staged 16-bit，原 C1 SET/SAVE 不變。 */
+    write(brd_settings::CMD_SET, 31U, brd_settings::PARAM_CHARGE_CURRENT_MA, 175U); step();
+    write(brd_settings::CMD_SET, 32U, brd_settings::PARAM_OLED_ROTATION, 1U); step();
+    charge_current->getCallbacks()->onRead(charge_current,peer);
+    assert(charge_current->getValue().size()==4U && charge_current->getValue()[2]==175U);
+    oled_rotation->getCallbacks()->onRead(oled_rotation,peer);
+    assert(oled_rotation->getValue().size()==4U && oled_rotation->getValue()[2]==1U);
+    write(brd_settings::CMD_SAVE, 33U); step();
+    assert(model.pending()); model.complete_save(true); completed=true; step();
+    charge_current->getCallbacks()->onRead(charge_current,peer);
+    assert(charge_current->getValue()[0]==175U);
+    oled_rotation->getCallbacks()->onRead(oled_rotation,peer);
+    assert(oled_rotation->getValue()[0]==1U);
     name->getCallbacks()->onRead(name,peer);
     auto old_name=name->getValue();
     assert(std::string(old_name.begin(),old_name.end())=="BEYBLADE_TOOL01");

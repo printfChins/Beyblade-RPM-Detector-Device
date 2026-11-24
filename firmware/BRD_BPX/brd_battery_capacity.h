@@ -16,13 +16,16 @@
 #define BATTERY_CAPACITY_500_MAH          500U
 #define BATTERY_CAPACITY_1000_MAH         1000U
 
-/* [V1.4.4 新增] BLE SET、NVS 及 cfg 共用驗證，先檢查原始 uint24 設定值。 */
+/* [V1.5.2 修改] 由固定五檔改為 BLE 可自行輸入 100～5000 mAh。 */
+#define BATTERY_CAPACITY_MIN_MAH 100U
+#define BATTERY_CAPACITY_MAX_MAH 5000U
+#define BATTERY_CHARGE_CURRENT_MIN_MA 10U
+#define BATTERY_CHARGE_CURRENT_MAX_MA 1000U
 constexpr bool brd_battery_capacity_is_supported(uint32_t capacity_mah) {
-    return capacity_mah == BATTERY_CAPACITY_200_MAH ||
-           capacity_mah == BATTERY_CAPACITY_250_MAH ||
-           capacity_mah == BATTERY_CAPACITY_300_MAH ||
-           capacity_mah == BATTERY_CAPACITY_500_MAH ||
-           capacity_mah == BATTERY_CAPACITY_1000_MAH;
+    return capacity_mah >= BATTERY_CAPACITY_MIN_MAH && capacity_mah <= BATTERY_CAPACITY_MAX_MAH;
+}
+constexpr bool brd_battery_charge_current_is_supported(uint32_t current_ma) {
+    return current_ma >= BATTERY_CHARGE_CURRENT_MIN_MA && current_ma <= BATTERY_CHARGE_CURRENT_MAX_MA;
 }
 
 #endif

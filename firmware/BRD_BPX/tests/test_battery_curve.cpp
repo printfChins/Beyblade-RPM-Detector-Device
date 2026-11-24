@@ -9,6 +9,7 @@
 #include "brd_battery.h"
 #include "brd_config.h"
 #include "brd_settings.h"
+#include "brd_charge_math.h"
 
 /* [V1.4.3 新增] 電池測試提供生效中的容量設定，模擬 BLE SAVE 後切換。 */
 static brd_settings::Values test_settings = {0U, 0U, 30U, 2000U, BATTERY_CAPACITY_200_MAH, OLED_MAX_HOLD_MS};
@@ -170,7 +171,28 @@ static void test_charge_switch_to_faster_profile() {
     assert(brd_battery_get_percent() == 51U);
 }
 
+/* [V1.5.2 新增] 自訂 mAh/mA 補償；電流與容量修改後均需重新計時。 */
+static void test_custom_charge_settings() {
+    static_assert(brd_charge_one_percent_ms(300U, 100U) == 108000U, "default charge interval");
+    static_assert(brd_charge_one_percent_ms(325U, 125U) == 93600U, "custom charge interval");
+    static_assert(brd_charge_one_percent_ms(5000U, 10U) == 18000000U, "64-bit intermediate");
+    test_settings.charge_current_ma = 200U;
+    start(3721, false, 200U);
+    sample(4070, true);
+    for (unsigned s = 1U; s < 36U; ++s) { sample(4070, true); assert(brd_battery_get_percent() == 50U); }
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 51U);
+    /* 從 200mA 切回 100mA，原累積時間不得直接跳過 72 秒。 */
+    test_settings.charge_current_ma = 100U;
+    sample(4070, true);
+    for (unsigned s = 1U; s < 72U; ++s) { sample(4070, true); assert(brd_battery_get_percent() == 51U); }
+    sample(4070, true);
+    assert(brd_battery_get_percent() == 52U);
+    test_settings.charge_current_ma = 100U;
+}
+
 int main() {
+    test_custom_charge_settings();
     test_discharge_curve();
     test_charging_compensation();
     test_no_full_and_slow_100();

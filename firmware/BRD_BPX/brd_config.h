@@ -26,7 +26,7 @@
 #define PROJECT_FULL_NAME                 "Beyblade RPM Detector BattlePassX"
 #define PROJECT_SHORT_NAME                "BRD"
 /* [V1.5.1 修改] BLE 版本查詢與 OLED 開機版本共用 V1.5.1；不更動 RPM 量測。 */
-#define PROJECT_FIRMWARE_VERSION          "V1.5.1"
+#define PROJECT_FIRMWARE_VERSION          "V1.5.2"
 #define PROJECT_VERSION                   "BPX " PROJECT_FIRMWARE_VERSION
 #define PROJECT_BOOT_NAME                 "BRD BPX"
 #define PROJECT_BOOT_VERSION              "FW VER " PROJECT_FIRMWARE_VERSION
@@ -41,7 +41,7 @@
 #define BBP_IDENTITY_NVS_KEY              "name_v1"
 #define BBP_SERVICE_UUID                  "55c40000-f8eb-11ec-b939-0242ac120002"
 #define BBP_CHARACTERISTIC_UUID           "55c4f002-f8eb-11ec-b939-0242ac120002"
-#define BBP_TX_POWER_DBM                  0
+#define BBP_TX_POWER_DBM                  6U
 #define BBP_COMMAND_QUEUE_SIZE            32U
 #define BBP_NOTIFY_INTERVAL_MS            10UL
 /* [V1.2.1 新增] Notify 失敗時每 100ms 最多重試一包，不主動斷線。 */
@@ -90,6 +90,9 @@ static_assert(BBP_COMPAT_AUTONOTIFY == 0 || BBP_COMPAT_AUTONOTIFY == 1,
 #define SETTINGS_DEVICE_NAME_STATUS_UUID "c7570007-9040-4c7b-87b1-086ef858ace7"
 #define SETTINGS_BATTERY_CAPACITY_UUID   "c7570008-9040-4c7b-87b1-086ef858ace7"
 #define SETTINGS_HOLD_DURATION_UUID      "c7570009-9040-4c7b-87b1-086ef858ace7"
+/* [V1.5.2 新增] 額外 READ 特徵；各包含 active/staged 16-bit 小端值。 */
+#define SETTINGS_CHARGE_CURRENT_UUID     "c757000a-9040-4c7b-87b1-086ef858ace7"
+#define SETTINGS_OLED_ROTATION_UUID      "c757000b-9040-4c7b-87b1-086ef858ace7"
 #define BRD_DISPLAY_PAGE_MAIN            0U
 #define BRD_DISPLAY_PAGE_IR_TEST         1U
 /* [新增] IR TEST 觸發 HIGH 為實心，沿用原 IR_Test 的觸發邏輯。 */
@@ -153,8 +156,9 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 */
 /* [修改] 出廠電池容量改為 300 mAh，供無有效 NVS 設定及 DEFAULTS 使用。 */
 #define BATTERY_NOMINAL_CAPACITY_MAH      BATTERY_CAPACITY_300_MAH
-#define BATTERY_CHARGE_CURRENT_MA         100U
+#define BATTERY_CHARGE_CURRENT_MA         100U /* 出廠值；運行時改讀 NVS 的 charge_current_ma。 */
 /* [V1.4.4 修改] 3,600,000 ms/h 除以 100 後再乘容量，縮小 32-bit 中間值。 */
+/* [V1.5.2 保留] 舊單參數巨集僅用於既有測試／相容性；正式運行讀可設定電流。 */
 #define BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah) \
     ((36000UL * (capacity_mah)) / BATTERY_CHARGE_CURRENT_MA)
 #define BATTERY_CHARGE_DET_EXIT_CONFIRM_MS 3000UL

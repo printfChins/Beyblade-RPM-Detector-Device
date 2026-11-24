@@ -26,7 +26,9 @@ bool equal(const Values &first, const Values &second) {
     return first.mode == second.mode && first.charging_ble_off == second.charging_ble_off &&
            first.finish_percent == second.finish_percent && first.auto_min_rpm == second.auto_min_rpm &&
            first.battery_capacity_mah == second.battery_capacity_mah &&
-           first.hold_ms == second.hold_ms;
+           first.hold_ms == second.hold_ms &&
+           first.charge_current_ma == second.charge_current_ma &&
+           first.oled_rotation == second.oled_rotation;
 }
 bool valid(const Values &value, uint32_t rpm_limit) {
     /* [V1.4.4 修改] 設定驗證共用容量檔位清單。 */
@@ -34,37 +36,44 @@ bool valid(const Values &value, uint32_t rpm_limit) {
            value.finish_percent >= 1U && value.finish_percent <= 100U &&
            value.auto_min_rpm >= 1U && value.auto_min_rpm < rpm_limit &&
            brd_battery_capacity_is_supported(value.battery_capacity_mah) &&
+           brd_battery_charge_current_is_supported(value.charge_current_ma) &&
+           value.oled_rotation <= 1U &&
            value.hold_ms >= HOLD_MIN_MS && value.hold_ms <= HOLD_MAX_MS;
 }
 void encode_storage(const Values &value, uint8_t out[STORAGE_SIZE]) {
     out[0] = 'B'; out[1] = 'R'; out[2] = 'D'; out[3] = 'C';
-    /* [V1.4.4 修改] v3 為 20 bytes；前 12 bytes 維持舊版資料欄位位置。 */
-    out[4] = 3U; out[5] = value.mode; out[6] = value.charging_ble_off;
+    /* [V1.5.2 修改] v4 24 bytes；0～15 bytes 完全維持舊版資料位置。 */
+    out[4] = 4U; out[5] = value.mode; out[6] = value.charging_ble_off;
     out[7] = value.finish_percent;
     put_u16(out + 8U, value.auto_min_rpm);
     put_u16(out + 10U, value.battery_capacity_mah);
     put_u16(out + 12U, value.hold_ms);
     out[14] = 0U; out[15] = 0U;
-    uint32_t crc = crc32(out, 16U);
+    /* [V1.5.2 新增] 16-17：充電電流；18：螢幕方向；19：保留。 */
+    put_u16(out + 16U, value.charge_current_ma);
+    out[18] = value.oled_rotation;
+    out[19] = 0U;
+    uint32_t crc = crc32(out, 20U);
     for (uint8_t index = 0U; index < 4U; index++) {
-        out[16U + index] = static_cast<uint8_t>(crc >> (8U * index));
+        out[20U + index] = static_cast<uint8_t>(crc >> (8U * index));
     }
 }
 bool decode_storage(const uint8_t *data, size_t length, uint32_t rpm_limit, Values &out) {
     if (data == nullptr ||
-        (length != LEGACY_STORAGE_SIZE && length != STORAGE_SIZE) ||
+        (length != LEGACY_STORAGE_SIZE && length != V3_STORAGE_SIZE && length != STORAGE_SIZE) ||
         data[0] != 'B' || data[1] != 'R' || data[2] != 'D' || data[3] != 'C') {
         return false;
     }
-    /* [V1.4.4 新增] 既有 v1/v2 的 CRC offset=12；新版 v3 offset=16。 */
-    bool legacy = length == LEGACY_STORAGE_SIZE && (data[4] == 1U || data[4] == 2U);
-    bool current = length == STORAGE_SIZE && data[4] == 3U;
-    if ((!legacy && !current) ||
+    const bool legacy = length == LEGACY_STORAGE_SIZE && (data[4] == 1U || data[4] == 2U);
+    const bool v3 = length == V3_STORAGE_SIZE && data[4] == 3U;
+    const bool v4 = length == STORAGE_SIZE && data[4] == 4U;
+    if ((!legacy && !v3 && !v4) ||
         (data[4] == 1U && (data[10] != 0U || data[11] != 0U)) ||
-        (current && (data[14] != 0U || data[15] != 0U))) {
+        ((v3 || v4) && (data[14] != 0U || data[15] != 0U)) ||
+        (v4 && data[19] != 0U)) {
         return false;
     }
-    const size_t crc_offset = legacy ? 12U : 16U;
+    const size_t crc_offset = legacy ? 12U : (v3 ? 16U : 20U);
     uint32_t stored_crc = 0U;
     for (uint8_t index = 0U; index < 4U; index++) {
         stored_crc |= static_cast<uint32_t>(data[crc_offset + index]) << (8U * index);
@@ -74,7 +83,9 @@ bool decode_storage(const uint8_t *data, size_t length, uint32_t rpm_limit, Valu
                     static_cast<uint16_t>(data[4] == 1U ? BATTERY_CAPACITY_200_MAH :
                         (data[10] | (static_cast<uint16_t>(data[11]) << 8U))),
                     static_cast<uint16_t>(legacy ? HOLD_DEFAULT_MS :
-                        (data[12] | (static_cast<uint16_t>(data[13]) << 8U)))};
+                        (data[12] | (static_cast<uint16_t>(data[13]) << 8U))),
+                    static_cast<uint16_t>(v4 ? (data[16] | (static_cast<uint16_t>(data[17]) << 8U)) : 100U),
+                    static_cast<uint8_t>(v4 ? data[18] : 0U)};
     if (stored_crc != crc32(data, crc_offset) || !valid(value, rpm_limit)) {
         return false;
     }
@@ -125,6 +136,16 @@ Status Manager::stage(uint8_t parameter, uint32_t value) {
             /* [V1.4.4 新增] 只在 SAVE 成功後生效，不改動量測中 HOLD。 */
             if (value < HOLD_MIN_MS || value > HOLD_MAX_MS) { return OUT_OF_RANGE; }
             next.hold_ms = static_cast<uint16_t>(value);
+            break;
+        case PARAM_CHARGE_CURRENT_MA:
+            /* [V1.5.2 新增] 10～1000 mA；只限 SOC 估算，不更改硬體充電電流。 */
+            if (!brd_battery_charge_current_is_supported(value)) { return OUT_OF_RANGE; }
+            next.charge_current_ma = static_cast<uint16_t>(value);
+            break;
+        case PARAM_OLED_ROTATION:
+            /* [V1.5.2 新增] 0/180°，SAVE 後於 OLED 下一個安全畫面切換。 */
+            if (value > 1U) { return OUT_OF_RANGE; }
+            next.oled_rotation = static_cast<uint8_t>(value);
             break;
         default: return BAD_PARAMETER;
     }

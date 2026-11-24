@@ -40,6 +40,8 @@ static i2c_master_bus_handle_t g_oled_bus = nullptr;
 static i2c_master_dev_handle_t g_oled_device = nullptr;
 static uint8_t g_oled_buffer[(OLED_WIDTH * OLED_HEIGHT) / 8U];
 static bool g_oled_available = false;
+/* [V1.5.2 新增] 硬體 180° 翻轉是否已套用；僅在整幅送完後更改掃描映射。 */
+static uint8_t g_oled_applied_rotation = 0U;
 static bool g_frame_active = false;
 static bool g_page_address_pending = true;
 static uint8_t g_page = 0U;
@@ -120,7 +122,8 @@ static bool oled_initialize(void) {
     }
 
     /* [保留] SSD1306 指令與 V1.9 顯示方向；第一個 byte 為 command control byte。 */
-    static const uint8_t commands[] = {
+    const uint8_t rotation = brd_settings_get().oled_rotation;
+    const uint8_t commands[] = {
         0x00U,
         0xAEU,
         0xD5U, 0x80U,
@@ -129,8 +132,8 @@ static bool oled_initialize(void) {
         0x40U,
         0x8DU, 0x14U,
         0x20U, 0x02U,
-        0xA0U,
-        0xC0U,
+        static_cast<uint8_t>(rotation ? 0xA1U : 0xA0U),
+        static_cast<uint8_t>(rotation ? 0xC8U : 0xC0U),
         0xDAU, 0x02U,
         0x81U, 0x8FU,
         0xD9U, 0xF1U,
@@ -140,7 +143,9 @@ static bool oled_initialize(void) {
         0x2EU,
         0xAFU
     };
-    return oled_transmit(commands, sizeof(commands));
+    const bool success = oled_transmit(commands, sizeof(commands));
+    if (success) { g_oled_applied_rotation = rotation; }
+    return success;
 }
 
 /* [保留] 5x7 字型與像素繪製沿用附件 V1.9，包含 B、X、V 與小數點。 */
@@ -857,10 +862,20 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     } else if (g_frame_ble_connected) {
         oled_draw_bluetooth_icon();
     }
-    /* [V0.10 恢復] 電量與充電圖示皆位於第一行右側，不占用 RPM / MAX 數值區。 */
-    oled_draw_battery_icon(108U, 0U, battery_percent);
+    /* [V1.5.2 OLED 排版修改] 右上角：閃電（充電時）→ 電池 → 百分比。
+       [刪減] 舊版百分比在電池左側的座標配置。
+       [新增] 依百分比字數計算電池座標，保留 2px 間隔，整組靠右。
+       100% 最長時電池 x=83、閃電 x=76，不會遮住 LOADED READY。 */
+    char percent_text[5];
+    const uint8_t shown_percent = battery_percent > 100U ? 100U : battery_percent;
+    snprintf(percent_text, sizeof(percent_text), "%u%%", static_cast<unsigned>(shown_percent));
+    const uint8_t text_width = static_cast<uint8_t>(strlen(percent_text) * 6U - 1U);
+    const uint8_t text_x = static_cast<uint8_t>(OLED_WIDTH - text_width);
+    const uint8_t battery_x = static_cast<uint8_t>(text_x - 2U - 20U);
+    oled_draw_battery_icon(battery_x, 0U, shown_percent);
+    oled_draw_right_aligned_text(static_cast<uint8_t>(OLED_WIDTH - 1U), 1U, percent_text, 1U);
     if (charging) {
-        oled_draw_charging_icon(100U, 1U);
+        oled_draw_charging_icon(static_cast<uint8_t>(battery_x - 7U), 1U);
     }
 
     g_page = 0U;
@@ -980,6 +995,22 @@ void brd_oled_update(void) {
         g_last_frame_start_ms = millis() - OLED_UPDATE_INTERVAL_MS;
         /* [V0.10 修改] 復原後依低電鎖定狀態畫警示或量測資料，不重播開機畫面。 */
         return;
+    }
+
+    /* [V1.5.2 新增] 收完上一畫面才下達 SSD1306 COM/SEG 旋轉指令。
+       低電與 ADC 故障的警示畫面也同步反轉；不清除 RPM 緩衝資料。 */
+    if (!g_frame_active && g_oled_applied_rotation != brd_settings_get().oled_rotation) {
+        const bool flipped = brd_settings_get().oled_rotation != 0U;
+        const uint8_t commands[] = {0x00U,
+            static_cast<uint8_t>(flipped ? 0xA1U : 0xA0U),
+            static_cast<uint8_t>(flipped ? 0xC8U : 0xC0U)};
+        if (!oled_transmit(commands, sizeof(commands))) {
+            oled_mark_failed();
+            return;
+        }
+        g_oled_applied_rotation = flipped ? 1U : 0U;
+        g_last_frame_start_ms = millis() - OLED_UPDATE_INTERVAL_MS;
+        g_warning_frame_drawn = false;
     }
 
     if (low_locked || adc_fault) {

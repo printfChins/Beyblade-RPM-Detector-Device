@@ -31,6 +31,34 @@ void brd_measurement_max_frame_presented(uint32_t) {}
 int main(int argc,char **argv) {
     if(argc!=2 && argc!=3) { return 1; }
     brd_oled_begin();
+    /* [新增] 全部 0~100% 與充電／非充電狀態逐像素檢查右上角。 */
+    for (unsigned percent=0; percent<=100; ++percent) {
+        for (unsigned charging=0; charging<=1; ++charging) {
+            brd_display_t display = {};
+            display.loaded = true;
+            oled_begin_frame(display, static_cast<uint8_t>(percent), charging != 0);
+            uint8_t actual[sizeof(g_oled_buffer)];
+            memcpy(actual, g_oled_buffer, sizeof(actual));
+            oled_clear_buffer();
+            oled_draw_text(0U, 0U, "LOADED READY", 1U);
+            char label[5];
+            snprintf(label, sizeof(label), "%u%%", percent);
+            const unsigned text_x = 128U - (strlen(label)*6U-1U);
+            const unsigned icon_x = text_x-22U;
+            oled_draw_battery_icon(icon_x, 0U, percent);
+            oled_draw_text(text_x, 1U, label, 1U);
+            if (charging) oled_draw_charging_icon(icon_x-7U, 1U);
+            for (unsigned y=0; y<9; ++y) {
+                for (unsigned x=0; x<128; ++x) {
+                    const unsigned i=(y/8U)*128U+x;
+                    assert((actual[i] & (1U<<(y%8U))) == (g_oled_buffer[i] & (1U<<(y%8U))));
+                }
+            }
+        }
+    }
+    puts("PASS: battery icon and right-side percentage, 202 combinations.");
+    brd_oled_begin();
+
     /* [V1.2 新增] 驗證扇形圓盤 0%、25%、50%、75%、100% 填充像素必須遞增。 */
     unsigned previous_pixels = 0U;
     for (unsigned percent = 0U; percent <= 100U; percent += 25U) {
@@ -51,6 +79,8 @@ int main(int argc,char **argv) {
 
     if (argc == 3) {
         test_ota_display = {true, false, brd_ota::RECEIVING, 50U};
+        /* [V1.5.2 新增] 正常主畫面預覽：不啟用 OTA 狀態。 */
+        if (strcmp(argv[2], "main") == 0) { test_ota_display = {}; }
         /* [V1.2 新增] 模擬 OTA 各個進度，與單色 OLED framebuffer 對照。 */
         if (strncmp(argv[2], "ota", 3) == 0 && argv[2][3] != '\0') {
             unsigned v = 0U;
@@ -188,6 +218,13 @@ int main(int argc,char **argv) {
             assert((g_oled_buffer[36] | g_oled_buffer[37] | g_oled_buffer[38] |
                     g_oled_buffer[39] | g_oled_buffer[40]) != 0U);
         }
+    }
+    if (argc == 3 && (strcmp(argv[2], "main") == 0 || strcmp(argv[2], "maincharge") == 0)) {
+        test_ota_display = {};
+        brd_display_t display = {};
+        display.loaded = true;
+        display.value = 12500U;
+        oled_begin_frame(display, 85U, strcmp(argv[2], "maincharge") == 0);
     }
     FILE *file=fopen(argv[1],"wb");
     if(file==nullptr) { return 1; }

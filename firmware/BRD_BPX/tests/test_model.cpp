@@ -45,7 +45,7 @@ int main() {
     Values restored = defaults;
     assert(decode_storage(blob, sizeof(blob), 60000U, restored));
     assert(restored.auto_min_rpm == 3500U && restored.hold_ms == 4200U);
-    assert(blob[4] == 3U && blob[10] == static_cast<uint8_t>(BATTERY_CAPACITY_200_MAH));
+    assert(blob[4] == 4U && blob[10] == static_cast<uint8_t>(BATTERY_CAPACITY_200_MAH));
     blob[8] ^= 1U;
     assert(!decode_storage(blob, sizeof(blob), 60000U, restored));
 
@@ -62,7 +62,7 @@ int main() {
     assert(!decode_storage(legacy, sizeof(legacy), 60000U, restored));
 
     /* [V1.4.4 修改] 250mAh 允許、非法 225mAh 拒絕、Flags 維持向下相容。 */
-    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 225U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 99U) == OUT_OF_RANGE);
     assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, BATTERY_CAPACITY_250_MAH) == OK);
     uint8_t reply[RESPONSE_SIZE] = {};
     make_response(model, CMD_GET, 19U, 0U, OK, reply);
@@ -82,7 +82,7 @@ int main() {
     assert((reply[6] & 0x78U) == 0x18U);
 
     /* [V1.4.4 新增] 新檔位可保存為 v3。混合新舊檔時保留舊容量旗標。 */
-    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 501U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 5001U) == OUT_OF_RANGE);
     assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 0x0101F4U) == OUT_OF_RANGE);
     assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 500U) == OK);
     make_response(model, CMD_GET, 24U, 0U, OK, reply);
@@ -96,7 +96,7 @@ int main() {
     make_response(model, CMD_GET, 27U, 0U, OK, reply);
     assert((reply[6] & 0xF8U) == 0x80U);
     encode_storage(model.active(), blob);
-    assert(blob[4] == 3U && blob[10] == 0xE8U && blob[11] == 0x03U);
+    assert(blob[4] == 4U && blob[10] == 0xE8U && blob[11] == 0x03U);
     assert(decode_storage(blob, sizeof(blob), 60000U, restored));
     assert(restored.battery_capacity_mah == 1000U && restored.hold_ms == 4200U);
     assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 250U) == OK);
@@ -107,6 +107,33 @@ int main() {
     make_response(model, CMD_GET, 30U, 0U, OK, reply);
     assert((reply[6] & 0xF8U) == 0x60U); /* 切回原檔位後清除 bit7。 */
 
+    /* [V1.5.2 新增] 任意容量／電流／方向都能通過 C1 SET、NVS v4 存取。 */
+    assert(model.stage(PARAM_BATTERY_CAPACITY_MAH, 325U) == OK);
+    assert(model.stage(PARAM_CHARGE_CURRENT_MA, 180U) == OK);
+    assert(model.stage(PARAM_OLED_ROTATION, 1U) == OK);
+    assert(model.stage(PARAM_CHARGE_CURRENT_MA, 9U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_CHARGE_CURRENT_MA, 1001U) == OUT_OF_RANGE);
+    assert(model.stage(PARAM_OLED_ROTATION, 2U) == OUT_OF_RANGE);
+    assert(model.request_save(31U) == PENDING);
+    model.complete_save(true);
+    encode_storage(model.active(), blob);
+    assert(blob[4] == 4U && blob[16] == 180U && blob[17] == 0U && blob[18] == 1U);
+    assert(decode_storage(blob, sizeof(blob), 60000U, restored));
+    assert(restored.battery_capacity_mah == 325U && restored.charge_current_ma == 180U &&
+           restored.oled_rotation == 1U);
+    blob[18] ^= 1U;
+    assert(!decode_storage(blob, sizeof(blob), 60000U, restored));
+    /* [V1.5.2 新增] 構造舊版 v3 20 bytes，確認不遺失容量／HOLD。 */
+    uint8_t v3[V3_STORAGE_SIZE] = {'B','R','D','C',3U,0U,1U,30U,0xD0U,0x07U,
+                                    0x2CU,0x01U,0xC4U,0x09U,0U,0U};
+    uint32_t crc = UINT32_MAX;
+    for (size_t i=0U;i<16U;i++) { crc ^= v3[i]; for (uint8_t bit=0U;bit<8U;bit++)
+        crc = (crc >> 1U) ^ ((crc & 1U) ? 0xEDB88320UL : 0UL); }
+    crc = ~crc;
+    for(uint8_t i=0U;i<4U;i++) v3[16U+i] = static_cast<uint8_t>(crc >> (8U*i));
+    assert(decode_storage(v3, sizeof(v3), 60000U, restored));
+    assert(restored.battery_capacity_mah == 300U && restored.hold_ms == 2500U &&
+           restored.charge_current_ma == 100U && restored.oled_rotation == 0U);
     Values bad = model.active(); bad.hold_ms = HOLD_MAX_MS + 1U;
     encode_storage(bad, blob);
     assert(!decode_storage(blob, sizeof(blob), 60000U, restored));
@@ -123,5 +150,5 @@ int main() {
     request[1] = 2U;
     assert(handle_request(model, request, sizeof(request), true, reply) == BAD_VERSION);
     assert(handle_request(model, request, 2U, true, reply) == BAD_LENGTH);
-    puts("PASS: v1/v2 NVS migration, v3 HOLD and capacity profiles, CRC and settings protocol.");
+    puts("PASS: v1/v2 NVS migration, v4 capacity/current/rotation, CRC and settings protocol.");
 }

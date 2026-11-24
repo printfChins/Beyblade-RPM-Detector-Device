@@ -18,6 +18,8 @@
 #include "brd_io.h" /* [V1.2.1 新增] GPIO10 充電狀態僅用於 SOC 補償，不偵測 FULL。 */
 /* [V1.4.3 新增] 讀取已成功保存並生效的電池容量，不存取草稿。 */
 #include "brd_settings.h"
+/* [V1.5.2 新增] 使用輸入的 mAh/mA 計算充電 1% 估算時間。 */
+#include "brd_charge_math.h"
 
 struct battery_soc_point_t {
     uint16_t voltage_mv;
@@ -64,6 +66,8 @@ static bool g_battery_charge_soc_tracking = false;
 static uint32_t g_battery_charge_soc_last_step_ms = 0UL;
 /* [V1.4.3 新增] 用於偵測 SAVE 切換容量，避免沿用舊檔位的充電計時。 */
 static uint16_t g_battery_charge_soc_capacity_mah = BATTERY_NOMINAL_CAPACITY_MAH;
+/* [V1.5.2 新增] 充電電流變更時與容量變更採相同重計時行為。 */
+static uint16_t g_battery_charge_soc_current_ma = BATTERY_CHARGE_CURRENT_MA;
 static bool g_battery_charge_det_exit_active = false;
 static uint32_t g_battery_charge_det_exit_start_ms = 0UL;
 static bool g_battery_charge_soc_reconcile_after_unplug = false;
@@ -182,6 +186,7 @@ void brd_battery_begin(void) {
     g_battery_charge_soc_tracking = false;
     g_battery_charge_soc_last_step_ms = 0UL;
     g_battery_charge_soc_capacity_mah = brd_settings_get().battery_capacity_mah;
+    g_battery_charge_soc_current_ma = brd_settings_get().charge_current_ma;
     g_battery_charge_det_exit_active = false;
     g_battery_charge_det_exit_start_ms = 0UL;
     g_battery_charge_soc_reconcile_after_unplug = false;
@@ -271,10 +276,15 @@ void brd_battery_update(void) {
         容量於充電途中 SAVE 後，重新計時一整個 1% 區間，不立即補跳。
         同樣適用拔線後尚在以充電時間限速回歸的情況。
     */
+    /* [V1.5.2 修改] 依 NVS 生效容量與電流估算；每 1% 由 36000*mAh/mA ms 決定。
+       充電中修改任何一值都重新起算，不把舊速率累積至新速率。 */
     const uint16_t capacity_mah = brd_settings_get().battery_capacity_mah;
-    const uint32_t charge_rise_interval_ms = BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(capacity_mah);
-    if (g_battery_charge_soc_capacity_mah != capacity_mah) {
+    const uint16_t current_ma = brd_settings_get().charge_current_ma;
+    const uint32_t charge_rise_interval_ms = brd_charge_one_percent_ms(capacity_mah, current_ma);
+    if (g_battery_charge_soc_capacity_mah != capacity_mah ||
+        g_battery_charge_soc_current_ma != current_ma) {
         g_battery_charge_soc_capacity_mah = capacity_mah;
+        g_battery_charge_soc_current_ma = current_ma;
         g_battery_charge_soc_last_step_ms = now_ms;
     }
     const bool charging = brd_io_is_charging();

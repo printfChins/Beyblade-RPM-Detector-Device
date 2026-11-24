@@ -48,19 +48,32 @@ static uint32_t g_notify_started_ms = 0U;
 /* [V1.4.4 新增] 主 loop 更新 4-byte 快照；BLE callback 不直接讀設定模型避免跨 task 資料競爭。 */
 static uint8_t g_capacity_snapshot[4] = {};
 static uint8_t g_hold_snapshot[4] = {};
+/* [V1.5.2 新增] 獨立讀取特徵：電流與方向，沿用 active/staged 快照。 */
+static uint8_t g_charge_current_snapshot[4] = {};
+static uint8_t g_oled_rotation_snapshot[4] = {};
 static void update_read_snapshots(void) {
     const brd_settings::Manager &model = brd_settings_model();
     const uint16_t ca = model.active().battery_capacity_mah;
     const uint16_t cs = model.staged().battery_capacity_mah;
     const uint16_t ha = model.active().hold_ms;
     const uint16_t hs = model.staged().hold_ms;
+    const uint16_t ia = model.active().charge_current_ma;
+    const uint16_t is = model.staged().charge_current_ma;
+    const uint16_t ra = model.active().oled_rotation;
+    const uint16_t rs = model.staged().oled_rotation;
     const uint8_t capacity[4] = {static_cast<uint8_t>(ca), static_cast<uint8_t>(ca >> 8U),
                                  static_cast<uint8_t>(cs), static_cast<uint8_t>(cs >> 8U)};
     const uint8_t hold[4] = {static_cast<uint8_t>(ha), static_cast<uint8_t>(ha >> 8U),
                              static_cast<uint8_t>(hs), static_cast<uint8_t>(hs >> 8U)};
+    const uint8_t current[4] = {static_cast<uint8_t>(ia), static_cast<uint8_t>(ia >> 8U),
+                                static_cast<uint8_t>(is), static_cast<uint8_t>(is >> 8U)};
+    const uint8_t rotation[4] = {static_cast<uint8_t>(ra), static_cast<uint8_t>(ra >> 8U),
+                                 static_cast<uint8_t>(rs), static_cast<uint8_t>(rs >> 8U)};
     portENTER_CRITICAL(&g_mux);
     memcpy(g_capacity_snapshot, capacity, sizeof(capacity));
     memcpy(g_hold_snapshot, hold, sizeof(hold));
+    memcpy(g_charge_current_snapshot, current, sizeof(current));
+    memcpy(g_oled_rotation_snapshot, rotation, sizeof(rotation));
     portEXIT_CRITICAL(&g_mux);
 }
 
@@ -161,6 +174,25 @@ class HoldDurationCallbacks : public NimBLECharacteristicCallbacks {
         characteristic->setValue(packet, sizeof(packet));
     }
 };
+/* [V1.5.2 新增] 新版擴充讀取；寫入仍通過 C1 SET/SAVE，避免 callback 寫 Flash。 */
+class ChargeCurrentCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        uint8_t packet[4];
+        portENTER_CRITICAL(&g_mux);
+        memcpy(packet, g_charge_current_snapshot, sizeof(packet));
+        portEXIT_CRITICAL(&g_mux);
+        characteristic->setValue(packet, sizeof(packet));
+    }
+};
+class OledRotationCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic *characteristic, NimBLEConnInfo &) override {
+        uint8_t packet[4];
+        portENTER_CRITICAL(&g_mux);
+        memcpy(packet, g_oled_rotation_snapshot, sizeof(packet));
+        portEXIT_CRITICAL(&g_mux);
+        characteristic->setValue(packet, sizeof(packet));
+    }
+};
 /* [V1.4.4 新增] WRITE 名稱提交 RAM 待寫入；READ 只回已保存生效名稱。 */
 class DeviceNameCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &info) override {
@@ -185,6 +217,8 @@ class DeviceNameStatusCallbacks : public NimBLECharacteristicCallbacks {
 static FirmwareVersionCallbacks g_fw_version_callbacks;
 static CapacityCallbacks g_capacity_callbacks;
 static HoldDurationCallbacks g_hold_callbacks;
+static ChargeCurrentCallbacks g_charge_current_callbacks;
+static OledRotationCallbacks g_oled_rotation_callbacks;
 static DeviceNameCallbacks g_name_callbacks;
 static DeviceNameStatusCallbacks g_name_status_callbacks;
 
@@ -228,14 +262,22 @@ bool brd_settings_ble_create(NimBLEServer *server) {
         SETTINGS_BATTERY_CAPACITY_UUID, NIMBLE_PROPERTY::READ, 4U);
     NimBLECharacteristic *hold = service->createCharacteristic(
         SETTINGS_HOLD_DURATION_UUID, NIMBLE_PROPERTY::READ, 4U);
+    /* [V1.5.2 新增] 新特徵只 READ，SET 仍使用 8-byte C1 協議。 */
+    NimBLECharacteristic *charge_current = service->createCharacteristic(
+        SETTINGS_CHARGE_CURRENT_UUID, NIMBLE_PROPERTY::READ, 4U);
+    NimBLECharacteristic *oled_rotation = service->createCharacteristic(
+        SETTINGS_OLED_ROTATION_UUID, NIMBLE_PROPERTY::READ, 4U);
     if (request == nullptr || g_response == nullptr || g_display_page_characteristic == nullptr ||
         firmware == nullptr || name == nullptr || name_status == nullptr ||
-        capacity == nullptr || hold == nullptr) { return false; }
+        capacity == nullptr || hold == nullptr || charge_current == nullptr ||
+        oled_rotation == nullptr) { return false; }
     firmware->setCallbacks(&g_fw_version_callbacks);
     name->setCallbacks(&g_name_callbacks);
     name_status->setCallbacks(&g_name_status_callbacks);
     capacity->setCallbacks(&g_capacity_callbacks);
     hold->setCallbacks(&g_hold_callbacks);
+    charge_current->setCallbacks(&g_charge_current_callbacks);
+    oled_rotation->setCallbacks(&g_oled_rotation_callbacks);
     request->setCallbacks(&g_request_callbacks);
     g_display_page_characteristic->setCallbacks(&g_display_page_callbacks);
     g_display_page = BRD_DISPLAY_PAGE_MAIN;

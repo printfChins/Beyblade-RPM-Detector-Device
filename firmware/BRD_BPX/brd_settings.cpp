@@ -17,7 +17,9 @@ static const brd_settings::Values g_defaults = {
     BRD_MEASUREMENT_MODE, BLE_OFF_WHILE_CHARGING,
     POST_LAUNCH_FINISH_PERCENT, AUTO_RPM_THRESHOLD,
     /* [修改] 出廠電池容量及 HOLD 由 brd_config.h 定義。 */
-    BATTERY_NOMINAL_CAPACITY_MAH, OLED_MAX_HOLD_MS
+    BATTERY_NOMINAL_CAPACITY_MAH, OLED_MAX_HOLD_MS,
+    /* [V1.5.2 新增] 出廠電流 100 mA、正常顯示方向。 */
+    BATTERY_CHARGE_CURRENT_MA, 0U
 };
 static brd_settings::Manager g_model(g_defaults, RPM_VALID_MAX);
 static bool g_write_attempted = false;
@@ -39,7 +41,8 @@ void brd_settings_begin(void) {
     brd_settings::Values restored;
     const size_t length = preferences.isKey(SETTINGS_NVS_KEY) ?
         preferences.getBytesLength(SETTINGS_NVS_KEY) : 0U;
-    if ((length == brd_settings::LEGACY_STORAGE_SIZE || length == sizeof(blob)) &&
+    if ((length == brd_settings::LEGACY_STORAGE_SIZE ||
+         length == brd_settings::V3_STORAGE_SIZE || length == sizeof(blob)) &&
         preferences.getBytes(SETTINGS_NVS_KEY, blob, length) == length &&
         brd_settings::decode_storage(blob, length, RPM_VALID_MAX, restored)) {
         g_model.restore(restored, true);
