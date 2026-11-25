@@ -52,10 +52,6 @@ static bool g_battery_adc_fault_active = true;
 static uint16_t g_battery_voltage_mv = 0U;
 static uint8_t g_battery_percent = 0U;
 static bool g_battery_low_locked = false;
-/* [新增] 過壓及連續有效低電壓樣本的恢復計時。 */
-static bool g_overvoltage = false;
-static bool g_overvoltage_recovering = false;
-static uint32_t g_overvoltage_recovery_ms = 0UL;
 /* [新增] 區分「開機 <= 10%」鎖定與運行中 < 5% 鎖定，避免 10% 回彈造成重啟循環。 */
 /*
     [V1.2.1 新增] V1.4.1 充電百分比補償（無 FULL）：
@@ -102,7 +98,6 @@ static void battery_record_failure(brd_battery_status_t status, esp_err_t error)
     battery_increment(g_battery_diagnostics.failure_count);
     battery_increment(g_battery_diagnostics.consecutive_failures);
     battery_reset_recovery();
-    g_overvoltage_recovering = false; /* [新增] 讀取失敗不得解除過壓。 */
     /* [V0.12 新增] 不把失敗寫成 0% 或設定低電鎖定，保留最後有效電量。 */
 }
 
@@ -184,9 +179,6 @@ void brd_battery_begin(void) {
     g_battery_voltage_mv = 0U;
     g_battery_percent = 0U;
     g_battery_low_locked = false;
-    g_overvoltage = false;
-    g_overvoltage_recovering = false;
-    g_overvoltage_recovery_ms = 0UL;
     /* [新增] 每次真正開機都必須重新通過 > 10% 的第一筆有效 ADC 檢查。 */
     g_battery_startup_check_pending = true;
     g_battery_startup_low_locked = false;
@@ -273,28 +265,6 @@ void brd_battery_update(void) {
     g_battery_diagnostics.consecutive_failures = 0UL;
     battery_increment(g_battery_diagnostics.success_count);
 
-    /* [新增] 使用已校正及分壓換算的 VBAT，不依賴充電 DET，避免漏報。
-       過壓期間保留 SOC；恢復需兩筆連續有效樣本、間隔至少 1 秒。 */
-    if (g_battery_voltage_mv > BATTERY_OVERVOLTAGE_MV) {
-        g_overvoltage = true;
-        g_overvoltage_recovering = false;
-    } else if (g_overvoltage) {
-        if (g_battery_voltage_mv > BATTERY_OVERVOLTAGE_RECOVER_MV) {
-            g_overvoltage_recovering = false;
-        } else if (!g_overvoltage_recovering || sample_gap_too_long) {
-            g_overvoltage_recovering = true;
-            g_overvoltage_recovery_ms = now_ms;
-        } else if ((uint32_t)(now_ms - g_overvoltage_recovery_ms) >= BATTERY_OVERVOLTAGE_RECOVER_MS) {
-            g_overvoltage = false;
-            g_overvoltage_recovering = false;
-        }
-    }
-    if (g_overvoltage) {
-        battery_reset_recovery();
-        g_battery_charge_soc_last_step_ms = now_ms;
-        return;
-    }
-
     /*
         [V1.2.1 移植] 以充電電流 / 電池容量推算的理論上升速率補償顯示電量。
         不使用 FULL 判定；到達 100% 只能由時間限速、電壓 SOC 上限共同達成。
@@ -325,7 +295,7 @@ void brd_battery_update(void) {
             g_battery_charge_soc_tracking = true;
             g_battery_charge_soc_last_step_ms = now_ms;
         }
-        if (!had_valid_sample || g_battery_startup_check_pending) {
+        if (!had_valid_sample) {
             /* [保留] 開機已在充電，沒有先前 SOC，只能以首次有效 ADC 建立基準。 */
             g_battery_percent = voltage_based_percent;
         } else {
@@ -416,12 +386,6 @@ uint8_t brd_battery_get_percent(void) {
     return g_battery_percent;
 }
 
-/* [新增] 僅供顯示：與原恢復判定一致，不改變保護狀態。 */
-uint8_t brd_battery_get_restart_percent(void) {
-    return g_battery_startup_low_locked ?
-        static_cast<uint8_t>(BATTERY_BOOT_MIN_PERCENT + 1U) : BATTERY_RECOVER_PERCENT;
-}
-
 bool brd_battery_is_low_locked(void) {
     return g_battery_low_locked;
 }
@@ -434,16 +398,12 @@ bool brd_battery_is_adc_fault(void) {
     return g_battery_adc_fault_active;
 }
 
-bool brd_battery_is_overvoltage(void) {
-    return g_overvoltage;
-}
-
 bool brd_battery_measurement_allowed(void) {
-    return !g_overvoltage && !g_battery_low_locked && !brd_battery_is_adc_fault();
+    return !g_battery_low_locked && !brd_battery_is_adc_fault();
 }
 
 bool brd_battery_restart_required(void) {
-    return !g_overvoltage && g_battery_low_locked && g_battery_recovery_ready &&
+    return g_battery_low_locked && g_battery_recovery_ready &&
         g_battery_diagnostics.last_sample_valid && !brd_battery_is_adc_fault() &&
         (uint32_t)(millis() - g_battery_diagnostics.last_success_ms) <= BATTERY_RECOVER_MAX_GAP_MS;
 }

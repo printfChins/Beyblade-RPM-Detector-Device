@@ -65,10 +65,6 @@ static bool g_frame_ir2_triggered = false;
 static uint16_t g_frame_voltage_mv = 0U;
 /* [V0.12 新增] ADC 故障有獨立畫面，不冒充 0% 低電。 */
 static bool g_frame_is_adc_fault = false;
-/* [新增] 過壓畫面優先權及 SSD1306 反相狀態。 */
-static bool g_frame_is_overvoltage = false;
-static bool g_oled_inverted = false;
-static uint32_t g_last_voltage_blink_ms = 0UL;
 static bool g_warning_frame_drawn = false;
 static uint32_t g_last_warning_frame_ms = 0UL;
 
@@ -148,7 +144,7 @@ static bool oled_initialize(void) {
         0xAFU
     };
     const bool success = oled_transmit(commands, sizeof(commands));
-    if (success) { g_oled_applied_rotation = rotation; g_oled_inverted = false; }
+    if (success) { g_oled_applied_rotation = rotation; }
     return success;
 }
 
@@ -195,8 +191,6 @@ static const uint8_t *oled_get_glyph(char c) {
     static const uint8_t glyph_D[5] = {0x7F, 0x41, 0x41, 0x22, 0x1C};
     static const uint8_t glyph_E[5] = {0x7F, 0x49, 0x49, 0x49, 0x41};
     /* [V0.10 新增] HOLD 所需 H 字元，其餘 O、L、D 沿用既有字庫。 */
-    /* [新增] VOLTAGE ERROR 缺少 G 字元。 */
-    static const uint8_t glyph_G[5] = {0x3E, 0x41, 0x49, 0x49, 0x7A};
     static const uint8_t glyph_H[5] = {0x7F, 0x08, 0x08, 0x08, 0x7F};
     static const uint8_t glyph_I[5] = {0x00, 0x41, 0x7F, 0x41, 0x00};
     static const uint8_t glyph_L[5] = {0x7F, 0x40, 0x40, 0x40, 0x40};
@@ -243,7 +237,6 @@ static const uint8_t *oled_get_glyph(char c) {
         case 'D': return glyph_D;
         case 'E': return glyph_E;
         case 'F': return glyph_F;
-        case 'G': return glyph_G;
         case 'H': return glyph_H;
         case 'I': return glyph_I;
         case 'L': return glyph_L;
@@ -517,52 +510,68 @@ static void oled_draw_charging_icon(uint8_t x, uint8_t y) {
 
 static void oled_begin_low_battery_frame(void) {
     /*
-        [V1.5.2 修改] 低電圖示 36x18 移至左側，右側顯示 LOW BATTERY 與即時百分比。
-        [刪減] 原置中的 64x28 電池及中央閃電。
-        [新增] 底部顯示目前低電鎖定實際重啟門檻，不寫死 10%。
-        [保留] 128x32 原字庫、每秒更新、正相顯示及原低電保護機制。
+        [V0.10 刪減] 原本的方角空電池與中央驚嘆號。
+        [V0.10 新增] 依參考圖繪製 60x28 圓角電池、左側低電量短條與中央閃電。
+        本體加右側端子共 64x28，置中於 128x32 OLED。
+        OLED 為單色，參考圖的紅色短條改用亮色像素表示。
+        中央閃電屬於低電警示圖樣，不以 CHRG_DET 作為顯示條件。
     */
-    const uint8_t percent = brd_battery_get_percent();
-    const bool adc_fault = brd_battery_is_adc_fault();
-    const uint8_t restart_percent = brd_battery_get_restart_percent();
+    static const uint8_t outer_corner_inset[4] = {4U, 2U, 1U, 0U};
+    static const uint8_t inner_corner_inset[2] = {2U, 1U};
+    static const uint16_t lightning_rows[18] = {
+        0x004U, 0x00CU, 0x00CU, 0x018U, 0x038U, 0x038U,
+        0x07FU, 0x07EU, 0x0FCU, 0x1FCU, 0x038U, 0x030U,
+        0x030U, 0x060U, 0x060U, 0x040U, 0x040U, 0x040U
+    };
+    const uint8_t body_x = 32U;
+    const uint8_t body_y = 2U;
+    const uint8_t body_width = 60U;
+    const uint8_t body_height = 28U;
+
     oled_clear_buffer();
 
-    /* 左側圓角電池：本體 x=4..35、y=5..22，端子 x=36..39。 */
-    for (uint8_t x = 5U; x <= 34U; ++x) {
-        oled_set_pixel(x, 5U, true);
-        oled_set_pixel(x, 22U, true);
-    }
-    for (uint8_t y = 6U; y <= 21U; ++y) {
-        oled_set_pixel(4U, y, true);
-        oled_set_pixel(35U, y, true);
-    }
-    for (uint8_t x = 36U; x <= 39U; ++x) {
-        for (uint8_t y = 10U; y <= 17U; ++y) {
-            oled_set_pixel(x, y, true);
+    /* [新增] 兩像素圓角外框；逐列保留內部黑色區域。 */
+    for (uint8_t row = 0U; row < body_height; row++) {
+        uint8_t edge = row < body_height / 2U ? row : (uint8_t)(body_height - 1U - row);
+        uint8_t outer_inset = edge < 4U ? outer_corner_inset[edge] : 0U;
+        uint8_t inner_inset = body_width / 2U;
+
+        if (edge >= 2U) {
+            uint8_t inner_edge = (uint8_t)(edge - 2U);
+            inner_inset = (uint8_t)(2U + (inner_edge < 2U ? inner_corner_inset[inner_edge] : 0U));
         }
-    }
-    /* 有效電量才填充短條；0% 或 ADC 故障時保留空電池。 */
-    const uint8_t fill_width = static_cast<uint8_t>(((percent > 100U ? 100U : percent) * 26U + 99U) / 100U);
-    if (!adc_fault) {
-        for (uint8_t x = 7U; x < 7U + fill_width; ++x) {
-            for (uint8_t y = 8U; y <= 19U; ++y) {
-                oled_set_pixel(x, y, true);
+
+        for (uint8_t column = outer_inset; column < body_width - outer_inset; column++) {
+            if (column < inner_inset || column >= body_width - inner_inset) {
+                oled_set_pixel((uint8_t)(body_x + column), (uint8_t)(body_y + row), true);
             }
         }
     }
-    oled_draw_text(52U, 0U, "LOW BATTERY", 1U);
-    char label[5];
-    snprintf(label, sizeof(label), "%u%%", static_cast<unsigned>(percent > 100U ? 100U : percent));
-    /* 右半區中心 x=84；ADC 故障不把舊值誤當即時電量。 */
-    if (adc_fault) {
-        oled_draw_text(64U, 12U, "ADC ERR", 1U);
-    } else {
-        const uint8_t width = static_cast<uint8_t>(strlen(label) * 12U - 2U);
-        oled_draw_text(static_cast<uint8_t>(84U - width / 2U), 9U, label, 2U);
+
+    /* [新增] 右側 4x10 電池端子，外側兩角各留一個黑色像素。 */
+    for (uint8_t row = 0U; row < 10U; row++) {
+        for (uint8_t column = 0U; column < 4U; column++) {
+            if (column != 3U || (row != 0U && row != 9U)) {
+                oled_set_pixel((uint8_t)(body_x + body_width + column), (uint8_t)(11U + row), true);
+            }
+        }
     }
-    char restart[20];
-    snprintf(restart, sizeof(restart), "RESTART AT %u%%", static_cast<unsigned>(restart_percent));
-    oled_draw_centered_text(25U, restart, 1U);
+
+    /* [新增] 左側 5x20 短條，對應參考圖的紅色低電量區域。 */
+    for (uint8_t x = 37U; x < 42U; x++) {
+        for (uint8_t y = 6U; y < 26U; y++) {
+            oled_set_pixel(x, y, true);
+        }
+    }
+
+    /* [新增] 中央 9x18 閃電，以固定點陣維持單色小尺寸下的可辨識度。 */
+    for (uint8_t row = 0U; row < 18U; row++) {
+        for (uint8_t column = 0U; column < 9U; column++) {
+            if ((lightning_rows[row] & (1U << (8U - column))) != 0U) {
+                oled_set_pixel((uint8_t)(58U + column), (uint8_t)(7U + row), true);
+            }
+        }
+    }
 
     g_frame_display = {};
     g_frame_is_low_battery = true;
@@ -584,32 +593,6 @@ static void oled_begin_adc_fault_frame(void) {
     g_column = 0U;
     g_page_address_pending = true;
     g_frame_active = true;
-}
-
-/* [新增] 128x32 原生點陣：上排 5x7，下排 2 倍電壓；不使用抗鋸齒。 */
-static void oled_begin_overvoltage_frame(void) {
-    oled_clear_buffer();
-    oled_draw_centered_text(2U, "VOLTAGE ERROR", 1U);
-    char voltage[12];
-    oled_format_ir_voltage(brd_battery_get_voltage_mv(), voltage, sizeof(voltage));
-    oled_draw_centered_text(14U, brd_battery_is_adc_fault() ? "ADC ERR" : voltage, 2U);
-    g_frame_display = {};
-    g_frame_is_low_battery = false;
-    g_frame_is_adc_fault = false;
-    g_frame_is_overvoltage = true;
-    g_frame_voltage_mv = brd_battery_get_voltage_mv();
-    g_page = 0U;
-    g_column = 0U;
-    g_page_address_pending = true;
-    g_frame_active = true;
-}
-
-static bool oled_set_warning_inversion(bool inverted) {
-    if (g_oled_inverted == inverted) { return true; }
-    const uint8_t commands[] = {0x00U, static_cast<uint8_t>(inverted ? 0xA7U : 0xA6U)};
-    if (!oled_transmit(commands, sizeof(commands))) { oled_mark_failed(); return false; }
-    g_oled_inverted = inverted;
-    return true;
 }
 
 /* [R4 新增] 使用 BRD_BLE_OLED(3).zip 的原生 7x13 藍牙點陣。
@@ -879,18 +862,10 @@ static void oled_begin_frame(const brd_display_t &display, uint8_t battery_perce
     } else if (g_frame_ble_connected) {
         oled_draw_bluetooth_icon();
     }
-    /* [V1.5.2 OLED 排版修改] 右上角：閃電（充電時）→ 電池 → 百分比。
-       [刪減] 舊版百分比在電池左側的座標配置。
-       [新增] 依百分比字數計算電池座標，保留 2px 間隔，整組靠右。
-       100% 最長時電池 x=83、閃電 x=76，不會遮住 LOADED READY。 */
-    char percent_text[5];
-    const uint8_t shown_percent = battery_percent > 100U ? 100U : battery_percent;
-    snprintf(percent_text, sizeof(percent_text), "%u%%", static_cast<unsigned>(shown_percent));
-    const uint8_t text_width = static_cast<uint8_t>(strlen(percent_text) * 6U - 1U);
-    const uint8_t text_x = static_cast<uint8_t>(OLED_WIDTH - text_width);
-    const uint8_t battery_x = static_cast<uint8_t>(text_x - 2U - 20U);
-    oled_draw_battery_icon(battery_x, 0U, shown_percent);
-    oled_draw_right_aligned_text(static_cast<uint8_t>(OLED_WIDTH - 1U), 1U, percent_text, 1U);
+    /* [V1.5.2 FINAL 修改] 移除主頁電量百分比文字及動態座標。
+       [保留] 電池填充比例與充電閃電；電池固定靠右，占 20px。 */
+    const uint8_t battery_x = static_cast<uint8_t>(OLED_WIDTH - 20U);
+    oled_draw_battery_icon(battery_x, 0U, battery_percent);
     if (charging) {
         oled_draw_charging_icon(static_cast<uint8_t>(battery_x - 7U), 1U);
     }
@@ -936,9 +911,6 @@ static bool oled_send_frame_step(void) {
 }
 
 void brd_oled_begin(void) {
-    /* [新增] 重新初始化時清除舊警告狀態。 */
-    g_frame_is_overvoltage = false;
-    g_warning_frame_drawn = false;
     g_last_retry_ms = millis();
     g_oled_available = oled_initialize();
     if (!g_oled_available) {
@@ -946,10 +918,7 @@ void brd_oled_begin(void) {
         return;
     }
 
-    if (brd_battery_is_overvoltage()) {
-        oled_begin_overvoltage_frame();
-        g_last_voltage_blink_ms = millis();
-    } else if (brd_battery_is_low_locked()) {
+    if (brd_battery_is_low_locked()) {
         /* [新增] 上電即低電時不播放開機畫面，直接顯示沒電圖示。 */
         oled_begin_low_battery_frame();
     } else if (brd_battery_is_adc_fault()) {
@@ -976,7 +945,7 @@ void brd_oled_begin(void) {
             return;
         }
     }
-    if (g_frame_is_overvoltage || g_frame_is_low_battery || g_frame_is_adc_fault) {
+    if (g_frame_is_low_battery || g_frame_is_adc_fault) {
         g_warning_frame_drawn = true;
         g_last_warning_frame_ms = millis();
         return;
@@ -991,16 +960,15 @@ void brd_oled_update(void) {
     if (ota.active != g_frame_ota.active || ota.verifying != g_frame_ota.verifying || ota.phase != g_frame_ota.phase) {
         g_frame_active = false;
     }
-    const bool overvoltage = brd_battery_is_overvoltage();
-    bool low_locked = !overvoltage && brd_battery_is_low_locked();
-    bool adc_fault = !overvoltage && !low_locked && brd_battery_is_adc_fault();
+    bool low_locked = brd_battery_is_low_locked();
+    bool adc_fault = !low_locked && brd_battery_is_adc_fault();
     /* [新增] 頁面切換不需等前一幅 frame 完成，OTA / 電池警告仍最高優先。 */
-    if (!overvoltage && !ota.active && !low_locked && !adc_fault &&
+    if (!ota.active && !low_locked && !adc_fault &&
         brd_settings_ble_display_page() != g_frame_display_page) {
         g_frame_active = false;
     }
     /* [V0.12 修改] 切換警示模式或從 ADC 故障恢復時，放棄舊畫面。 */
-    if (overvoltage != g_frame_is_overvoltage || low_locked != g_frame_is_low_battery || adc_fault != g_frame_is_adc_fault) {
+    if (low_locked != g_frame_is_low_battery || adc_fault != g_frame_is_adc_fault) {
         /* [新增] 放棄舊模式的未完成畫面，下一幅依低電、ADC 故障或正常模式重畫。 */
         g_frame_active = false;
         g_warning_frame_drawn = false;
@@ -1037,36 +1005,6 @@ void brd_oled_update(void) {
         g_warning_frame_drawn = false;
     }
 
-    /* [新增] 警告使用硬體反相，每 500ms 切換；退出或重試後恢復正相。
-       完整更新警告畫面後再閃爍，不干擾正常分段刷新。 */
-    if (overvoltage) {
-        const uint32_t now = millis();
-        if (!g_warning_frame_drawn || !g_frame_is_overvoltage) {
-            if (!oled_set_warning_inversion(false)) { return; }
-            g_last_voltage_blink_ms = now;
-        }
-        if (!g_warning_frame_drawn ||
-            (uint32_t)(now - g_last_warning_frame_ms) >= BATTERY_LOW_OLED_REFRESH_MS) {
-            oled_begin_overvoltage_frame();
-            while (g_frame_active) {
-                if (!oled_send_frame_step()) { oled_mark_failed(); return; }
-            }
-            g_warning_frame_drawn = true;
-            g_last_warning_frame_ms = millis();
-        }
-        const uint32_t elapsed = (uint32_t)(millis() - g_last_voltage_blink_ms);
-        if (elapsed >= OLED_VOLTAGE_BLINK_MS) {
-            const uint32_t steps = elapsed / OLED_VOLTAGE_BLINK_MS;
-            if ((steps & 1U) && !oled_set_warning_inversion(!g_oled_inverted)) { return; }
-            g_last_voltage_blink_ms += steps * OLED_VOLTAGE_BLINK_MS;
-        }
-        return;
-    }
-    if (g_frame_is_overvoltage) {
-        if (!oled_set_warning_inversion(false)) { return; }
-        g_frame_is_overvoltage = false;
-        g_last_frame_start_ms = millis() - OLED_UPDATE_INTERVAL_MS;
-    }
     if (low_locked || adc_fault) {
         if (g_warning_frame_drawn &&
             (uint32_t)(millis() - g_last_warning_frame_ms) < BATTERY_LOW_OLED_REFRESH_MS) {

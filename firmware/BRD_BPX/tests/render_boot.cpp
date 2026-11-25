@@ -1,7 +1,6 @@
 /* [新增] 直接渲染真正 OLED framebuffer，供 128x32 排版視覺檢查。 */
 #include <Arduino.h>
 #include <assert.h>
-#include <initializer_list>
 #include "brd_settings.h"
 #include "brd_config.h"
 #include "brd_ota.h"
@@ -9,21 +8,13 @@ static brd_ota_display_t test_ota_display = {};
 brd_ota_display_t brd_ota_get_display() { return test_ota_display; }
 uint64_t test_clock_us=100000U;
 void (*test_interrupts[32])(void)={};
-static bool test_low_locked = false;
-static bool test_adc_fault = false;
-static uint8_t test_percent = 80U;
-static uint8_t test_restart_percent = BATTERY_RECOVER_PERCENT;
-bool brd_battery_is_low_locked() { return test_low_locked; }
-bool brd_battery_is_adc_fault() { return test_adc_fault; }
-uint8_t brd_battery_get_restart_percent() { return test_restart_percent; }
-static bool test_overvoltage = false;
-bool brd_battery_is_overvoltage() { return test_overvoltage; }
+bool brd_battery_is_low_locked() { return false; }
+bool brd_battery_is_adc_fault() { return false; }
 bool brd_battery_measurement_allowed() { return true; }
 void brd_battery_update() {}
-uint8_t brd_battery_get_percent() { return test_percent; }
+uint8_t brd_battery_get_percent() { return 80U; }
 /* [新增] 真正 IR TEST OLED 模組所需的唯讀 stub。 */
-static uint16_t test_voltage_mv = 4021U;
-uint16_t brd_battery_get_voltage_mv() { return test_voltage_mv; }
+uint16_t brd_battery_get_voltage_mv() { return 4021U; }
 uint8_t brd_settings_ble_display_page() { return BRD_DISPLAY_PAGE_MAIN; }
 bool brd_io_read_ir1() { return false; }
 bool brd_io_read_ir2() { return false; }
@@ -40,59 +31,6 @@ void brd_measurement_max_frame_presented(uint32_t) {}
 int main(int argc,char **argv) {
     if(argc!=2 && argc!=3) { return 1; }
     brd_oled_begin();
-    /* [新增] 真實 OLED 更新流程：進入、500ms 反相、恢復正相。 */
-    test_overvoltage = true;
-    test_voltage_mv = 4350U;
-    brd_oled_update();
-    assert(g_frame_is_overvoltage && !g_oled_inverted);
-    delay(500); brd_oled_update(); assert(g_oled_inverted);
-    delay(500); brd_oled_update(); assert(!g_oled_inverted);
-    delay(500); brd_oled_update(); assert(g_oled_inverted);
-    test_overvoltage = false;
-    brd_oled_update(); assert(!g_frame_is_overvoltage && !g_oled_inverted);
-    test_voltage_mv = 4021U;
-    /* [新增] 低電頁：逐像素檢查右側大字及底部真實門檻，含 0~100% 與 ADC 故障。 */
-    for (unsigned threshold : {static_cast<unsigned>(BATTERY_BOOT_MIN_PERCENT + 1U), static_cast<unsigned>(BATTERY_RECOVER_PERCENT)}) {
-        test_restart_percent = static_cast<uint8_t>(threshold);
-        for (unsigned percent = 0; percent <= 100; ++percent) {
-            test_percent = static_cast<uint8_t>(percent);
-            oled_begin_low_battery_frame();
-            uint8_t actual[sizeof(g_oled_buffer)];
-            memcpy(actual, g_oled_buffer, sizeof(actual));
-            oled_clear_buffer();
-            oled_draw_text(52U, 0U, "LOW BATTERY", 1U);
-            char label[5]; snprintf(label, sizeof(label), "%u%%", percent);
-            oled_draw_text(static_cast<uint8_t>(84U - (strlen(label) * 12U - 2U)/2U), 9U, label, 2U);
-            char restart[20]; snprintf(restart, sizeof(restart), "RESTART AT %u%%", threshold);
-            oled_draw_centered_text(25U, restart, 1U);
-            for (unsigned y=0; y<32; ++y) {
-                for (unsigned x=0; x<128; ++x) {
-                    if (x<40 && y>=5 && y<=22) continue;
-                    unsigned i=(y/8U)*128U+x, bit=1U<<(y%8U);
-                    assert((actual[i]&bit)==(g_oled_buffer[i]&bit));
-                }
-            }
-        }
-    }
-    test_low_locked = true; test_percent = 3U;
-    test_restart_percent = BATTERY_RECOVER_PERCENT;
-    brd_oled_update(); assert(g_frame_is_low_battery && !g_oled_inverted);
-    uint8_t low_before[sizeof(g_oled_buffer)]; memcpy(low_before,g_oled_buffer,sizeof(low_before));
-    test_percent = 4U; delay(BATTERY_LOW_OLED_REFRESH_MS); brd_oled_update();
-    assert(memcmp(low_before,g_oled_buffer,sizeof(low_before)) != 0);
-    test_overvoltage = true; brd_oled_update(); assert(g_frame_is_overvoltage && !g_frame_is_low_battery);
-    delay(OLED_VOLTAGE_BLINK_MS); brd_oled_update(); assert(g_oled_inverted);
-    test_overvoltage = false; brd_oled_update(); assert(g_frame_is_low_battery && !g_oled_inverted);
-    test_adc_fault = true; delay(BATTERY_LOW_OLED_REFRESH_MS); brd_oled_update();
-    memcpy(low_before,g_oled_buffer,sizeof(low_before));
-    oled_clear_buffer(); oled_draw_text(64U,12U,"ADC ERR",1U);
-    for(unsigned y=9;y<23;++y) for(unsigned x=40;x<128;++x) {
-        unsigned i=(y/8U)*128U+x, bit=1U<<(y%8U);
-        assert((low_before[i]&bit)==(g_oled_buffer[i]&bit));
-    }
-    test_adc_fault = false; test_low_locked = false; test_percent = 80U;
-    brd_oled_update();
-    puts("PASS: 202 low-battery layouts, live refresh, ADC fault and overvoltage priority.");
     /* [新增] 全部 0~100% 與充電／非充電狀態逐像素檢查右上角。 */
     for (unsigned percent=0; percent<=100; ++percent) {
         for (unsigned charging=0; charging<=1; ++charging) {
@@ -103,12 +41,9 @@ int main(int argc,char **argv) {
             memcpy(actual, g_oled_buffer, sizeof(actual));
             oled_clear_buffer();
             oled_draw_text(0U, 0U, "LOADED READY", 1U);
-            char label[5];
-            snprintf(label, sizeof(label), "%u%%", percent);
-            const unsigned text_x = 128U - (strlen(label)*6U-1U);
-            const unsigned icon_x = text_x-22U;
+            // [FINAL 修改] 固定靠右，不繪製百分比文字。
+            const unsigned icon_x = 128U - 20U;
             oled_draw_battery_icon(icon_x, 0U, percent);
-            oled_draw_text(text_x, 1U, label, 1U);
             if (charging) oled_draw_charging_icon(icon_x-7U, 1U);
             for (unsigned y=0; y<9; ++y) {
                 for (unsigned x=0; x<128; ++x) {
@@ -118,7 +53,7 @@ int main(int argc,char **argv) {
             }
         }
     }
-    puts("PASS: battery icon and right-side percentage, 202 combinations.");
+    puts("PASS: battery icon without percentage, 202 combinations.");
     brd_oled_begin();
 
     /* [V1.2 新增] 驗證扇形圓盤 0%、25%、50%、75%、100% 填充像素必須遞增。 */
@@ -231,12 +166,7 @@ int main(int argc,char **argv) {
             /* [保留] 移除 IR1 / IR2 文字。 */
             assert(!pixel(50U,30U));
             assert(!pixel(76U,31U));
-            /* [新增] 輸出實際過壓 framebuffer 作為預覽。 */
-    if (argc == 3 && strcmp(argv[2], "voltage") == 0) {
-        test_voltage_mv = 4350U;
-        oled_begin_overvoltage_frame();
-    }
-    FILE *file=fopen(argv[1],"wb");
+            FILE *file=fopen(argv[1],"wb");
             assert(file!=nullptr);
             fprintf(file,"P5\n128 32\n255\n");
             for(unsigned y=0;y<32;y++) {
@@ -292,16 +222,6 @@ int main(int argc,char **argv) {
         display.loaded = true;
         display.value = 12500U;
         oled_begin_frame(display, 85U, strcmp(argv[2], "maincharge") == 0);
-    }
-    /* [新增] 輸出實際過壓 framebuffer 作為預覽。 */
-    if (argc == 3 && strcmp(argv[2], "voltage") == 0) {
-        test_voltage_mv = 4350U;
-        oled_begin_overvoltage_frame();
-    }
-    if (argc == 3 && (strcmp(argv[2], "low") == 0 || strcmp(argv[2], "lowboot") == 0)) {
-        test_percent = 3U;
-        test_restart_percent = strcmp(argv[2], "lowboot") == 0 ? BATTERY_BOOT_MIN_PERCENT + 1U : BATTERY_RECOVER_PERCENT;
-        oled_begin_low_battery_frame();
     }
     FILE *file=fopen(argv[1],"wb");
     if(file==nullptr) { return 1; }

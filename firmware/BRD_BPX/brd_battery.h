@@ -45,12 +45,8 @@ uint16_t brd_battery_get_voltage_mv(void);
 uint8_t brd_battery_get_percent(void);
 bool brd_battery_is_low_locked(void);
 bool brd_battery_restart_required(void);
-/* [新增] 回傳目前低電鎖定實際需要的最低整數電量（含該值）。 */
-uint8_t brd_battery_get_restart_percent(void);
 /* [V0.12 新增] ADC 故障與低電鎖定分開；故障恢復無須等到 10%。 */
 bool brd_battery_is_adc_fault(void);
-/* [新增] 過壓鎖定獨立於低電及 ADC 故障。 */
-bool brd_battery_is_overvoltage(void);
 bool brd_battery_measurement_allowed(void);
 brd_battery_diagnostics_t brd_battery_get_diagnostics(void);
 
