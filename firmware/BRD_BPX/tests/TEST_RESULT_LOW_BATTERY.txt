@@ -1,0 +1,3 @@
+PASS: 202 low-battery layouts, live refresh, ADC fault and overvoltage priority.
+PASS: 202 regular battery layouts.
+PASS: battery discharge/charging, low-lock and threshold getter, millis wrap.

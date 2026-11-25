@@ -46,10 +46,12 @@ static void test_discharge_curve() {
     start(3490);
     assert(brd_battery_get_percent() <= BATTERY_BOOT_MIN_PERCENT);
     assert(brd_battery_is_low_locked()); /* V1.2 原開機低電規則 */
+    assert(brd_battery_get_restart_percent() == BATTERY_BOOT_MIN_PERCENT + 1U);
     start(3700);
     sample(3470);
     assert(brd_battery_get_percent() < BATTERY_LOW_STOP_PERCENT);
     assert(brd_battery_is_low_locked()); /* V1.2 原運行中 <5% */
+    assert(brd_battery_get_restart_percent() == BATTERY_RECOVER_PERCENT);
 }
 static void test_charging_compensation() {
     static_assert(BATTERY_CHARGE_SOC_RISE_INTERVAL_MS(BATTERY_CAPACITY_200_MAH) == 72000UL,
@@ -191,7 +193,24 @@ static void test_custom_charge_settings() {
     test_settings.charge_current_ma = 100U;
 }
 
+/* [新增] 4300mV 邊界、過壓鎖定、ADC 故障及恢復遲滯。 */
+static void test_overvoltage_warning() {
+    start(4300, true);
+    assert(!brd_battery_is_overvoltage());
+    sample(4302, true);
+    assert(brd_battery_is_overvoltage() && !brd_battery_measurement_allowed());
+    sample(4270, false); assert(brd_battery_is_overvoltage());
+    sample(4250); assert(brd_battery_is_overvoltage());
+    test_adc_fail = true; sample(4250); test_adc_fail = false;
+    assert(brd_battery_is_overvoltage());
+    sample(4250); assert(brd_battery_is_overvoltage());
+    sample(4250); assert(!brd_battery_is_overvoltage() && brd_battery_measurement_allowed());
+    start(4350, false); assert(brd_battery_is_overvoltage());
+    sample(4200, true); sample(4200, true);
+    assert(brd_battery_measurement_allowed() && brd_battery_get_percent() == 100U);
+}
 int main() {
+    test_overvoltage_warning();
     test_custom_charge_settings();
     test_discharge_curve();
     test_charging_compensation();

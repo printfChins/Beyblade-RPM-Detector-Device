@@ -150,6 +150,11 @@ static_assert(BBP_BATTERY_CRITICAL_PERCENT <= BBP_BATTERY_WARNING_PERCENT &&
 #define BATTERY_MIN_MV                   3460U /* [V1.2.1 修改] 21 點放電曲線的 0% 電壓。 */
 #define BATTERY_MAX_MV                   4200U
 #define BATTERY_SAMPLE_INTERVAL_MS        1000UL
+/* [新增] 電池端過壓保護：維持原 ADC 排程，第一筆超限即鎖定。 */
+#define BATTERY_OVERVOLTAGE_MV            4300U
+#define BATTERY_OVERVOLTAGE_RECOVER_MV    4250U
+#define BATTERY_OVERVOLTAGE_RECOVER_MS    1000UL
+#define OLED_VOLTAGE_BLINK_MS             500UL
 /*
     [V1.4.4 修改] 充電百分比依已保存生效的容量與 100 mA 估算電流計時。
     200 / 250 / 300 / 500 / 1000 mAh 對應每 1% 至少 72 / 90 / 108 / 180 / 360 秒。
